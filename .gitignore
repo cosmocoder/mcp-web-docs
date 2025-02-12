@@ -1,0 +1,36 @@
+# See https://help.github.com/ignore-files/ for more about ignoring files.
+
+# dependencies
+node_modules
+
+# testing
+coverage
+
+# production
+build
+
+# sensitive
+**/.env
+**/.npmrc
+
+# misc
+.DS_Store
+.env.local
+.env.vault
+.environment/
+.env.development.local
+.env.test.local
+.env.production.local
+tmp
+
+npm-debug.log*
+
+.cache
+
+.eslintcache
+.stylelintcache
+.prettier-cache
+
+*yalc*
+
+.vscode/*.log

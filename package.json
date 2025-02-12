@@ -1,0 +1,50 @@
+{
+  "name": "mcp-web-docs",
+  "version": "1.0.0",
+  "description": "MCP server for crawling and indexing web documentation",
+  "type": "module",
+  "main": "build/index.js",
+  "scripts": {
+    "build": "tsc && chmod +x build/index.js",
+    "start": "node build/index.js",
+    "dev": "tsc -w",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf build"
+  },
+  "keywords": [
+    "mcp",
+    "documentation",
+    "indexing",
+    "search"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.4.1",
+    "@mozilla/readability": "^0.5.0",
+    "@types/node": "^20.11.0",
+    "cheerio": "^1.0.0-rc.12",
+    "cli-progress": "^3.12.0",
+    "crawlee": "^3.12.2",
+    "jsdom": "^24.1.3",
+    "node-html-markdown": "^1.3.0",
+    "openai": "^4.76.0",
+    "pdfjs-dist": "^4.10.38",
+    "playwright": "^1.50.1",
+    "puppeteer": "^22.4.0",
+    "puppeteer-chromium-resolver": "^20.0.0",
+    "quick-lru": "^7.0.0",
+    "sqlite": "^5.1.1",
+    "sqlite3": "^5.1.7",
+    "typescript": "^5.3.3",
+    "vectordb": "^0.4.20"
+  },
+  "devDependencies": {
+    "@types/cli-progress": "^3.11.5",
+    "@types/jsdom": "^21.1.6"
+  },
+  "engine-strict": true,
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}

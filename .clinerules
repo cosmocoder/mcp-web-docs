@@ -1,0 +1,329 @@
+# MCP Web Documentation Server Rules
+
+## Project Overview
+
+This project implements an MCP server for crawling, indexing, and searching web-based documentation. The server enables AI agents to reference documentation during conversations by maintaining a searchable index of documentation content.
+
+### Core Features
+
+- Documentation crawling with support for static and dynamic websites
+- Vector-based search using OpenAI embeddings
+- Progress tracking and status reporting
+- Robust error handling and recovery
+- Efficient caching and resource management
+
+## URL Discovery Implementation
+
+The URL discovery process in crawlee-crawler.ts works by:
+1. Waiting for the page to load with both 'domcontentloaded' and 'networkidle' states
+2. Using Crawlee's built-in enqueueLinks() function which:
+   - Automatically finds all <a> tags in the document
+   - Converts relative URLs to absolute URLs
+   - Maintains proper deduplication using the full URL including query parameters
+   - Handles client-side routing URLs (like Storybook's ?path=/docs/ format)
+
+This process ensures all documentation pages are discovered, regardless of the documentation framework used.
+
+Storybook website detection works by:
+1. Checking for the presence of __STORYBOOK_CLIENT_API__ in the window object
+2. Waiting for the API's storyStore to be ready using a Promise
+3. Handling both the main Storybook window and preview iframes
+4. Expanding all sidebar sections to ensure all navigation links are visible
+
+Content extraction works by:
+1. Using a chain of content extractors (Storybook, GitHub Pages, Default)
+2. Each extractor implements canHandle() to check if it can process the content
+3. The extractContent() method returns an ExtractedContent object with:
+   - content: The actual text content
+   - metadata: Information about the content type and structure
+4. Content is extracted from both the main page and preview iframes if present
+5. The extracted content is cleaned up by:
+   - Removing navigation and non-content elements
+   - Preserving code blocks and important structural elements
+   - Converting links to markdown format
+   - Maintaining proper section hierarchy
+
+## Content Extraction
+
+### Storybook Documentation
+For Storybook-based documentation sites:
+1. Wait for Storybook-specific elements to be loaded
+2. Extract component title and description
+3. Handle code samples:
+   - Find all "Show code" buttons in the page
+   - Click each button to reveal its code sample
+   - Wait for the code blocks to be rendered
+   - Extract code from all revealed code blocks
+4. Extract props tables and other metadata
+5. Clean and format the extracted content
+
+## Code Organization
+
+### Directory Structure
+
+```
+src/
+├── crawler/         # Web crawling implementations
+├── embeddings/      # Vector embedding services
+├── indexing/        # Indexing status tracking
+├── processor/       # Document processing logic
+├── storage/         # Data persistence layer
+├── util/           # Utility functions
+├── config.ts       # Configuration management
+├── index.ts        # Main server entry point
+└── types.ts        # Core type definitions
+```
+
+### File Naming Conventions
+
+- Use lowercase with hyphens for filenames
+- Use `.ts` extension for TypeScript files
+- Implementation files should match their interface names (e.g., `WebCrawler` interface → `web-crawler.ts`)
+
+## Implementation Standards
+
+### Crawling Strategy
+
+1. Implement DocsCrawler orchestrator:
+   - Manage multiple crawler implementations
+   - Handle crawler selection and fallback logic
+   - Provide unified interface for crawling operations
+   - Track and report crawling progress
+
+2. Crawler Hierarchy:
+   - DefaultCrawler: Primary crawler for static sites
+   - ChromiumCrawler: For JavaScript-heavy sites
+   - CheerioCrawler: Fallback option for basic sites
+   - GitHubCrawler: Specialized for GitHub repositories
+
+3. Crawler Implementation:
+   - Simplified page navigation logic
+   - Improved redirect handling with timeouts
+   - Efficient link discovery and validation
+   - Proper error recovery and logging
+   - Browser session management
+
+4. Crawler Configuration:
+   - Maximum depth: 4 levels
+   - Maximum requests per crawl: 1000
+   - Support local crawling option
+   - Handle GitHub authentication via token
+   - Configurable timeouts and retries
+
+5. Content Validation:
+   - Progressive content extraction
+   - Multiple selector strategies
+   - Retry mechanism for dynamic content
+   - Detailed extraction logging
+   - Telemetry for success/failure rates
+
+### Document Processing
+
+1. Content Processing:
+   - Support both HTML and Markdown content
+   - Process GitHub repository content as Markdown
+   - Convert HTML to readable text using Readability
+   - Extract meaningful metadata (title, path, subpath)
+   - Implement retry mechanism for failed extractions
+   - Add detailed logging for extraction attempts
+   - Track extraction success/failure metrics
+
+2. Content Chunking:
+   - Chunk size based on embeddings provider's max token limit
+   - Maintain semantic boundaries when possible
+   - Include metadata with each chunk (URL, title, line numbers)
+   - Progressive chunk processing with validation
+
+3. Vector Embeddings:
+   - Support multiple embedding providers (OpenAI, TransformersJS)
+   - Cache embeddings to minimize API calls
+   - Support pre-indexed embeddings for common documentation
+   - Implement retry logic for API failures
+
+### Error Handling
+
+1. Implement graceful degradation:
+   - Fall back through crawler hierarchy on failures
+   - Support manual re-indexing of failed documents
+   - Log detailed error information for debugging
+   - Handle GitHub rate limiting gracefully
+   - Track and report extraction failures
+   - Provide detailed error context for debugging
+
+2. Status Tracking:
+   - Track indexing status per document
+   - Support progress reporting with detailed descriptions
+   - Handle status transitions (pending → indexing → complete/failed)
+   - Support indexing cancellation and cleanup
+   - Track reindexing vs initial indexing
+   - Monitor content extraction success rates
+
+3. Queue Management:
+   - Prevent duplicate indexing requests
+   - Handle concurrent indexing operations
+   - Clean up resources on failure or cancellation
+   - Implement progressive delays for retries
+
+## Performance Guidelines
+
+### Resource Management
+
+1. Database Organization:
+   - SQLite for document metadata and status
+   - LanceDB for vector storage and similarity search
+   - Separate tables per embedding provider
+   - Support for pre-indexed documentation
+
+2. Memory Management:
+   - LRU cache with configurable size
+   - Stream processing for large documents
+   - Automatic cleanup of outdated indices
+   - Progressive chunk processing to prevent memory spikes
+
+3. Concurrency and Performance:
+   - Proportional delays based on queue size
+   - Prevent UI lockup during processing
+   - Support for cancellation and cleanup
+   - Monitor and adjust resource usage dynamically
+
+### Search and Retrieval
+
+1. Vector Search:
+   - Use LanceDB for efficient similarity search
+   - Support multiple embedding providers
+   - Filter results by document URL
+   - Configurable result limits (default: 30 retrieved, 15 final)
+
+2. Result Processing:
+   - Support result reranking with configurable reranker
+   - Sort results by relevance score
+   - Include document metadata and favicon
+   - Support pre-indexed documentation lookup
+
+3. Pre-indexed Content:
+   - Support for common framework documentation
+   - Lazy loading of pre-indexed embeddings from S3
+   - IDE-specific availability checks
+   - Automatic fallback to local indexing
+
+### Optimization Rules
+
+1. Caching:
+   - Cache frequently accessed documents
+   - Cache embeddings to reduce API calls
+   - Implement cache invalidation strategy
+
+2. Network:
+   - Implement connection pooling
+   - Use keep-alive connections
+   - Compress network traffic when possible
+
+## Security Requirements
+
+1. API Key Management:
+   - Store API keys in environment variables
+   - Never log or expose API keys
+   - Implement key rotation capability
+
+2. URL Validation:
+   - Validate all input URLs
+   - Normalize URLs before processing
+   - Implement allowed/blocked domain lists
+
+3. Resource Protection:
+   - Implement rate limiting
+   - Validate file types before processing
+   - Scan for malicious content
+
+## Configuration Standards
+
+1. Environment Variables:
+   - OPENAI_API_KEY: Required for OpenAI embeddings
+   - GITHUB_TOKEN: Optional for GitHub repository access
+
+2. Core Settings:
+   - maxDepth: 4 levels deep crawling
+   - maxRequestsPerCrawl: 1000 requests
+   - maxChunkSize: Based on embeddings provider limit
+   - cacheSize: 1000 items
+
+3. Feature Flags:
+   - useLocalCrawling: Enable local file system crawling
+   - experimental.useChromiumForDocsCrawling: Enable Chromium crawler
+   - disableIndexing: Disable all indexing operations
+
+4. Documentation Configuration:
+   - startUrl: Root URL of documentation
+   - title: Display title for the documentation
+   - faviconUrl: Optional custom favicon URL
+   - useLocalCrawling: Override global setting
+   - maxDepth: Override global depth setting
+
+## Testing Requirements
+
+1. Unit Tests:
+   - Test each crawler implementation
+   - Verify document processing logic
+   - Validate embedding generation
+   - Test search functionality
+   - Validate content extraction
+   - Test crawler fallback logic
+
+2. Integration Tests:
+   - End-to-end crawling tests
+   - Storage and retrieval tests
+   - API integration tests
+   - Content extraction validation
+   - Crawler fallback scenarios
+
+3. Performance Tests:
+   - Measure crawling speed
+   - Monitor memory usage
+   - Test concurrent operations
+   - Validate extraction success rates
+   - Measure crawler performance
+
+## Documentation Requirements
+
+1. Code Documentation:
+   - Document all public interfaces
+   - Include examples in complex functions
+   - Maintain up-to-date type definitions
+   - Document crawler selection logic
+   - Detail content extraction strategies
+
+2. User Documentation:
+   - Installation instructions
+   - Configuration guide
+   - Troubleshooting guide
+   - Crawler configuration guide
+   - Content extraction debugging
+
+## Maintenance Guidelines
+
+1. Regular Tasks:
+   - Update dependencies monthly
+   - Review and optimize cache settings
+   - Monitor and clean up storage
+   - Review crawler performance
+   - Analyze extraction success rates
+
+2. Error Monitoring:
+   - Log all crawling errors
+   - Track API usage and limits
+   - Monitor system resource usage
+   - Track content extraction failures
+   - Monitor crawler fallbacks
+
+## Version Control
+
+1. Commit Guidelines:
+   - Use semantic commit messages
+   - Include ticket references
+   - Document breaking changes
+
+2. Branch Strategy:
+   - main: stable production code
+   - develop: integration branch
+   - feature/*: new features
+   - fix/*: bug fixes
