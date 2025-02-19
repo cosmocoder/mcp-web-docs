@@ -66,11 +66,16 @@ export class CrawleeCrawler extends BaseCrawler {
               .catch(() => log.debug('Network idle timeout - continuing anyway'))
           ]);
 
+          // Determine site type first
+          let siteType = 'default';
+          let frame = null;
+
           // Check for Storybook and wait for it to be ready
           const isStorybook = await page.evaluate(() => {
-            if (typeof (window as any).__STORYBOOK_CLIENT_API__ !== 'undefined') {
-              // Wait for both the story store and router to be ready
-              return new Promise(resolve => {
+            return new Promise(resolve => {
+              // Check for Storybook API
+              if (typeof (window as any).__STORYBOOK_CLIENT_API__ !== 'undefined') {
+                // Wait for story store to be ready
                 const checkReady = () => {
                   const api = (window as any).__STORYBOOK_CLIENT_API__;
                   if (api?.storyStore?.ready) {
@@ -80,34 +85,74 @@ export class CrawleeCrawler extends BaseCrawler {
                   }
                 };
                 checkReady();
-              });
-            }
-            return false;
+                return;
+              }
+
+              // Check for Storybook elements
+              if (document.querySelector('#storybook-root, .sbdocs, [data-nodetype="root"]') !== null ||
+                  document.querySelector('meta[name="storybook-version"]') !== null ||
+                  document.baseURI?.includes('path=/docs/') ||
+                  document.baseURI?.includes('path=/story/')) {
+                resolve(true);
+                return;
+              }
+
+              resolve(false);
+            });
           });
 
           if (isStorybook) {
             log.debug('Detected Storybook page');
+            siteType = 'storybook';
 
-            // Wait for the iframe with increased timeout
-            const frameHandle = await page.waitForSelector('iframe#storybook-preview-iframe', {
-              state: 'attached',
-              timeout: 5000
-            }).catch(() => {
-              log.debug('No Storybook iframe found - continuing with main page');
+            // Wait for Storybook content to be ready
+            await Promise.all([
+              page.waitForLoadState('networkidle', { timeout: 5000 })
+                .catch(() => log.debug('Network idle timeout - continuing anyway')),
+              page.waitForSelector('.sbdocs-content, #docs-root, .docs-story, [class*="story-"]', {
+                timeout: 5000
+              }).catch(() => log.debug('No Storybook content found in main page'))
+            ]);
+
+            // Try to find the content iframe
+            const frames = await page.frames();
+            const contentFrames = await Promise.all(frames.map(async f => {
+              try {
+                const hasContent = await f.evaluate(() => {
+                  return document.querySelector('.sbdocs-content, #docs-root, .docs-story, [class*="story-"]') !== null;
+                }).catch(() => false);
+
+                if (hasContent) {
+                  await Promise.all([
+                    f.waitForLoadState('domcontentloaded'),
+                    f.waitForLoadState('networkidle', { timeout: 5000 })
+                      .catch(() => log.debug('Frame network idle timeout - continuing anyway'))
+                  ]);
+                  return f;
+                }
+              } catch (error) {
+                log.debug('Error checking frame', { error: String(error) });
+              }
               return null;
+            }));
+
+            // Use the first frame that has content
+            frame = contentFrames.find(f => f !== null) || null;
+            if (frame) {
+              log.debug('Found Storybook content in iframe');
+              // Wait longer for dynamic content
+              await new Promise(resolve => setTimeout(resolve, 2000));
+            }
+          } else {
+            // Check for GitHub Pages
+            const isGitHubPages = await page.evaluate(() => {
+              return window.location.hostname.includes('github.io') &&
+                     document.querySelector('.markdown-body, .site-footer, .page-header') !== null;
             });
 
-            if (frameHandle) {
-              const frame = await frameHandle.contentFrame();
-              if (frame) {
-                log.debug('Found Storybook iframe');
-                // Wait for frame to load completely
-                await Promise.all([
-                  frame.waitForLoadState('domcontentloaded'),
-                  frame.waitForLoadState('networkidle', { timeout: 5000 })
-                    .catch(() => log.debug('Frame network idle timeout - continuing anyway'))
-                ]);
-              }
+            if (isGitHubPages) {
+              log.debug('Detected GitHub Pages site');
+              siteType = 'github';
             }
           }
 
@@ -123,7 +168,15 @@ export class CrawleeCrawler extends BaseCrawler {
             }
           });
 
-          await enqueueLinks();
+          await enqueueLinks({
+            strategy: 'same-domain',
+            transformRequestFunction(req) {
+              return {
+                ...req,
+                uniqueKey: new URL(req.url).pathname + new URL(req.url).search
+              };
+            }
+          });
 
           const title = await page.title();
 
@@ -132,116 +185,62 @@ export class CrawleeCrawler extends BaseCrawler {
           let extractorUsed = '';
 
           try {
-            // Get the Storybook iframe if it exists
-            const frameHandle = await page.waitForSelector('iframe#storybook-preview-iframe')
-              .catch(() => null);
+            // Select appropriate extractor based on site type
+            const extractor = siteType === 'storybook' ? contentExtractors[0] :
+                            siteType === 'github' ? contentExtractors[1] :
+                            contentExtractors[2];
+            extractorUsed = extractor.constructor.name;
+            log.debug(`Using ${extractorUsed} for content extraction`);
 
-            // Get the frame if it exists
-            const frame = frameHandle ? await frameHandle.contentFrame() : null;
+            // For Storybook, extract content with proper handling
+            if (siteType === 'storybook') {
+              log.debug('Extracting Storybook content');
 
-            for (const extractor of contentExtractors) {
-              // Try to handle content in both main page and iframe
-              const canHandleMain = await page.evaluate(
-                ({ extractorStr }) => {
+              // Get the StorybookExtractor code
+              const extractorCode = contentExtractors[0].constructor.toString();
+
+              // Try to get content from the frame first
+              if (frame) {
+                log.debug('Extracting content from Storybook iframe');
+                content = await frame.evaluate(async (extractorCode) => {
+                  const ExtractorClass = new Function(`return ${extractorCode}`)();
+                  const extractor = new ExtractorClass();
+                  const result = await extractor.extractContent(document);
+                  return result.content;
+                }, extractorCode);
+              }
+
+              // If no content from frame, try main page
+              if (!content) {
+                log.debug('Extracting content from main page');
+                content = await page.evaluate(async (extractorCode) => {
+                  const ExtractorClass = new Function(`return ${extractorCode}`)();
+                  const extractor = new ExtractorClass();
+                  const result = await extractor.extractContent(document);
+                  return result.content;
+                }, extractorCode);
+              }
+            } else {
+              // For non-Storybook, use the appropriate extractor
+              content = await page.evaluate(
+                async ({ extractorStr }) => {
                   try {
                     const ExtractorClass = new Function(`return ${extractorStr}`)();
                     const extractor = new ExtractorClass();
-                    return extractor.canHandle(document);
+                    const extracted = await extractor.extractContent(document);
+                    return extracted.content;
                   } catch (error) {
-                    console.error('Error in canHandle:', error);
-                    return false;
+                    console.error('Error in main extractContent:', error);
+                    return '';
                   }
                 },
                 { extractorStr: extractor.constructor.toString() }
               );
-
-              const canHandleFrame = frame ? await frame.evaluate(
-                ({ extractorStr }) => {
-                  try {
-                    const ExtractorClass = new Function(`return ${extractorStr}`)();
-                    const extractor = new ExtractorClass();
-                    return extractor.canHandle(document);
-                  } catch (error) {
-                    console.error('Error in canHandle:', error);
-                    return false;
-                  }
-                },
-                { extractorStr: extractor.constructor.toString() }
-              ) : false;
-
-              // Use the context that the extractor can handle
-              const canHandle = canHandleMain || canHandleFrame;
-
-              if (canHandle) {
-                extractorUsed = extractor.constructor.name;
-                log.debug(`Using ${extractorUsed} for content extraction`);
-
-                // Extract content from the appropriate context
-                if (canHandleFrame && frame) {
-                  content = await frame.evaluate(
-                    async ({ extractorStr }) => {
-                      try {
-                        const ExtractorClass = new Function(`return ${extractorStr}`)();
-                        const extractor = new ExtractorClass();
-                        const extracted = await extractor.extractContent(document);
-                        return extracted.content;
-                      } catch (error) {
-                        console.error('Error in extractContent:', error);
-                        return '';
-                      }
-                    },
-                    { extractorStr: extractor.constructor.toString() }
-                  );
-                } else {
-                  content = await page.evaluate(
-                    async ({ extractorStr }) => {
-                      try {
-                        const ExtractorClass = new Function(`return ${extractorStr}`)();
-                        const extractor = new ExtractorClass();
-                        const extracted = await extractor.extractContent(document);
-                        return extracted.content;
-                      } catch (error) {
-                        console.error('Error in extractContent:', error);
-                        return '';
-                      }
-                    },
-                    { extractorStr: extractor.constructor.toString() }
-                  );
-                }
-
-                if (content) {
-                  log.debug(`Content extracted successfully using ${extractorUsed}`);
-                  break;
-                } else {
-                  log.debug(`${extractorUsed} failed to extract content, trying next extractor`);
-                }
-              }
             }
 
+            // No fallback to default extraction - if the extractor failed, log it and continue
             if (!content) {
-              log.debug('No content extracted, falling back to default extraction');
-              // Try to extract from frame first, then fall back to main page
-              if (frame) {
-                content = await frame.evaluate(() => {
-                  const main = document.querySelector('main, article, [role="main"], #root, #docs-root, .sbdocs');
-                  if (main) {
-                    return main.textContent || document.body.textContent || '';
-                  }
-                  return document.body.textContent || '';
-                });
-              }
-
-              if (!content) {
-                content = await page.evaluate(() => {
-                  const main = document.querySelector('main, article, [role="main"], #root, #docs-root, .sbdocs');
-                  if (main) {
-                    return main.textContent || document.body.textContent || '';
-                  }
-                  return document.body.textContent || '';
-                });
-              }
-
-              extractorUsed = 'DefaultFallback';
+              log.debug('No content extracted from extractor');
             }
           } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error);
@@ -250,17 +249,17 @@ export class CrawleeCrawler extends BaseCrawler {
             extractorUsed = 'ErrorFallback';
           }
 
-          // Clean up the content
+          // Clean up the content while preserving structure
           const cleanContent = (text: string) => {
             return text
-              .replace(/\s+/g, ' ') // Replace multiple spaces with single space
-              .replace(/\\n/g, '\n') // Preserve actual newlines
-              .replace(/\n\s*\n\s*\n/g, '\n\n') // Replace multiple newlines with double newlines
-              .replace(/[^\x20-\x7E\n]/g, ' ') // Remove non-printable characters except newlines
-              .split('\n') // Split into lines
-              .map(line => line.trim()) // Trim each line
-              .filter(line => line) // Remove empty lines
-              .join('\n') // Rejoin with newlines
+              .replace(/\\n/g, '\n') // Convert escaped newlines
+              .replace(/\r\n/g, '\n') // Normalize line endings
+              .replace(/\t/g, '  ') // Convert tabs to spaces
+              .replace(/[^\S\n]+/g, ' ') // Replace multiple spaces with single space (except newlines)
+              .split('\n')
+              .map(line => line.trim())
+              .join('\n')
+              .replace(/\n{3,}/g, '\n\n') // Max 2 consecutive newlines
               .trim();
           };
 

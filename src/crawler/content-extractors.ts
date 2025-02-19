@@ -1,5 +1,4 @@
 interface ContentExtractor {
-  canHandle(document: Document): boolean;
   extractContent(document: Document): Promise<ExtractedContent>;
 }
 
@@ -29,455 +28,490 @@ interface ComponentRelationship {
 }
 
 export class StorybookExtractor implements ContentExtractor {
-  canHandle(document: Document): boolean {
-    // Check if we're in the Storybook iframe
-    if (window.parent !== window) {
-      return document.querySelector('#root, #docs-root, .sbdocs') !== null;
+
+  private addContentToSections(content: string, sections: string[], addedSections: Set<string>): void {
+    const trimmed = content.trim();
+    if (trimmed && !addedSections.has(trimmed)) {
+      sections.push(trimmed);
+      addedSections.add(trimmed);
     }
-
-    // Check if we're in the main Storybook window
-    const isStorybook = document.baseURI?.includes('path=/docs/') ||
-                       document.baseURI?.includes('path=/story/') ||
-                       document.querySelector('#storybook-root, .sbdocs, [data-nodetype="root"]') !== null ||
-                       document.querySelector('meta[name="storybook-version"]') !== null ||
-                       document.querySelector('.sbdocs-wrapper, .docs-story, .sb-show-main') !== null;
-
-    if (isStorybook) return true;
-
-    // Check for any Storybook structure
-    return document.querySelector('h1') !== null;
   }
 
-  private extractTextContent(element: Element, selector: string, prefix = ''): string {
-    const elements = element.querySelectorAll(selector);
-    return Array.from(elements)
-      .map(el => {
-        // Handle elements with links specially
-        const links = Array.from(el.querySelectorAll('a'));
-        if (links.length > 0) {
-          let text = el.textContent || '';
-          // Replace each link with markdown format
-          links.forEach(link => {
-            const href = link.getAttribute('href');
-            if (href) {
-              const linkText = link.textContent?.trim();
-              text = text.replace(linkText || '', `[${linkText}](${href})`);
-            }
-          });
-          return prefix + text.trim();
-        }
-
-        // Regular text content
-        const text = el.textContent?.trim();
-        return text && !text.includes('Show code') ? `${prefix}${text}` : '';
-      })
-      .filter(Boolean)
-      .join('\n\n');
+  private cleanupCode(code: string): string {
+    return code
+      .replace(/^\s+|\s+$/g, '')  // Trim whitespace
+      .replace(/\t/g, '  ')       // Convert tabs to spaces
+      .replace(/\n{3,}/g, '\n\n') // Reduce multiple blank lines
+      .replace(/\u00A0/g, ' ')    // Replace non-breaking spaces
+      .replace(/\r\n/g, '\n')     // Normalize line endings
+      .replace(/[ \t]+$/gm, '')   // Remove trailing spaces
+      .replace(/^\n+|\n+$/g, ''); // Trim leading/trailing newlines
   }
 
-  private async extractCodeSamples(document: Document): Promise<string[]> {
-    const codeSamples: string[] = [];
-    const processedCodes = new Set<string>();
+  private isElementVisible(element: Element): boolean {
+    const style = window.getComputedStyle(element);
+    return style.display !== 'none' &&
+           style.visibility !== 'hidden' &&
+           style.opacity !== '0';
+  }
 
-    // Function to process a code block
-    const processCodeBlock = (block: Element, title?: string) => {
-      // Find the prismjs pre element, either the block itself or a parent
-      const prismBlock = block.matches('pre.prismjs') ? block : block.closest('pre.prismjs');
-      const code = (prismBlock || block).textContent?.trim();
+  private formatCodeBlock(code: string, language: string): string {
+    // Clean up the code
+    const cleanCode = code
+      .replace(/^\s+|\s+$/g, '')  // Trim whitespace
+      .replace(/\t/g, '  ')       // Convert tabs to spaces
+      .replace(/\n{3,}/g, '\n\n') // Reduce multiple blank lines
+      .replace(/\u00A0/g, ' ');   // Replace non-breaking spaces
 
-      if (code && !processedCodes.has(code)) {
-        if (title) {
-          codeSamples.push(`// ${title}`);
-        }
-        codeSamples.push(code);
-        processedCodes.add(code);
+    return `\`\`\`${language}\n${cleanCode}\n\`\`\``;
+  }
+
+  private extractLinks(element: Element): string {
+    let content = element.innerHTML;
+
+    // Handle links
+    const links = element.querySelectorAll('a');
+    links.forEach(link => {
+      const text = link.textContent?.trim();
+      const href = link.getAttribute('href');
+      if (text && href) {
+        // Replace the link HTML with markdown link
+        const linkHtml = link.outerHTML;
+        content = content.replace(linkHtml, `[${text}](${href})`);
       }
-    };
+    });
 
-    // First find and click all "Show code" buttons
-    const showCodeButtons = Array.from(document.querySelectorAll('button'))
-      .filter(button => {
-        const text = button.textContent?.toLowerCase() || '';
-        return text.includes('show code') || text.includes('view code');
+    // Handle inline code elements
+    const codeElements = element.querySelectorAll('code, [class*="code"], [class*="inline-code"], [class*="monospace"]');
+    codeElements.forEach(code => {
+      const text = code.textContent?.trim();
+      if (text) {
+        // Replace the code HTML with markdown inline code
+        const codeHtml = code.outerHTML;
+        content = content.replace(codeHtml, `\`${text}\``);
+      }
+    });
+
+    // Convert HTML to plain text while preserving markdown
+    const div = document.createElement('div');
+    div.innerHTML = content;
+    return div.textContent?.trim() || '';
+  }
+
+  private async processSection(section: Element, sections: string[], addedSections: Set<string>): Promise<void> {
+    try {
+      // Try to find a heading in this section or its parent
+      const heading = section.querySelector('h2, h3, h4') ||
+                     section.closest('section')?.querySelector('h2, h3, h4');
+
+      if (heading) {
+        const title = heading.textContent?.trim();
+        if (title && !addedSections.has(`## ${title}`)) {
+          // Add section heading
+          this.addContentToSections(`## ${title}`, sections, addedSections);
+          this.addContentToSections('', sections, addedSections);
+
+          // Process content between this heading and the next
+          let current = heading.nextElementSibling;
+          while (current && !current.matches('h2, h3, h4')) {
+            await this.processSectionContent(current, sections, addedSections);
+            current = current.nextElementSibling;
+          }
+        }
+      }
+
+      // Process any remaining content in the section
+      const remainingContent = Array.from(section.children).filter(el =>
+        !el.matches('h2, h3, h4') && (!heading || !heading.contains(el))
+      );
+
+      for (const content of remainingContent) {
+        await this.processSectionContent(content, sections, addedSections);
+      }
+    } catch (error) {
+      console.error('Error processing section:', error);
+    }
+  }
+
+  private async processSectionContent(element: Element | null, sections: string[], addedSections: Set<string>): Promise<void> {
+    if (!element) return;
+
+    try {
+      // Skip if element is not visible
+      if (!this.isElementVisible(element)) return;
+
+      // Handle text content with links and inline code
+      if (element.matches('p, div[class*="description"], [class*="markdown"], [class*="text"], [class*="content"], [class*="docblock-text"]')) {
+        const text = this.extractLinks(element);
+        if (text) {
+          this.addContentToSections(text, sections, addedSections);
+          this.addContentToSections('', sections, addedSections);
+        }
+      }
+
+      // Handle code blocks
+      if (element.matches('pre.prismjs')) {
+        // First try to get any visible code
+        const code = element.textContent?.trim() || '';
+        if (code) {
+          const cleanCode = this.cleanupCode(code);
+          if (cleanCode) {
+            const language = element.className.match(/language-(\w+)/)?.[1] || 'typescript';
+            const formattedCode = this.formatCodeBlock(cleanCode, language);
+            this.addContentToSections(formattedCode, sections, addedSections);
+            this.addContentToSections('', sections, addedSections);
+          }
+        }
+      }
+
+      // Handle tables for layout, spacing, and style tokens
+      if (element.matches('table')) {
+        const headers = Array.from(element.querySelectorAll('th')).map(th => th.textContent?.trim() || '');
+        if (headers.length > 0) {
+          // Add table header
+          this.addContentToSections(`| ${headers.join(' | ')} |`, sections, addedSections);
+          this.addContentToSections(`| ${headers.map(() => '---').join(' | ')} |`, sections, addedSections);
+
+          // Process rows
+          const rows = element.querySelectorAll('tr');
+          for (const row of rows) {
+            const cells = Array.from(row.querySelectorAll('td')).map(td => {
+              const text = td.textContent?.trim() || '';
+              return text.replace(/\|/g, '\\|');
+            });
+
+            if (cells.length > 0) {
+              this.addContentToSections(`| ${cells.join(' | ')} |`, sections, addedSections);
+            }
+          }
+          this.addContentToSections('', sections, addedSections);
+        }
+      }
+
+      // Handle alias token divs
+      if (element.matches('div')) {
+        const name = element.textContent?.trim();
+        const nextElement = element.nextElementSibling;
+        if (name && nextElement) {
+          const hexValue = nextElement.textContent?.trim();
+          if (hexValue && hexValue.startsWith('#')) {
+            this.addContentToSections(`${name}: ${hexValue}`, sections, addedSections);
+          }
+        }
+      }
+
+      // Handle expand buttons
+      const button = element.querySelector('button');
+      if (button?.textContent?.trim() === 'Expand') {
+        try {
+          (button as HTMLButtonElement).click();
+          await new Promise(resolve => setTimeout(resolve, 500));
+        } catch (error) {
+          console.error('Error clicking expand button:', error);
+        }
+      }
+
+
+      // Look for "Show code" buttons
+      const codeButtons = Array.from(element.querySelectorAll('button'))
+        .filter(button => {
+          const text = button.textContent?.toLowerCase() || '';
+          return text.includes('show code');
+        });
+
+      for (const button of codeButtons) {
+        try {
+          if (!this.isElementVisible(button)) continue;
+
+          // Click the button and wait for animation
+          (button as HTMLButtonElement).click();
+          await new Promise(resolve => setTimeout(resolve, 500));
+
+          // Look for newly revealed code blocks
+          const codeBlocks = element.querySelectorAll('pre.prismjs');
+          for (const block of codeBlocks) {
+            if (!this.isElementVisible(block)) continue;
+            const code = block.textContent?.trim() || '';
+            if (code) {
+              const cleanCode = this.cleanupCode(code);
+              if (cleanCode) {
+                const language = block.className.match(/language-(\w+)/)?.[1] || 'typescript';
+                const formattedCode = this.formatCodeBlock(cleanCode, language);
+                this.addContentToSections(formattedCode, sections, addedSections);
+                this.addContentToSections('', sections, addedSections);
+              }
+            }
+          }
+
+          // Click the button again to hide the code
+          (button as HTMLButtonElement).click();
+        } catch (error) {
+          console.error('Error handling code button:', error);
+        }
+      }
+
+      // Process child elements that might contain content
+      const children = Array.from(element.children).filter(el => {
+        // Skip already processed elements
+        if (el.matches('h1, h2, h3, h4')) return false;
+        if (el.matches('script, style, iframe')) return false;
+
+        // Skip if parent already processed this content type
+        if (element.matches('pre, code') && el.matches('pre, code')) return false;
+
+        return true;
       });
 
-    // Click all buttons first to reveal all code blocks
-    for (const button of showCodeButtons) {
-      (button as HTMLButtonElement).click();
-      // Brief wait between clicks
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    // Wait for code blocks to be inserted
-    await new Promise(resolve => setTimeout(resolve, 500));
-
-    // Now find all sections that might have code blocks
-    const sections = document.querySelectorAll('[class*="story"], [class*="example"], [class*="docblock"], section, article');
-
-    // Process each section
-    for (const section of sections) {
-      // Get the title for this section
-      const titleText = section.querySelector('h1, h2, h3, h4')?.textContent?.trim() ||
-                       section.getAttribute('title') ||
-                       section.getAttribute('aria-label') ||
-                       undefined;
-
-      // Find and process all PrismJS code blocks in this section
-      const codeBlocks = section.querySelectorAll('pre.prismjs');
-      codeBlocks.forEach(block => processCodeBlock(block, titleText));
-    }
-
-    // Check for any standalone code blocks at the document level
-    document.querySelectorAll('pre.prismjs').forEach(block => {
-      const parentSection = block.closest('[class*="story"], [class*="example"], [class*="docblock"], section, article');
-      // Only process if not already processed and not in a section we already handled
-      if (!processedCodes.has(block.textContent?.trim() || '') && !parentSection) {
-        processCodeBlock(block);
+      for (const child of children) {
+        await this.processSectionContent(child, sections, addedSections);
       }
-      const container = block.closest('[class*="story"], [class*="example"], [class*="docblock"], section, article');
-      const hasShowCodeButton = container?.querySelector('button')?.textContent?.toLowerCase().match(/show|view.*code/);
-
-      if (!hasShowCodeButton) {
-        // Try to get a title from the nearest heading or container
-        const titleText = container?.querySelector('h1, h2, h3, h4')?.textContent?.trim() ||
-                         container?.getAttribute('title') ||
-                         container?.getAttribute('aria-label') ||
-                         undefined;
-        processCodeBlock(block, titleText);
-      }
-    });
-
-    return codeSamples;
+    } catch (error) {
+      console.error('Error processing section content:', error);
+    }
   }
 
-  private extractPropsTable(document: Document): string {
-    const propsTable = document.querySelector('.docblock-argstable');
-    if (!propsTable) return '';
+  private async processPropsTable(table: Element, sections: string[], addedSections: Set<string>): Promise<void> {
+    this.addContentToSections('## Props', sections, addedSections);
+    this.addContentToSections('', sections, addedSections);
+    this.addContentToSections('| Name | Description | Default |', sections, addedSections);
+    this.addContentToSections('|------|-------------|---------|', sections, addedSections);
 
-    let text = '## Props\n\n';
-    const rows = Array.from(propsTable.querySelectorAll('tr')).slice(1); // Skip header row
-
-    rows.forEach((row: Element) => {
+    const rows = Array.from(table.querySelectorAll('tr')).slice(1);
+    for (const row of rows) {
       const cells = row.querySelectorAll('td');
-      if (cells.length >= 4) {
-        const name = cells[0]?.textContent?.trim();
-        const description = cells[1]?.textContent?.trim();
-        const type = cells[2]?.textContent?.trim();
-        const defaultValue = cells[3]?.textContent?.trim();
+      if (cells.length >= 3) {
+        const name = cells[0]?.textContent?.trim() || '';
+        const description = this.extractLinks(cells[1]);
+        const defaultValue = cells[2]?.textContent?.trim() || '-';
 
-        if (name) {
-          text += `### ${name}`;
-          if (type) text += ` (${type})`;
-          text += '\n';
-          if (description) text += `${description}\n`;
-          if (defaultValue && defaultValue !== '-') text += `Default: ${defaultValue}\n`;
-          text += '\n';
-        }
+        // Get type information
+        const typeInfo = cells[0]?.querySelector('span[class*="type"], code')?.textContent?.trim();
+        const type = typeInfo?.replace(/["']/g, '`'); // Replace quotes with backticks for inline code
+
+        // Format as markdown table row with proper escaping
+        const formattedName = `${name}${type ? ` (\`${type}\`)` : ''}`;
+        const formattedDesc = description.replace(/\|/g, '\\|'); // Escape pipe characters
+        const formattedDefault = defaultValue.replace(/\|/g, '\\|').replace(/["']/g, '`');
+
+        this.addContentToSections(
+          `| ${formattedName} | ${formattedDesc} | ${formattedDefault} |`,
+          sections,
+          addedSections
+        );
       }
-    });
-
-    return text;
+    }
+    this.addContentToSections('', sections, addedSections);
   }
 
-  private cleanupContent(element: Element): void {
-    // First mark sections with code examples to preserve them
-    element.querySelectorAll('button').forEach(button => {
-      if (button.textContent?.toLowerCase().includes('show code')) {
-        const container = button.closest('[class*="story"], [class*="example"], section, article');
-        if (container) {
-          container.setAttribute('data-has-code', 'true');
+  private async waitForStorybookContent(document: Document): Promise<Element | null> {
+    const maxAttempts = 10;
+    const delay = 500;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, delay));
+
+      // Check for Storybook content area
+      const mainArea = document.querySelector('.sbdocs-content, #docs-root');
+      if (!mainArea) continue;
+
+      // Verify content is loaded by checking for various content types
+      const hasContent = mainArea.querySelector('h1') && (
+        mainArea.querySelector('p') ||
+        mainArea.querySelector('table') ||
+        mainArea.querySelector('ul, ol') ||
+        mainArea.querySelector('[class*="docblock"]')
+      );
+
+      if (hasContent) {
+        // Wait briefly for any remaining content
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return mainArea;
+      }
+
+      // Check if Storybook is still loading
+      const loadingIndicator = document.querySelector('[class*="loading"], [class*="pending"]');
+      if (!loadingIndicator) {
+        console.warn('No loading indicator found but content is missing');
+      }
+    }
+
+    return null;
+  }
+
+  private async processTableContent(table: Element, sections: string[], addedSections: Set<string>): Promise<void> {
+    try {
+      // Get table headers
+      const headers = Array.from(table.querySelectorAll('th')).map(th => th.textContent?.trim() || '');
+      if (headers.length === 0) return;
+
+      // Add table header
+      this.addContentToSections(`| ${headers.join(' | ')} |`, sections, addedSections);
+      this.addContentToSections(`| ${headers.map(() => '---').join(' | ')} |`, sections, addedSections);
+
+      // Process rows
+      const rows = table.querySelectorAll('tr');
+      for (const row of rows) {
+        const cells = Array.from(row.querySelectorAll('td')).map(td => {
+          // Extract text with links and inline code
+          const text = this.extractLinks(td);
+          // Escape pipe characters
+          return text.replace(/\|/g, '\\|');
+        });
+
+        if (cells.length > 0) {
+          this.addContentToSections(`| ${cells.join(' | ')} |`, sections, addedSections);
         }
       }
-    });
 
-    // Remove navigation and non-content elements
-    const selectorsToRemove = [
-      // Basic cleanup
-      'style', 'script',
+      this.addContentToSections('', sections, addedSections);
+    } catch (error) {
+      console.error('Error processing table:', error);
+    }
+  }
 
-      // Navigation elements
-      '[role="navigation"]',
-      '[role="search"]',
-
-      // Sidebar and navigation
-      '[class*="sidebar"]',
-      '[class*="menu"]',
-
-      // Technical elements
-      'style[data-emotion]',
-      '[data-testid]',
-      '[data-radix-scroll-area-viewport]',
-      '.os-viewport',
-      '.os-content',
-
-      // Search and toolbar elements
-      '[class*="toolbar"]',
-      '[class*="search"]',
-
-      // Interactive elements we don't want in the content
-      'input',
-      'select'
-    ];
-
-    // Remove elements that match our selectors, but preserve code sections
-    element.querySelectorAll(selectorsToRemove.join(', ')).forEach(el => {
-      if (!el.closest('[data-has-code="true"]')) {
-        el.remove();
+  private async processListContent(list: Element, sections: string[], addedSections: Set<string>): Promise<void> {
+    try {
+      const items = list.querySelectorAll('li');
+      for (const item of items) {
+        const text = this.extractLinks(item);
+        if (text) {
+          const prefix = list.tagName.toLowerCase() === 'ol' ? '1. ' : '- ';
+          this.addContentToSections(`${prefix}${text}`, sections, addedSections);
+        }
       }
-    });
+      this.addContentToSections('', sections, addedSections);
+    } catch (error) {
+      console.error('Error processing list:', error);
+    }
+  }
 
-    // Clean up but preserve content of specific elements
-    const cleanupButPreserve = [
-      // Interactive containers that might have useful content
-      '[role="tabpanel"]',
-      '[role="tablist"]',
-      '[role="tab"]'
-    ];
-
-    element.querySelectorAll(cleanupButPreserve.join(', ')).forEach(el => {
-      if (!el.closest('[data-has-code="true"]')) {
-        // Create a new div to hold the content
-        const wrapper = document.createElement('div');
-        wrapper.innerHTML = el.innerHTML;
-
-        // Clean up the wrapper but preserve code blocks
-        wrapper.querySelectorAll('style, script').forEach(node => node.remove());
-
-        // Replace the original element with our cleaned wrapper
-        el.parentNode?.replaceChild(wrapper, el);
+  private async waitForStorybookAPI(): Promise<void> {
+    // Wait for Storybook API to be available
+    const maxAttempts = 5;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const hasAPI = !!(window as any).__STORYBOOK_CLIENT_API__;
+      if (hasAPI) {
+        // Wait for story store to be ready
+        const api = (window as any).__STORYBOOK_CLIENT_API__;
+        if (api.storyStore && typeof api.storyStore.ready === 'function') {
+          await api.storyStore.ready();
+        }
+        break;
       }
-    });
-
-    // Remove empty elements except those that might be important for structure
-    // or are part of code examples
-    element.querySelectorAll('*').forEach(el => {
-      if (!el.closest('[data-has-code="true"]') && // Not in a code section
-          !el.matches('h1, h2, h3, h4, h5, h6, pre, code') && // Not a heading or code block
-          !el.textContent?.trim() && // Empty text
-          !el.querySelector('img, code, pre')) { // No important children
-        el.remove();
-      }
-    });
-
-    // Clean up "Show code" buttons after we've extracted the code
-    element.querySelectorAll('button').forEach(button => {
-      if (button.textContent?.toLowerCase().includes('show code')) {
-        button.remove();
-      }
-    });
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
   }
 
   async extractContent(document: Document): Promise<ExtractedContent> {
-    let text = '';
-    const sections: string[] = [];
+    const emptyResult = {
+      content: '',
+      metadata: { type: 'overview' as const }
+    };
 
-    // Get the main content area
-    const mainContent = document.querySelector('#root, #docs-root, .sbdocs, #storybook-root') || document.body;
-    if (!mainContent) {
+    try {
+      // Wait for Storybook API
+      await this.waitForStorybookAPI();
+
+      // Wait for content to be loaded
+      const mainArea = await this.waitForStorybookContent(document);
+      if (!mainArea) {
+        console.error('Failed to find Storybook content area');
+        return emptyResult;
+      }
+
+      const sections: string[] = [];
+      const addedSections = new Set<string>();
+      let mainTitle = '';
+      let mainDescription = '';
+
+      // 1. Title and Description
+      const title = mainArea.querySelector('h1')?.textContent?.trim();
+      if (title) {
+        mainTitle = title;
+        this.addContentToSections(`# ${title}`, sections, addedSections);
+        this.addContentToSections('', sections, addedSections);
+      }
+
+      const description = mainArea.querySelector('h1 + p');
+      if (description) {
+        mainDescription = this.extractLinks(description);
+        this.addContentToSections(mainDescription, sections, addedSections);
+        this.addContentToSections('', sections, addedSections);
+      }
+
+      // 2. Process content by headings
+      const headings = mainArea.querySelectorAll('h1, h2, h3, h4');
+      for (const heading of headings) {
+        const title = heading.textContent?.trim();
+        if (title && !addedSections.has(`## ${title}`)) {
+          // Add section heading
+          const level = heading.tagName === 'H1' ? '#' : '##';
+          this.addContentToSections(`${level} ${title}`, sections, addedSections);
+          this.addContentToSections('', sections, addedSections);
+
+          // Process content between this heading and the next heading
+          let current = heading.nextElementSibling;
+          while (current && !current.matches('h1, h2, h3, h4')) {
+            if (this.isElementVisible(current)) {
+              // Handle tables and lists
+              if (current.matches('table') && !current.matches('.docblock-argstable')) {
+                await this.processTableContent(current, sections, addedSections);
+              } else if (current.matches('ul, ol')) {
+                await this.processListContent(current, sections, addedSections);
+              } else {
+                await this.processSectionContent(current, sections, addedSections);
+              }
+            }
+            current = current.nextElementSibling;
+          }
+        }
+      }
+
+      // 3. Process props table last
+      const propsTable = mainArea.querySelector('.docblock-argstable');
+      if (propsTable) {
+        await this.processPropsTable(propsTable, sections, addedSections);
+      }
+
+      // 4. Process any iframes that might contain additional content
+      const iframes = mainArea.querySelectorAll('iframe');
+      for (const iframe of iframes) {
+        try {
+          const iframeDoc = (iframe as HTMLIFrameElement).contentDocument;
+          if (iframeDoc) {
+            const iframeContent = iframeDoc.querySelector('body');
+            if (iframeContent) {
+              await this.processSection(iframeContent, sections, addedSections);
+            }
+          }
+        } catch (error) {
+          console.error('Error processing iframe:', error);
+        }
+      }
+
+      // Return the final result
       return {
-        content: '',
+        content: sections.join('\n\n'),
         metadata: {
-          type: 'overview',
+          type: 'overview' as const,
           pattern: {
-            name: '',
+            name: mainTitle,
             type: 'component',
-            description: '',
+            description: mainDescription,
             usageContexts: [],
             relatedPatterns: []
           }
         }
       };
+    } catch (error) {
+      console.error('Error extracting Storybook content:', error);
+      return emptyResult;
     }
 
-    // Clone to avoid modifying the original DOM
-    const contentClone = mainContent.cloneNode(true) as Element;
-
-    // Clean up the content first
-    this.cleanupContent(contentClone);
-
-    // Extract title
-    const title = contentClone.querySelector('h1')?.textContent?.trim();
-    if (title) {
-      sections.push(`# ${title}`);
-    }
-
-    // Extract description from first paragraph after h1
-    const firstParagraph = contentClone.querySelector('h1 + p')?.textContent?.trim();
-    if (firstParagraph) {
-      sections.push(firstParagraph);
-    }
-
-    // Process content in document order
-    let currentSection = '';
-    let inSection = false;
-
-    Array.from(contentClone.children).forEach(element => {
-      switch (element.tagName) {
-        case 'H1':
-          // Title is already handled
-          break;
-
-        case 'H2': {
-          // If we were in a section, save it
-          if (inSection && currentSection.trim()) {
-            sections.push(currentSection.trim());
-          }
-
-          // Start new section
-          const title = element.textContent?.trim();
-          currentSection = `## ${title}\n\n`;
-          inSection = true;
-          break;
-        }
-
-        case 'P': {
-          // Handle paragraphs with potential links and code-like content
-          const links = Array.from(element.querySelectorAll('a'));
-          let text = element.textContent?.trim() || '';
-
-          // Keep text content clean and unmodified
-          text = text.trim();
-
-          // Replace links with markdown format
-          links.forEach(link => {
-            const href = link.getAttribute('href');
-            const linkText = link.textContent?.trim();
-            if (href && linkText) {
-              // If it's an external tool/doc link, add reference marker
-              const isExternalTool = href.includes('figma.com') ||
-                                   href.includes('zeroheight') ||
-                                   href.includes('style-dictionary');
-              text = text.replace(linkText, isExternalTool ?
-                `[${linkText}](${href}) (External Tool)` :
-                `[${linkText}](${href})`);
-            }
-          });
-
-          // Add to current section or main content
-          if (inSection) {
-            currentSection += text + '\n\n';
-          } else if (element.previousElementSibling?.tagName === 'H1') {
-            sections.push('## Description\n\n' + text);
-          } else {
-            sections.push(text);
-          }
-          break;
-        }
-
-        case 'UL':
-        case 'OL': {
-          const items = this.extractTextContent(element, 'li', '• ');
-          if (items) {
-            if (inSection) {
-              currentSection += items + '\n\n';
-            } else {
-              sections.push(items);
-            }
-          }
-          break;
-        }
-
-        case 'PRE':
-        case 'CODE': {
-          const code = element.textContent?.trim();
-          if (code) {
-            // Use language class if present, otherwise plaintext
-            const language = element.className.includes('language-')
-              ? element.className.match(/language-(\w+)/)?.[1] || 'plaintext'
-              : 'plaintext';
-
-            const codeBlock = '```' + language + '\n' + code + '\n```\n\n';
-            if (inSection) {
-              currentSection += codeBlock;
-            } else {
-              sections.push('## Code Example\n\n' + codeBlock);
-            }
-          }
-          break;
-        }
-      }
-    });
-
-    // Save the last section if we have one
-    if (inSection && currentSection.trim()) {
-      sections.push(currentSection.trim());
-    }
-
-    // Extract any remaining important content
-    const remainingParagraphs = Array.from(contentClone.querySelectorAll('p'))
-      .filter(p => !p.previousElementSibling?.matches('h1, h2') && p.textContent?.trim())
-      .map(p => p.textContent?.trim())
-      .filter(Boolean)
-      .join('\n\n');
-
-    if (remainingParagraphs) {
-      sections.push('## Additional Information\n\n' + remainingParagraphs);
-    }
-
-    // Extract code samples
-    const codeSamples = await this.extractCodeSamples(document);
-    if (codeSamples.length > 0) {
-      let codeSection = '## Code Examples\n\n';
-      codeSamples.forEach((code, index) => {
-        codeSection += `### Example ${index + 1}\n\`\`\`\n${code}\n\`\`\`\n\n`;
-      });
-      sections.push(codeSection.trim());
-    }
-
-    // Extract props table
-    const propsText = this.extractPropsTable(document);
-    if (propsText) {
-      sections.push(propsText.trim());
-    }
-
-    // Combine all sections
-    text = sections.join('\n\n');
-
-    return {
-      content: text,
-      metadata: {
-        type: 'overview',
-        pattern: {
-          name: title || '',
-          type: 'component',
-          description: firstParagraph || '',
-          usageContexts: [],
-          relatedPatterns: []
-        }
-      }
-    };
   }
 }
 
 export class GitHubPagesExtractor implements ContentExtractor {
-  canHandle(document: Document): boolean {
-    try {
-      // First check if it's a Storybook site
-      const isStorybook = document.querySelector('#storybook-root, .sbdocs, [data-nodetype="root"]') !== null ||
-                         document.querySelector('meta[name="storybook-version"]') !== null ||
-                         document.baseURI?.includes('path=/docs/') ||
-                         document.baseURI?.includes('path=/story/') ||
-                         document.querySelector('.sbdocs-wrapper, .docs-story, .sb-show-main') !== null;
-
-      if (isStorybook) {
-        return false;
-      }
-
-      // Then check if it's a GitHub Pages site
-      const isGitHubPages = window.location.hostname.includes('github.io');
-      if (isGitHubPages) {
-        // Additional check for GitHub Pages specific elements
-        return document.querySelector('.markdown-body, .site-footer, .page-header') !== null;
-      }
-      return false;
-    } catch {
-      // Fallback to checking document URL if window.location is not available
-      const baseURI = document.baseURI || '';
-      const isStorybook = baseURI.includes('path=/docs/') || baseURI.includes('path=/story/');
-      return !isStorybook && baseURI.includes('github.io');
-    }
-  }
-
   async extractContent(document: Document): Promise<ExtractedContent> {
     // Remove navigation and footer
     document.querySelectorAll('nav, header, footer').forEach(el => el.remove());
@@ -515,11 +549,6 @@ export class GitHubPagesExtractor implements ContentExtractor {
 }
 
 export class DefaultExtractor implements ContentExtractor {
-  canHandle(_document: Document): boolean {
-    // Document parameter not used since this is a fallback extractor
-    return true;
-  }
-
   async extractContent(document: Document): Promise<ExtractedContent> {
     // Remove common non-content elements
     document.querySelectorAll('style, script, nav, header, footer').forEach(el => el.remove());
