@@ -57,7 +57,7 @@ export interface StorageProvider {
   getDocument(url: string): Promise<DocumentMetadata | null>;
 }
 
-export type DocsCrawlerType = 'default' | 'chromium' | 'cheerio' | 'github';
+export type DocsCrawlerType = 'crawlee' | 'github';
 
 export interface CrawlerOptions {
   maxDepth?: number;

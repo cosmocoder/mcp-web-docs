@@ -12,9 +12,6 @@ export interface DocsConfig {
   cacheSize: number;
   dbPath: string;
   vectorDbPath: string;
-  experimental?: {
-    useChromiumForDocsCrawling?: boolean;
-  };
 }
 
 const DATA_DIR = join(homedir(), '.mcp-web-docs');
@@ -26,11 +23,7 @@ const DEFAULT_CONFIG: Omit<DocsConfig, 'openaiApiKey'> = {
   maxConcurrentRequests: 3, // Allow concurrent requests for better performance while maintaining stability
   cacheSize: 1000,
   dbPath: join(DATA_DIR, 'docs.db'),
-  vectorDbPath: join(DATA_DIR, 'vectors'),
-  experimental: {
-    // Enable Chromium by default for better JS support
-    useChromiumForDocsCrawling: true
-  }
+  vectorDbPath: join(DATA_DIR, 'vectors')
 };
 
 export async function loadConfig(): Promise<DocsConfig> {
@@ -70,10 +63,7 @@ export async function loadConfig(): Promise<DocsConfig> {
   console.debug('[Config] Configuration loaded:', {
     ...config,
     openaiApiKey: '***',
-    githubToken: githubToken ? '***' : undefined,
-    experimental: {
-      useChromiumForDocsCrawling: config.experimental?.useChromiumForDocsCrawling
-    }
+    githubToken: githubToken ? '***' : undefined
   });
 
   return config;
