@@ -2,42 +2,84 @@ import { PlaywrightCrawler, Dataset, RequestQueue } from 'crawlee';
 import { CrawlResult } from '../types.js';
 import { BaseCrawler } from './base.js';
 import { contentExtractors } from './content-extractors.js';
+import { generateDocId } from '../util/docs.js';
 
 export class CrawleeCrawler extends BaseCrawler {
   private crawler: PlaywrightCrawler | null = null;
+  private requestQueue: RequestQueue | null = null;
   private results: CrawlResult[] = [];
-  private static readonly BATCH_SIZE = 50;
+  private websiteId: string = '';
+  private static readonly BATCH_SIZE = 20; // Smaller batches for faster processing
 
   private async processBatch(): Promise<CrawlResult[]> {
     if (this.results.length === 0) return [];
 
-    const dataset = await Dataset.open();
-    await dataset.pushData(this.results);
-    const resultsToReturn = [...this.results];
+    // Use website-specific dataset
+    const dataset = await Dataset.open(this.websiteId);
+
+    // Process results in chunks for better memory management
+    const resultsToProcess = [...this.results];
     this.results = [];
-    return resultsToReturn;
+
+    // Push data in smaller chunks
+    const chunkSize = 5;
+    for (let i = 0; i < resultsToProcess.length; i += chunkSize) {
+      const chunk = resultsToProcess.slice(i, i + chunkSize);
+      await dataset.pushData(chunk);
+    }
+
+    return resultsToProcess;
   }
 
   async *crawl(url: string): AsyncGenerator<CrawlResult, void, unknown> {
     console.debug(`[${this.constructor.name}] Starting crawl of: ${url}`);
 
-    // Create a request queue with deduplication
-    const requestQueue = await RequestQueue.open();
-    await requestQueue.addRequest({
+    const self = this;
+
+    // Set up website ID and request queue
+    this.websiteId = generateDocId(url, new URL(url).hostname);
+    console.debug(`[CrawleeCrawler] Using website ID: ${this.websiteId}`);
+
+    // Create queue with website ID in storage directory
+    console.debug(`[CrawleeCrawler] Opening request queue: ${this.websiteId}`);
+    this.requestQueue = await RequestQueue.open(this.websiteId);
+
+    // Clear existing queue
+    console.debug(`[CrawleeCrawler] Clearing existing queue: ${this.websiteId}`);
+    await this.requestQueue.drop();
+
+    // Re-open queue after dropping
+    this.requestQueue = await RequestQueue.open(this.websiteId);
+
+    // Add initial request
+    console.debug(`[CrawleeCrawler] Adding initial request: ${url}`);
+    await this.requestQueue.addRequest({
       url,
       uniqueKey: new URL(url).pathname + new URL(url).search,
     });
 
-    const self = this;
+    // Clear existing dataset
+    console.debug(`[CrawleeCrawler] Opening dataset: ${this.websiteId}`);
+    const dataset = await Dataset.open(this.websiteId);
+    console.debug(`[CrawleeCrawler] Clearing existing dataset: ${this.websiteId}`);
+    await dataset.drop();
+
+    // Initialize crawler with the request queue
     this.crawler = new PlaywrightCrawler({
       maxRequestsPerCrawl: this.maxRequestsPerCrawl,
-      requestQueue,
-      // Add rate limiting
-      maxRequestsPerMinute: 60,
-      // Add automatic retries for failed requests
-      maxRequestRetries: 3,
-      // Increase default timeout
-      navigationTimeoutSecs: 30,
+      requestQueue: this.requestQueue!,
+      // Aggressive parallel processing
+      maxConcurrency: 20, // Maximum parallel processing
+      maxRequestsPerMinute: 600, // Very high rate limit
+      maxRequestRetries: 0, // No retries for fastest processing
+      navigationTimeoutSecs: 10, // Very short timeout
+      // Optimize browser pool
+      browserPoolOptions: {
+        maxOpenPagesPerBrowser: 5, // More pages per browser
+        useFingerprints: false, // Disable fingerprinting
+        operationTimeoutSecs: 15, // Short operation timeout
+        closeInactiveBrowserAfterSecs: 10 // Quick cleanup
+      },
       preNavigationHooks: [
         async ({ page }) => {
           // Set viewport
@@ -62,7 +104,7 @@ export class CrawleeCrawler extends BaseCrawler {
           log.debug('Waiting for page load...');
           await Promise.all([
             page.waitForLoadState('domcontentloaded'),
-            page.waitForLoadState('networkidle', { timeout: 10000 })
+            page.waitForLoadState('networkidle', { timeout: 5000 }) // Reduced network idle timeout
               .catch(() => log.debug('Network idle timeout - continuing anyway'))
           ]);
 
@@ -168,7 +210,18 @@ export class CrawleeCrawler extends BaseCrawler {
             }
           });
 
-          await enqueueLinks({
+          // Log current queue status
+          const queueInfo = await this.requestQueue!.getInfo();
+          if (queueInfo) {
+            log.info('Queue status:', {
+              pendingCount: queueInfo.pendingRequestCount || 0,
+              handledCount: queueInfo.handledRequestCount || 0,
+              totalCount: queueInfo.totalRequestCount || 0
+            });
+          }
+
+          // Enqueue links with logging
+          const enqueueResult = await enqueueLinks({
             strategy: 'same-domain',
             transformRequestFunction(req) {
               return {
@@ -176,6 +229,12 @@ export class CrawleeCrawler extends BaseCrawler {
                 uniqueKey: new URL(req.url).pathname + new URL(req.url).search
               };
             }
+          });
+
+          // Log enqueued links
+          log.info('Enqueued links:', {
+            processedCount: enqueueResult.processedRequests.length,
+            urls: enqueueResult.processedRequests.map(r => r.uniqueKey)
           });
 
           const title = await page.title();
@@ -325,7 +384,10 @@ export class CrawleeCrawler extends BaseCrawler {
       // Cleanup
       this.results = [];
       this.crawler = null;
-      await requestQueue.drop().catch(console.error);
+      if (this.requestQueue) {
+        await this.requestQueue.drop().catch(console.error);
+        this.requestQueue = null;
+      }
     }
   }
 
