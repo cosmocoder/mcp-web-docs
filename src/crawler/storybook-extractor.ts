@@ -179,33 +179,115 @@ export class StorybookExtractor implements ContentExtractor {
         await this.processSectionContent(child, sections, addedSections);
       }
     } catch (error) {
-      console.error('Error processing section content:', error);
+      logger.debug('Error processing section content:', error);
     }
   }
 
   private async processPropsTable(table: Element, sections: string[], addedSections: Set<string>): Promise<void> {
     this.addContentToSections('## Props', sections, addedSections);
     this.addContentToSections('', sections, addedSections);
-    this.addContentToSections('| Name | Description | Default |', sections, addedSections);
-    this.addContentToSections('|------|-------------|---------|', sections, addedSections);
+    this.addContentToSections('| Name | Type | Default |', sections, addedSections);
+    this.addContentToSections('|------|------|---------|', sections, addedSections);
 
-    const rows = Array.from(table.querySelectorAll('tr')).slice(1);
+    const rows = Array.from(table.querySelectorAll('tr, tbody > div[role="row"]'));
+
     for (const row of rows) {
-      const cells = row.querySelectorAll('td');
-      if (cells.length >= 3) {
-        const name = cells[0]?.textContent?.trim() || '';
-        const description = this.extractLinks(cells[1]);
-        const defaultValue = cells[2]?.textContent?.trim() || '-';
+      // Skip header rows
+      if (row.querySelector('th, [role="columnheader"]')) continue;
 
-        const typeInfo = cells[0]?.querySelector('span[class*="type"], code')?.textContent?.trim();
-        const type = typeInfo?.replace(/["']/g, '`');
+      const cells = row.querySelectorAll('td, [role="cell"]');
+      if (cells.length === 0) continue;
 
-        const formattedName = `${name}${type ? ` (\`${type}\`)` : ''}`;
-        const formattedDesc = description.replace(/\|/g, '\\|');
-        const formattedDefault = defaultValue.replace(/\|/g, '\\|').replace(/["']/g, '`');
+      let name = '';
+      let type = '';
+      let defaultValue = '-';
+      let required = false;
 
+      // Cell 0: Name
+      if (cells[0]) {
+        const nameCell = cells[0];
+        name = nameCell.textContent?.trim().split('\n')[0] || '';
+        required = name.includes('*') || nameCell.querySelector('[class*="required"]') !== null;
+        name = name.replace(/\*$/, '').trim();
+      }
+
+      // Cell 1: Type (in Storybook 7+, this is the Description column but contains type)
+      // The type values are often in nested generic/span elements
+      if (cells[1]) {
+        const typeCell = cells[1];
+
+        // Method 1: Look for individual type value elements (Storybook 7 format)
+        // These are typically div/span elements containing quoted strings like "primary", "secondary"
+        const typeValueElements = typeCell.querySelectorAll(
+          '[class*="type"] > *, ' +
+          'div > div:not(:has(table)):not(:has(button)), ' +
+          'span[class]:not(:has(*)), ' +
+          'code'
+        );
+
+        if (typeValueElements.length > 0) {
+          const typeValues = Array.from(typeValueElements)
+            .map(el => el.textContent?.trim())
+            .filter(v => v && !v.includes('Show') && !v.includes('Deprecated'))
+            .map(v => v?.replace(/^["']|["']$/g, '')) // Remove quotes
+            .filter((v, i, arr) => arr.indexOf(v) === i); // Dedupe
+
+          if (typeValues.length > 0) {
+            type = typeValues.join(' \\| ');
+          }
+        }
+
+        // Method 2: Fallback to full text content
+        if (!type) {
+          const typeText = typeCell.textContent?.trim() || '';
+          // Clean up the type text - remove "Show X more..." and normalize
+          type = typeText
+            .replace(/Show \d+ more\.\.\.?/gi, '')
+            .replace(/Show less\.\.\.?/gi, '')
+            .replace(/Deprecated:[^|]+/gi, '')
+            .trim();
+        }
+      }
+
+      // Cell 2: Default value
+      if (cells[2]) {
+        const defaultCell = cells[2];
+        defaultValue = defaultCell.textContent?.trim() || '-';
+      }
+
+      // If only 2 cells, second might be default
+      if (cells.length === 2 && !type) {
+        defaultValue = cells[1]?.textContent?.trim() || '-';
+        type = '-';
+      }
+
+      // Clean and format type
+      let formattedType = type
+        .replace(/["']/g, '')           // Remove remaining quotes
+        .replace(/\s+/g, ' ')           // Normalize whitespace
+        .replace(/\s*\|\s*/g, ' \\| ')  // Normalize pipe separators
+        .trim();
+
+      // For very long type lists, keep them but make them readable
+      if (formattedType.length > 150) {
+        const parts = formattedType.split(' \\| ');
+        if (parts.length > 6) {
+          formattedType = parts.slice(0, 6).join(' \\| ') + ` (${parts.length - 6} more)`;
+        }
+      }
+
+      // Clean default value
+      const formattedDefault = defaultValue
+        .replace(/\|/g, '\\|')
+        .replace(/^["']|["']$/g, '`$&`'.replace(/["']/g, ''))  // Wrap in backticks if quoted
+        .replace(/^"([^"]+)"$/, '`$1`')
+        .replace(/^'([^']+)'$/, '`$1`');
+
+      const formattedName = required ? `${name}*` : name;
+
+      if (name && name !== 'Name') {
         this.addContentToSections(
-          `| ${formattedName} | ${formattedDesc} | ${formattedDefault} |`,
+          `| ${formattedName} | ${formattedType || '-'} | ${formattedDefault} |`,
           sections,
           addedSections
         );
@@ -341,7 +423,81 @@ export class StorybookExtractor implements ContentExtractor {
       }
       this.addContentToSections('', sections, addedSections);
     } catch (error) {
-      console.error('Error processing list:', error);
+      logger.debug('Error processing list:', error);
+    }
+  }
+
+  /**
+   * Extract type annotations from inline code examples and prop documentation
+   */
+  private async extractTypeAnnotations(mainArea: Element, sections: string[], addedSections: Set<string>): Promise<void> {
+    try {
+      // Look for type definitions in code blocks
+      const codeBlocks = mainArea.querySelectorAll('pre code, .prismjs, [class*="highlight"]');
+
+      for (const block of codeBlocks) {
+        const code = block.textContent || '';
+
+        // Extract TypeScript interface/type definitions
+        const interfaceMatch = code.match(/interface\s+(\w+Props?)\s*\{([^}]+)\}/);
+        if (interfaceMatch) {
+          const [, name, body] = interfaceMatch;
+          if (!addedSections.has(`## ${name} Type`)) {
+            this.addContentToSections(`## ${name} Type`, sections, addedSections);
+            this.addContentToSections('```typescript', sections, addedSections);
+            this.addContentToSections(`interface ${name} {${body}}`, sections, addedSections);
+            this.addContentToSections('```', sections, addedSections);
+            this.addContentToSections('', sections, addedSections);
+          }
+        }
+
+        // Extract type alias definitions
+        const typeMatch = code.match(/type\s+(\w+)\s*=\s*([^;]+);/);
+        if (typeMatch) {
+          const [, name, definition] = typeMatch;
+          if (!addedSections.has(`Type: ${name}`)) {
+            this.addContentToSections(`**Type ${name}:** \`${definition.trim()}\``, sections, addedSections);
+            this.addContentToSections('', sections, addedSections);
+          }
+        }
+      }
+
+      // Look for prop annotations in inline code (e.g., buttonStyle="primary")
+      const inlineCodes = mainArea.querySelectorAll('code:not(pre code)');
+      const propAnnotations: Map<string, Set<string>> = new Map();
+
+      for (const code of inlineCodes) {
+        const text = code.textContent || '';
+        // Match prop="value" or prop='value' patterns
+        const propMatch = text.match(/(\w+)=["']([^"']+)["']/);
+        if (propMatch) {
+          const [, propName, value] = propMatch;
+          if (!propAnnotations.has(propName)) {
+            propAnnotations.set(propName, new Set());
+          }
+          propAnnotations.get(propName)?.add(value);
+        }
+      }
+
+      // If we found prop annotations, add them as discovered values
+      if (propAnnotations.size > 0) {
+        let hasAddedHeader = false;
+        for (const [propName, values] of propAnnotations) {
+          if (values.size > 1) {
+            if (!hasAddedHeader) {
+              this.addContentToSections('## Discovered Prop Values', sections, addedSections);
+              hasAddedHeader = true;
+            }
+            const valueList = Array.from(values).map(v => `"${v}"`).join(' | ');
+            this.addContentToSections(`- **${propName}**: ${valueList}`, sections, addedSections);
+          }
+        }
+        if (hasAddedHeader) {
+          this.addContentToSections('', sections, addedSections);
+        }
+      }
+    } catch (error) {
+      logger.debug('[StorybookExtractor] Error extracting type annotations:', error);
     }
   }
 
@@ -430,23 +586,72 @@ export class StorybookExtractor implements ContentExtractor {
         }
       }
 
-      const propsTable = mainArea.querySelector('.docblock-argstable');
+      // Find props/args table with multiple selectors for different Storybook versions
+      const propsTableSelectors = [
+        '.docblock-argstable',           // Storybook 6.x
+        '.docblock-argtable',            // Alternative naming
+        'table.docblock-table',          // Storybook 7.x
+        '[class*="ArgTable"]',           // React-based ArgTable
+        '[class*="argtable"]',           // Case variations
+        'table[class*="props"]',         // Generic props table
+        '.sb-argstable',                 // Another Storybook variant
+        '[data-testid="args-table"]',    // Test ID selector
+        '.docs-story + table',           // Table after story
+        'section:has(h2:contains("Props")) table', // Section with Props heading
+      ];
+
+      let propsTable: Element | null = null;
+      for (const selector of propsTableSelectors) {
+        try {
+          propsTable = mainArea.querySelector(selector);
+          if (propsTable) break;
+        } catch {
+          // Some selectors may not be valid in all browsers
+          continue;
+        }
+      }
+
+      // Also try to find ArgTypes component which renders the props
+      if (!propsTable) {
+        const argTypesSection = mainArea.querySelector('[class*="ArgTypes"], [class*="argtypes"]');
+        if (argTypesSection) {
+          propsTable = argTypesSection.querySelector('table');
+        }
+      }
+
       if (propsTable) {
         await this.processPropsTable(propsTable, sections, addedSections);
       }
 
+      // Also extract any inline type annotations from code examples
+      await this.extractTypeAnnotations(mainArea, sections, addedSections);
+
+      // Process iframes - Storybook loads docs content in iframes
       const iframes = mainArea.querySelectorAll('iframe');
       for (const iframe of iframes) {
         try {
           const iframeDoc = (iframe as HTMLIFrameElement).contentDocument;
           if (iframeDoc) {
-            const iframeContent = iframeDoc.querySelector('body');
+            // Look for props table in iframe
+            const iframePropsTable = iframeDoc.querySelector(
+              '.docblock-argstable, .docblock-argtable, table.docblock-table, [class*="ArgTable"]'
+            );
+            if (iframePropsTable && !propsTable) {
+              await this.processPropsTable(iframePropsTable, sections, addedSections);
+            }
+
+            // Process any other content in the iframe
+            const iframeContent = iframeDoc.querySelector('.sbdocs-content, #docs-root, body');
             if (iframeContent) {
               await this.processSection(iframeContent, sections, addedSections);
+
+              // Also try to extract type annotations from iframe
+              await this.extractTypeAnnotations(iframeContent, sections, addedSections);
             }
           }
         } catch (error) {
-          console.error('Error processing iframe:', error);
+          // Cross-origin iframe - expected for external content
+          logger.debug('Error processing iframe (may be cross-origin):', error);
         }
       }
 

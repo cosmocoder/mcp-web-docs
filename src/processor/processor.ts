@@ -1,8 +1,16 @@
 import { CrawlResult, DocumentChunk, DocumentProcessor, ProcessedDocument } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
 import { processHtmlContent } from './content.js';
-import { processMarkdownContent } from './markdown.js';
+import { processMarkdownContent, processExtractedContent } from './markdown.js';
 import { isMarkdownPath } from '../config.js';
+import { logger } from '../util/logger.js';
+
+// Extractors that return already-formatted markdown content
+const FORMATTED_CONTENT_EXTRACTORS = [
+  'StorybookExtractor',
+  'GithubPagesExtractor',
+  // Add more extractors here as they're implemented
+];
 
 async function* semanticChunker(
   content: string,
@@ -164,23 +172,40 @@ export class WebDocumentProcessor implements DocumentProcessor {
   ) {}
 
   async process(crawlResult: CrawlResult): Promise<ProcessedDocument> {
-    console.debug(`[WebDocumentProcessor] Processing ${crawlResult.url}`);
-    console.debug(`[WebDocumentProcessor] Content length: ${crawlResult.content.length} bytes`);
+    logger.debug(`[WebDocumentProcessor] Processing ${crawlResult.url}`);
+    logger.debug(`[WebDocumentProcessor] Content length: ${crawlResult.content.length} bytes`);
+    logger.debug(`[WebDocumentProcessor] Extractor used: ${crawlResult.extractorUsed || 'unknown'}`);
 
     try {
       // Determine content type and process accordingly
-      const processedContent = isMarkdownPath(crawlResult.path)
-        ? await processMarkdownContent(crawlResult)
-        : await processHtmlContent(crawlResult);
+      let processedContent;
+
+      // Check if content was extracted by a formatter that outputs markdown
+      const isFormattedContent = crawlResult.extractorUsed &&
+        FORMATTED_CONTENT_EXTRACTORS.includes(crawlResult.extractorUsed);
+
+      if (isFormattedContent) {
+        // Content is already formatted markdown from a custom extractor
+        logger.debug(`[WebDocumentProcessor] Using extracted content processor for ${crawlResult.extractorUsed}`);
+        processedContent = await processExtractedContent(crawlResult);
+      } else if (isMarkdownPath(crawlResult.path)) {
+        // Raw markdown file
+        logger.debug(`[WebDocumentProcessor] Using markdown processor for ${crawlResult.path}`);
+        processedContent = await processMarkdownContent(crawlResult);
+      } else {
+        // Raw HTML - needs parsing
+        logger.debug(`[WebDocumentProcessor] Using HTML processor for ${crawlResult.path}`);
+        processedContent = await processHtmlContent(crawlResult);
+      }
 
       if (!processedContent) {
-        console.error(`[WebDocumentProcessor] Failed to parse document content for ${crawlResult.url}`);
+        logger.error(`[WebDocumentProcessor] Failed to parse document content for ${crawlResult.url}`);
         throw new Error('Failed to parse document content');
       }
 
-      console.debug(`[WebDocumentProcessor] Successfully processed content for ${crawlResult.url}`);
-      console.debug(`[WebDocumentProcessor] Found ${processedContent.article.components.length} components`);
-      console.debug(`[WebDocumentProcessor] Creating chunks for ${processedContent.article.title}`);
+      logger.debug(`[WebDocumentProcessor] Successfully processed content for ${crawlResult.url}`);
+      logger.debug(`[WebDocumentProcessor] Found ${processedContent.article.components.length} components`);
+      logger.debug(`[WebDocumentProcessor] Creating chunks for ${processedContent.article.title}`);
 
       const chunks: DocumentChunk[] = [];
       let totalChunks = 0;
@@ -193,8 +218,8 @@ export class WebDocumentProcessor implements DocumentProcessor {
 
       // Process each component separately
       for (const component of processedContent.article.components) {
-        console.debug(`[WebDocumentProcessor] Processing component: ${component.title}`);
-        console.debug(`[WebDocumentProcessor] Component body length: ${component.body.length} bytes`);
+        logger.debug(`[WebDocumentProcessor] Processing component: ${component.title}`);
+        logger.debug(`[WebDocumentProcessor] Component body length: ${component.body.length} bytes`);
 
         const componentContent = `${component.title}\n\n${component.body}`;
         for await (const chunk of semanticChunker(componentContent, this.maxChunkSize, this.embeddings, metadata)) {
@@ -203,16 +228,16 @@ export class WebDocumentProcessor implements DocumentProcessor {
         }
       }
 
-      console.debug(`[WebDocumentProcessor] Created ${totalChunks} chunks`);
+      logger.debug(`[WebDocumentProcessor] Created ${totalChunks} chunks`);
 
       if (chunks.length === 0) {
-        console.error(`[WebDocumentProcessor] No valid chunks were created for ${crawlResult.url}`);
-        console.debug(`[WebDocumentProcessor] Original content length: ${crawlResult.content.length}`);
-        console.debug(`[WebDocumentProcessor] Processed content length: ${processedContent.content.length}`);
+        logger.warn(`[WebDocumentProcessor] No valid chunks were created for ${crawlResult.url}`);
+        logger.warn(`[WebDocumentProcessor] Original content length: ${crawlResult.content.length}`);
+        logger.warn(`[WebDocumentProcessor] Processed content length: ${processedContent.content.length}`);
         throw new Error('No valid chunks were created');
       }
 
-      console.debug(`[WebDocumentProcessor] Successfully processed ${crawlResult.url}`);
+      logger.debug(`[WebDocumentProcessor] Successfully processed ${crawlResult.url}`);
       return {
         metadata: {
           url: crawlResult.url,
@@ -222,8 +247,8 @@ export class WebDocumentProcessor implements DocumentProcessor {
         chunks
       };
     } catch (error) {
-      console.error(`[WebDocumentProcessor] Error processing ${crawlResult.url}:`, error);
-      console.debug(`[WebDocumentProcessor] Error details:`, error instanceof Error ? error.stack : error);
+      logger.error(`[WebDocumentProcessor] Error processing ${crawlResult.url}:`, error);
+      logger.error(`[WebDocumentProcessor] Error details:`, error instanceof Error ? error.stack : error);
       throw error;
     }
   }

@@ -167,8 +167,93 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
         .trim()
     };
   } catch (error) {
-    console.error('[MarkdownProcessor] Error processing markdown content:', error);
-    console.debug('[MarkdownProcessor] Error details:', error instanceof Error ? error.stack : error);
+    logger.debug('[MarkdownProcessor] Error processing markdown content:', error);
+    logger.debug('[MarkdownProcessor] Error details:', error instanceof Error ? error.stack : error);
+    return undefined;
+  }
+}
+
+/**
+ * Process content that was already extracted and formatted by a custom extractor
+ * (e.g., StorybookExtractor, GithubPagesExtractor).
+ *
+ * These extractors output markdown-formatted content, so we don't need to
+ * parse HTML - we just need to structure the content into sections.
+ */
+export async function processExtractedContent(page: CrawlResult): Promise<ProcessedContent | undefined> {
+  try {
+    logger.debug(`[ExtractedContentProcessor] Processing pre-extracted content for ${page.url}`);
+    logger.debug(`[ExtractedContentProcessor] Content length: ${page.content.length} bytes`);
+
+    const content = page.content;
+
+    if (!content || content.trim().length === 0) {
+      logger.debug(`[ExtractedContentProcessor] No content found in ${page.url}`);
+      return undefined;
+    }
+
+    // Parse markdown sections - the content is already in markdown format
+    const sections = parseMarkdownSections(content, 0);
+
+    logger.debug(`[ExtractedContentProcessor] Found ${sections.length} sections`);
+
+    // Convert sections to components, preserving the markdown content as-is
+    const components: ArticleComponent[] = sections.map(section => ({
+      title: section.title,
+      // Don't over-process - just trim and normalize whitespace
+      body: section.content.trim()
+    }));
+
+    // Filter out empty components but keep sections with minimal content
+    // (some sections like "## Props" header might have content in the next section)
+    const validComponents = components.filter(comp => comp.body.length > 0 || comp.title.length > 0);
+
+    if (validComponents.length === 0) {
+      // If no sections found, treat entire content as one component
+      logger.debug(`[ExtractedContentProcessor] No sections found, using entire content`);
+      const article: Article = {
+        url: page.url,
+        path: page.path,
+        title: page.title || 'Content',
+        components: [{
+          title: page.title || 'Content',
+          body: content.trim()
+        }]
+      };
+
+      return {
+        article,
+        content: content.trim()
+      };
+    }
+
+    // Extract title from first H1 if present, otherwise use page title
+    let title = page.title;
+    const firstH1Section = sections.find(s => s.level === 1);
+    if (firstH1Section) {
+      title = firstH1Section.title;
+    }
+
+    const article: Article = {
+      url: page.url,
+      path: page.path,
+      title: title || validComponents[0].title,
+      components: validComponents
+    };
+
+    logger.debug(`[ExtractedContentProcessor] Created article with ${validComponents.length} components`);
+    logger.debug(`[ExtractedContentProcessor] Total content length: ${content.length} bytes`);
+
+    return {
+      article,
+      content: validComponents
+        .map(comp => comp.title ? `${comp.title}\n\n${comp.body}` : comp.body)
+        .join('\n\n')
+        .trim()
+    };
+  } catch (error) {
+    logger.debug('[ExtractedContentProcessor] Error processing extracted content:', error);
+    logger.debug('[ExtractedContentProcessor] Error details:', error instanceof Error ? error.stack : error);
     return undefined;
   }
 }

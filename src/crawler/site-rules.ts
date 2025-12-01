@@ -55,6 +55,53 @@ export const siteRules: SiteDetectionRule[] = [
       // Wait for all animations and content updates to complete
       await page.waitForTimeout(1000);
 
+      // Scroll to bottom to trigger lazy loading of ArgTypes tables
+      await page.evaluate(async () => {
+        // Find the content iframe
+        const iframe = document.querySelector('iframe') as HTMLIFrameElement;
+        const contentDoc = iframe?.contentDocument || document;
+
+        // Scroll to bottom to load all content
+        const scrollContainer = contentDoc.querySelector('.sbdocs-content, #docs-root, body');
+        if (scrollContainer) {
+          scrollContainer.scrollTo(0, scrollContainer.scrollHeight);
+          await new Promise(resolve => setTimeout(resolve, 500));
+          scrollContainer.scrollTo(0, 0);
+        }
+      });
+
+      // Click on "Show code" buttons to reveal code examples
+      await page.evaluate(() => {
+        const showCodeButtons = Array.from(document.querySelectorAll('button'))
+          .filter(btn => btn.textContent?.toLowerCase().includes('show code'));
+        showCodeButtons.slice(0, 3).forEach(btn => btn.click()); // Limit to first 3
+      });
+
+      await page.waitForTimeout(500);
+
+      // Expand ArgTypes table rows and "Show more" buttons
+      await page.evaluate(async () => {
+        const iframe = document.querySelector('iframe') as HTMLIFrameElement;
+        const contentDoc = iframe?.contentDocument || document;
+
+        // Click expand buttons in args table
+        const expandBtns = contentDoc.querySelectorAll(
+          '[class*="argstable"] button[aria-expanded="false"], ' +
+          '[class*="argtable"] button[aria-expanded="false"]'
+        );
+        expandBtns.forEach(btn => (btn as HTMLButtonElement).click());
+
+        // Click all "Show X more..." buttons to reveal full type lists
+        const showMoreBtns = Array.from(contentDoc.querySelectorAll('button'))
+          .filter(btn => btn.textContent?.includes('Show') && btn.textContent?.includes('more'));
+        for (const btn of showMoreBtns) {
+          btn.click();
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      });
+
+      await page.waitForTimeout(500);
+
       // Log the number of links found for debugging
       const linkCount = await page.evaluate(() => {
         return document.querySelectorAll('.sidebar-item a, [data-nodetype="story"] a, [data-nodetype="document"] a').length;
