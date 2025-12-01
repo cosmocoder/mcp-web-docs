@@ -3,6 +3,7 @@ import { EmbeddingsProvider } from "../embeddings/types.js";
 import { DocumentStore } from "../storage/storage.js";
 import { QueryIntent, QueryIntentType } from "./query-processor.js";
 import { SearchResult } from "../types.js";
+import { logger } from "../util/logger.js";
 
 export interface RetrievalResult {
   chunks: EnhancedChunk[];
@@ -31,7 +32,7 @@ export class ContextRetriever {
       filterByIntent = true
     } = options;
 
-    console.debug(`[ContextRetriever] Retrieving context for intent: ${queryIntent.intent}`, {
+    logger.debug(`[ContextRetriever] Retrieving context for intent: ${queryIntent.intent}`, {
       embedding: {
         length: queryIntent.embedding.length,
         sample: queryIntent.embedding.slice(0, 5)
@@ -41,12 +42,12 @@ export class ContextRetriever {
 
     // Validate the embedding
     if (!queryIntent.embedding || queryIntent.embedding.length === 0) {
-      console.error('[ContextRetriever] Empty embedding in queryIntent');
+      logger.debug('[ContextRetriever] Empty embedding in queryIntent');
       return { chunks: [], relevanceScores: [] };
     }
 
     // Search for relevant chunks using the original query embedding
-    console.debug(`[ContextRetriever] Searching documents with embedding of length ${queryIntent.embedding.length}`);
+    logger.debug(`[ContextRetriever] Searching documents with embedding of length ${queryIntent.embedding.length}`);
     // Cast to any to work around TypeScript errors with the StorageProvider interface
     const searchResults = await (this.store as any).searchDocuments(
       queryIntent.embedding, // Use the pre-computed query embedding
@@ -57,14 +58,14 @@ export class ContextRetriever {
       }
     );
 
-    console.debug(`[ContextRetriever] Search returned ${searchResults.length} results`);
+    logger.debug(`[ContextRetriever] Search returned ${searchResults.length} results`);
 
     // Filter and process results
     const filteredResults = searchResults
       .filter((result: SearchResult) => {
         // Apply minimum relevance score threshold
         if (result.score < minScore) {
-          console.debug(`[ContextRetriever] Filtering out result with score ${result.score} < ${minScore}`);
+          logger.debug(`[ContextRetriever] Filtering out result with score ${result.score} < ${minScore}`);
           return false;
         }
 
@@ -88,7 +89,7 @@ export class ContextRetriever {
           const isAllowed = allowedTypes.includes(resultType);
 
           if (!isAllowed) {
-            console.debug(`[ContextRetriever] Filtering out result with type ${resultType} not in allowed types:`, allowedTypes);
+            logger.debug(`[ContextRetriever] Filtering out result with type ${resultType} not in allowed types:`, allowedTypes);
             return false;
           }
         }
@@ -97,12 +98,12 @@ export class ContextRetriever {
       })
       .slice(0, limit);
 
-    console.debug(`[ContextRetriever] After filtering, ${filteredResults.length} results remain`);
+    logger.debug(`[ContextRetriever] After filtering, ${filteredResults.length} results remain`);
 
     // Convert search results to EnhancedChunks
     const chunks: EnhancedChunk[] = filteredResults.map((result: SearchResult) => {
       // Log vector information for debugging
-      console.debug(`[ContextRetriever] Processing result:`, {
+      logger.debug(`[ContextRetriever] Processing result:`, {
         id: result.id,
         score: result.score,
         hasVector: !!result.vector,

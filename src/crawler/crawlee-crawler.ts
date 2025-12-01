@@ -6,6 +6,7 @@ import { siteRules } from './site-rules.js';
 import { QueueManager } from './queue-manager.js';
 import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
+import { logger } from '../util/logger.js';
 
 export class CrawleeCrawler extends BaseCrawler {
   private crawler: PlaywrightCrawler | null = null;
@@ -23,19 +24,19 @@ export class CrawleeCrawler extends BaseCrawler {
           await Promise.all([
             frame.waitForLoadState('domcontentloaded'),
             frame.waitForLoadState('networkidle', { timeout: 5000 })
-              .catch(() => console.debug('Frame network idle timeout - continuing anyway'))
+              .catch(() => logger.debug('Frame network idle timeout - continuing anyway'))
           ]);
           return frame;
         }
       } catch (error) {
-        console.debug('Error checking frame', { error: String(error) });
+        logger.debug('Error checking frame', { error: String(error) });
       }
       return null;
     }));
 
     const frame = contentFrames.find(f => f !== null) || null;
     if (frame) {
-      console.debug('Found content in iframe');
+      logger.debug('Found content in iframe');
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
     return frame;
@@ -79,7 +80,7 @@ export class CrawleeCrawler extends BaseCrawler {
   }
 
   async *crawl(url: string): AsyncGenerator<CrawlResult, void, unknown> {
-    console.debug(`[${this.constructor.name}] Starting crawl of: ${url}`);
+    logger.debug(`[${this.constructor.name}] Starting crawl of: ${url}`);
     await this.queueManager.initialize(url);
 
     this.crawler = new PlaywrightCrawler({
@@ -147,13 +148,13 @@ export class CrawleeCrawler extends BaseCrawler {
       }
 
       await crawlerPromise;
-      console.debug('Crawler finished');
+      logger.debug('Crawler finished');
 
       for (const result of await this.queueManager.processBatch()) {
         yield result;
       }
     } catch (error) {
-      console.error('Crawler error:', error);
+      logger.debug('Crawler error:', error);
       throw error;
     } finally {
       await this.queueManager.cleanup();
@@ -164,7 +165,7 @@ export class CrawleeCrawler extends BaseCrawler {
   abort(): void {
     super.abort();
     if (this.crawler) {
-      this.crawler.teardown().catch(console.error);
+      this.crawler.teardown().catch((err) => logger.error('Failed to teardown crawler:', err));
     }
   }
 }

@@ -1,4 +1,19 @@
 #!/usr/bin/env node
+
+// IMPORTANT: Suppress ALL stdout logging for MCP compatibility
+// MCP servers must only output JSON-RPC messages to stdout
+
+// Set environment variables to suppress Crawlee/Apify logging
+process.env.CRAWLEE_LOG_LEVEL = 'OFF';
+process.env.APIFY_LOG_LEVEL = 'OFF';
+
+// Import and suppress Crawlee logging
+import { log, Configuration } from 'crawlee';
+log.setLevel(log.LEVELS.OFF);
+
+// Configure Crawlee to be silent
+Configuration.getGlobalConfig().set('logLevel', 'OFF');
+
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {

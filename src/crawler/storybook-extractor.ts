@@ -1,4 +1,5 @@
 import { ContentExtractor, ExtractedContent } from './content-extractor-types.js';
+import { logger } from '../util/logger.js';
 
 export class StorybookExtractor implements ContentExtractor {
   private addContentToSections(content: string, sections: string[], addedSections: Set<string>): void {
@@ -83,7 +84,7 @@ export class StorybookExtractor implements ContentExtractor {
         await this.processSectionContent(content, sections, addedSections);
       }
     } catch (error) {
-      console.error('Error processing section:', error);
+      logger.debug('Error processing section:', error);
     }
   }
 
@@ -132,7 +133,7 @@ export class StorybookExtractor implements ContentExtractor {
           (button as HTMLButtonElement).click();
           await new Promise(resolve => setTimeout(resolve, 500));
         } catch (error) {
-          console.error('Error clicking expand button:', error);
+          logger.debug('Error clicking expand button:', error);
         }
       }
 
@@ -163,7 +164,7 @@ export class StorybookExtractor implements ContentExtractor {
 
           (button as HTMLButtonElement).click();
         } catch (error) {
-          console.error('Error handling code button:', error);
+          logger.debug('Error handling code button:', error);
         }
       }
 
@@ -235,7 +236,7 @@ export class StorybookExtractor implements ContentExtractor {
 
       // Find all sidebar-subheading-action buttons (the "Show/Hide" buttons)
       const sidebarButtons = document.querySelectorAll('button.sidebar-subheading-action');
-      console.debug(`[StorybookExtractor] Found ${sidebarButtons.length} sidebar buttons to expand`);
+      logger.debug(`[StorybookExtractor] Found ${sidebarButtons.length} sidebar buttons to expand`);
 
       // First pass: Click all buttons to show all sections
       for (const button of sidebarButtons) {
@@ -251,7 +252,7 @@ export class StorybookExtractor implements ContentExtractor {
 
       // Second pass: Click any new buttons that appeared
       const newButtons = document.querySelectorAll('button.sidebar-subheading-action');
-      console.debug(`[StorybookExtractor] Found ${newButtons.length} total sidebar buttons after expansion`);
+      logger.debug(`[StorybookExtractor] Found ${newButtons.length} total sidebar buttons after expansion`);
 
       for (const button of newButtons) {
         if (this.isElementVisible(button)) {
@@ -264,7 +265,7 @@ export class StorybookExtractor implements ContentExtractor {
       // Final wait to ensure all sections have expanded
       await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (error) {
-      console.error('[StorybookExtractor] Error expanding sidebar sections:', error);
+      logger.debug('[StorybookExtractor] Error expanding sidebar sections:', error);
     }
   }
 
@@ -324,7 +325,7 @@ export class StorybookExtractor implements ContentExtractor {
 
       this.addContentToSections('', sections, addedSections);
     } catch (error) {
-      console.error('Error processing table:', error);
+      logger.debug('Error processing table:', error);
     }
   }
 
@@ -382,7 +383,7 @@ export class StorybookExtractor implements ContentExtractor {
 
       const mainArea = await this.waitForStorybookContent(document);
       if (!mainArea) {
-        console.error('Failed to find Storybook content area');
+        logger.debug('Failed to find Storybook content area');
         return emptyResult;
       }
 
@@ -463,7 +464,7 @@ export class StorybookExtractor implements ContentExtractor {
         }
       };
     } catch (error) {
-      console.error('Error extracting Storybook content:', error);
+      logger.debug('Error extracting Storybook content:', error);
       return emptyResult;
     }
   }

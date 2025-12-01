@@ -8,6 +8,7 @@ import { ResponseGenerator, GeneratedResponse } from "./response-generator.js";
 import { ResponseValidator, ValidationResult } from "./validator.js";
 import { VersionManager } from "./version-manager.js";
 import { RAGCache } from "./cache.js";
+import { logger } from "../util/logger.js";
 
 export interface RAGResponse {
   response: GeneratedResponse;
@@ -80,7 +81,7 @@ export class RAGPipeline {
     try {
       // Process query and determine intent
       const queryIntent = await this.queryProcessor.processQuery(query);
-      console.debug('Query intent classified:', queryIntent);
+      logger.debug('Query intent classified:', queryIntent);
 
       // Retrieve relevant context
       const retrieval = await this.contextRetriever.retrieveContext(queryIntent, {
@@ -88,23 +89,23 @@ export class RAGPipeline {
         minScore: 0.7,
         filterByIntent: true
       });
-      console.debug('Retrieved context chunks:', retrieval.chunks.length);
+      logger.debug('Retrieved context chunks:', retrieval.chunks.length);
 
       // Assemble context
       const assembled = await this.contextAssembler.assembleContext(retrieval.chunks);
-      console.debug('Assembled context with relationships');
+      logger.debug('Assembled context with relationships');
 
       // Apply version awareness
       await this.versionManager.getVersionedContext(assembled, "1.0");
-      console.debug('Applied version context');
+      logger.debug('Applied version context');
 
       // Generate response
       const generatedResponse = await this.responseGenerator.generateResponse(assembled, queryIntent);
-      console.debug('Generated response');
+      logger.debug('Generated response');
 
       // Validate response
       const validation = await this.responseValidator.validateResponse(generatedResponse, assembled);
-      console.debug('Validated response:', validation);
+      logger.debug('Validated response:', validation);
 
       // Cache if validation passed
       if (validation.factCheck && validation.codeCheck && validation.consistencyCheck) {
@@ -113,7 +114,7 @@ export class RAGPipeline {
 
       return { response: generatedResponse, validation };
     } catch (error) {
-      console.error('Error processing RAG pipeline:', error);
+      logger.debug('Error processing RAG pipeline:', error);
       throw error;
     }
   }

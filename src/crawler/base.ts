@@ -1,6 +1,7 @@
 import { URL } from 'url';
 import { IGNORED_PATHS, RATE_LIMIT } from '../config.js';
 import { CrawlResult } from '../types.js';
+import { logger } from '../util/logger.js';
 
 export abstract class BaseCrawler {
   protected seenUrls: Set<string>;
@@ -52,20 +53,20 @@ export abstract class BaseCrawler {
 
       // Skip if already seen (using full URL including query params)
       if (this.seenUrls.has(urlString)) {
-        console.debug(`[${this.constructor.name}] Skipping already seen URL: ${urlString}`);
+        logger.debug(`[${this.constructor.name}] Skipping already seen URL: ${urlString}`);
         return false;
       }
 
       // Skip fragments only
       if (url.hash) {
-        console.debug(`[${this.constructor.name}] Skipping URL with hash: ${urlString}`);
+        logger.debug(`[${this.constructor.name}] Skipping URL with hash: ${urlString}`);
         return false;
       }
 
       // Skip non-HTML files only if they have a file extension
       const ext = url.pathname.split('.').pop()?.toLowerCase();
       if (ext && ext !== 'html' && ext !== 'htm') {
-        console.debug(`[${this.constructor.name}] Skipping non-HTML file: ${urlString}`);
+        logger.debug(`[${this.constructor.name}] Skipping non-HTML file: ${urlString}`);
         return false;
       }
 
@@ -81,13 +82,13 @@ export abstract class BaseCrawler {
       });
 
       if (isIgnored) {
-        console.debug(`[${this.constructor.name}] Skipping ignored path: ${urlString}`);
+        logger.debug(`[${this.constructor.name}] Skipping ignored path: ${urlString}`);
         return false;
       }
 
       return true;
     } catch (error) {
-      console.error(`[${this.constructor.name}] Error checking URL: ${urlString}`, error);
+      logger.debug(`[${this.constructor.name}] Error checking URL: ${urlString}`, error);
       return false;
     }
   }

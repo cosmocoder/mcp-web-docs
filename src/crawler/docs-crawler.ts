@@ -2,6 +2,7 @@ import { URL } from 'url';
 import { CrawlResult, DocsCrawlerType, WebCrawler } from '../types.js';
 import { CrawleeCrawler } from './crawlee-crawler.js';
 import { GitHubCrawler } from './github.js';
+import { logger } from '../util/logger.js';
 
 export class DocsCrawler implements WebCrawler {
   private readonly GITHUB_HOST = 'github.com';
@@ -17,16 +18,16 @@ export class DocsCrawler implements WebCrawler {
 
   async *crawl(url: string): AsyncGenerator<CrawlResult, DocsCrawlerType> {
     const startUrl = new URL(url);
-    console.debug(`[DocsCrawler] Starting crawl of ${startUrl}`);
+    logger.debug(`[DocsCrawler] Starting crawl of ${startUrl}`);
 
     if (this.isAborting) {
-      console.debug('[DocsCrawler] Crawl aborted');
+      logger.debug('[DocsCrawler] Crawl aborted');
       return 'crawlee';
     }
 
     // Handle GitHub repositories
     if (startUrl.host === this.GITHUB_HOST) {
-      console.debug('[DocsCrawler] Detected GitHub repository');
+      logger.debug('[DocsCrawler] Detected GitHub repository');
       const githubCrawler = new GitHubCrawler(
         this.maxDepth,
         this.maxRequestsPerCrawl,
@@ -41,14 +42,14 @@ export class DocsCrawler implements WebCrawler {
         }
         return 'github';
       } catch (e) {
-        console.error('[DocsCrawler] GitHub crawler failed:', e);
+        logger.debug('[DocsCrawler] GitHub crawler failed:', e);
         // Don't fall through to other crawlers for GitHub URLs
         throw e;
       }
     }
 
     // Use Crawlee for all other sites
-    console.debug('[DocsCrawler] Using Crawlee crawler');
+    logger.debug('[DocsCrawler] Using Crawlee crawler');
     const crawleeCrawler = new CrawleeCrawler(this.maxDepth, this.maxRequestsPerCrawl, this.onProgress);
     let pageCount = 0;
 
@@ -60,13 +61,13 @@ export class DocsCrawler implements WebCrawler {
       }
 
       if (pageCount >= this.MIN_PAGES) {
-        console.debug(`[DocsCrawler] Crawlee crawler successful (${pageCount} pages)`);
+        logger.debug(`[DocsCrawler] Crawlee crawler successful (${pageCount} pages)`);
         return 'crawlee';
       }
-      console.debug(`[DocsCrawler] Crawlee crawler found insufficient pages (${pageCount})`);
+      logger.debug(`[DocsCrawler] Crawlee crawler found insufficient pages (${pageCount})`);
       throw new Error(`Crawlee crawler found only ${pageCount} pages, need at least ${this.MIN_PAGES}`);
     } catch (e) {
-      console.debug('[DocsCrawler] Crawlee crawler failed:', e);
+      logger.debug('[DocsCrawler] Crawlee crawler failed:', e);
       throw e;
     }
   }

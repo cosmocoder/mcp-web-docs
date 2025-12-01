@@ -2,6 +2,7 @@ import { RequestQueue, Dataset, Log, EnqueueLinksOptions } from 'crawlee';
 import { generateDocId } from '../util/docs.js';
 import { CrawlResult } from '../types.js';
 import { SiteDetectionRule } from './site-rules.js';
+import { logger } from '../util/logger.js';
 
 export class QueueManager {
   private requestQueue: RequestQueue | null = null;
@@ -11,7 +12,7 @@ export class QueueManager {
 
   async initialize(url: string): Promise<void> {
     this.websiteId = generateDocId(url, new URL(url).hostname);
-    console.debug(`[QueueManager] Using website ID: ${this.websiteId}`);
+    logger.debug(`[QueueManager] Using website ID: ${this.websiteId}`);
 
     // Initialize queue
     this.requestQueue = await RequestQueue.open(this.websiteId);
@@ -93,7 +94,7 @@ export class QueueManager {
   async cleanup(): Promise<void> {
     this.results = [];
     if (this.requestQueue) {
-      await this.requestQueue.drop().catch(console.error);
+      await this.requestQueue.drop().catch((err) => logger.error('Failed to drop request queue:', err));
       this.requestQueue = null;
     }
   }

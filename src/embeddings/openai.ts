@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { EmbeddingsProvider } from './types.js';
+import { logger } from '../util/logger.js';
 
 export class OpenAIEmbeddings implements EmbeddingsProvider {
   private openai: OpenAI;
@@ -58,7 +59,7 @@ export class OpenAIEmbeddings implements EmbeddingsProvider {
 
       return embedding;
     } catch (error) {
-      console.error('Error generating embedding:', error);
+      logger.debug('Error generating embedding:', error);
       throw error;
     }
   }

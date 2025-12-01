@@ -1,6 +1,7 @@
 import { URL } from 'url';
 import { CrawlResult } from '../types.js';
 import { BaseCrawler } from './base.js';
+import { logger } from '../util/logger.js';
 
 interface GitHubFile {
   path: string;
@@ -34,10 +35,10 @@ export class GitHubCrawler extends BaseCrawler {
   }
 
   async *crawl(url: string): AsyncGenerator<CrawlResult, void, unknown> {
-    console.debug(`[${this.constructor.name}] Crawling GitHub repository: ${url}`);
+    logger.debug(`[${this.constructor.name}] Crawling GitHub repository: ${url}`);
 
     if (this.isAborting) {
-      console.debug('[GitHubCrawler] Crawl aborted');
+      logger.debug('[GitHubCrawler] Crawl aborted');
       return;
     }
 
@@ -58,11 +59,11 @@ export class GitHubCrawler extends BaseCrawler {
         }
       } else {
         // Fall back to processing markdown files in root
-        console.debug('[GitHubCrawler] No documentation directory found, processing root markdown files');
+        logger.debug('[GitHubCrawler] No documentation directory found, processing root markdown files');
         yield* this.processDirectory(repoInfo, '');
       }
     } catch (error) {
-      console.error('[GitHubCrawler] Error crawling repository:', error);
+      logger.debug('[GitHubCrawler] Error crawling repository:', error);
     }
   }
 
@@ -104,7 +105,7 @@ export class GitHubCrawler extends BaseCrawler {
         }
       }
     } catch (error) {
-      console.error('[GitHubCrawler] Error finding documentation directories:', error);
+      logger.debug('[GitHubCrawler] Error finding documentation directories:', error);
     }
 
     return dirs;
@@ -135,7 +136,7 @@ export class GitHubCrawler extends BaseCrawler {
         }
       }
     } catch (error) {
-      console.error(`[GitHubCrawler] Error processing directory ${path}:`, error);
+      logger.debug(`[GitHubCrawler] Error processing directory ${path}:`, error);
     }
   }
 
@@ -166,7 +167,7 @@ export class GitHubCrawler extends BaseCrawler {
 
       return await response.json();
     } catch (error) {
-      console.error(`[GitHubCrawler] Error fetching repo contents for ${path}:`, error);
+      logger.debug(`[GitHubCrawler] Error fetching repo contents for ${path}:`, error);
       return [];
     }
   }
@@ -191,7 +192,7 @@ export class GitHubCrawler extends BaseCrawler {
 
       return await response.text();
     } catch (error) {
-      console.error(`[GitHubCrawler] Error fetching content for ${path}:`, error);
+      logger.debug(`[GitHubCrawler] Error fetching content for ${path}:`, error);
       return null;
     }
   }

@@ -6,6 +6,7 @@ import { mkdir } from 'fs/promises';
 import { dirname } from 'path';
 import { DocumentMetadata, ProcessedDocument, SearchResult, SearchOptions, StorageProvider } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
+import { logger } from '../util/logger.js';
 
 type LanceDbRow = {
   url: string;
@@ -42,7 +43,7 @@ export class DocumentStore implements StorageProvider {
     private readonly embeddings: EmbeddingsProvider,
     maxCacheSize: number = 1000
   ) {
-    console.debug(`[DocumentStore] Initializing with paths:`, {
+    logger.debug(`[DocumentStore] Initializing with paths:`, {
       dbPath,
       vectorDbPath,
       maxCacheSize
@@ -51,7 +52,7 @@ export class DocumentStore implements StorageProvider {
   }
 
   async initialize(): Promise<void> {
-    console.debug(`[DocumentStore] Starting initialization with paths:`, {
+    logger.debug(`[DocumentStore] Starting initialization with paths:`, {
       dbPath: this.dbPath,
       vectorDbPath: this.vectorDbPath
     });
@@ -59,28 +60,28 @@ export class DocumentStore implements StorageProvider {
     try {
       // Create directories with error handling
       try {
-        console.debug(`[DocumentStore] Creating SQLite directory: ${dirname(this.dbPath)}`);
+        logger.debug(`[DocumentStore] Creating SQLite directory: ${dirname(this.dbPath)}`);
         await mkdir(dirname(this.dbPath), { recursive: true });
-        console.debug(`[DocumentStore] Creating LanceDB directory: ${this.vectorDbPath}`);
+        logger.debug(`[DocumentStore] Creating LanceDB directory: ${this.vectorDbPath}`);
         await mkdir(this.vectorDbPath, { recursive: true });
       } catch (error) {
-        console.error('[DocumentStore] Error creating directories:', error);
+        logger.error('[DocumentStore] Error creating directories:', error);
         throw new Error(`Failed to create storage directories: ${error instanceof Error ? error.message : String(error)}`);
       }
 
       // Initialize SQLite with error handling
       try {
-        console.debug(`[DocumentStore] Opening SQLite database at ${this.dbPath}`);
+        logger.debug(`[DocumentStore] Opening SQLite database at ${this.dbPath}`);
         this.sqliteDb = await open({
           filename: this.dbPath,
           driver: sqlite3.Database
         });
 
-        console.debug(`[DocumentStore] Configuring SQLite database`);
+        logger.debug(`[DocumentStore] Configuring SQLite database`);
         await this.sqliteDb.exec('PRAGMA busy_timeout = 5000;');
         await this.sqliteDb.exec('PRAGMA journal_mode = WAL;');
       } catch (error) {
-        console.error('[DocumentStore] Error initializing SQLite:', error);
+        logger.error('[DocumentStore] Error initializing SQLite:', error);
         throw new Error(`Failed to initialize SQLite: ${error instanceof Error ? error.message : String(error)}`);
       }
 
@@ -97,16 +98,16 @@ export class DocumentStore implements StorageProvider {
 
       // Initialize LanceDB with error handling
       try {
-        console.debug(`[DocumentStore] Connecting to LanceDB at ${this.vectorDbPath}`);
+        logger.debug(`[DocumentStore] Connecting to LanceDB at ${this.vectorDbPath}`);
         this.lanceConn = await lancedb.connect(this.vectorDbPath);
 
-        console.debug(`[DocumentStore] Getting table list`);
+        logger.debug(`[DocumentStore] Getting table list`);
         const tableNames = await this.lanceConn.tableNames();
-        console.debug(`[DocumentStore] Existing tables:`, tableNames);
+        logger.debug(`[DocumentStore] Existing tables:`, tableNames);
 
         // Only create the table if it doesn't exist
         if (!tableNames.includes('chunks')) {
-          console.debug(`[DocumentStore] Creating chunks table with dimensions: ${this.embeddings.dimensions}`);
+          logger.debug(`[DocumentStore] Creating chunks table with dimensions: ${this.embeddings.dimensions}`);
           // Create table with sample row to establish schema
           const sampleRow = [{
             url: '',
@@ -133,31 +134,31 @@ export class DocumentStore implements StorageProvider {
 
           // Create table with default options
           this.lanceTable = await this.lanceConn.createTable('chunks', sampleRow);
-          console.debug(`[DocumentStore] Removing sample row`);
+          logger.debug(`[DocumentStore] Removing sample row`);
           await this.lanceTable.delete("url = ''");
-          console.debug(`[DocumentStore] New chunks table created successfully`);
+          logger.debug(`[DocumentStore] New chunks table created successfully`);
         } else {
-          console.debug(`[DocumentStore] Using existing chunks table`);
+          logger.debug(`[DocumentStore] Using existing chunks table`);
           this.lanceTable = await this.lanceConn.openTable('chunks');
         }
 
         // Verify table is accessible
         const rowCount = await this.lanceTable.countRows();
-        console.debug(`[DocumentStore] Chunks table initialized, contains ${rowCount} rows`);
+        logger.debug(`[DocumentStore] Chunks table initialized, contains ${rowCount} rows`);
       } catch (error) {
-        console.error('[DocumentStore] Error initializing LanceDB:', error);
+        logger.error('[DocumentStore] Error initializing LanceDB:', error);
         throw new Error(`Failed to initialize LanceDB: ${error instanceof Error ? error.message : String(error)}`);
       }
 
-      console.debug(`[DocumentStore] All storage components initialized successfully`);
+      logger.debug(`[DocumentStore] All storage components initialized successfully`);
     } catch (error) {
-      console.error('[DocumentStore] Error initializing storage:', error);
+      logger.error('[DocumentStore] Error initializing storage:', error);
       throw error;
     }
   }
 
   async addDocument(doc: ProcessedDocument): Promise<void> {
-    console.debug(`[DocumentStore] Starting addDocument for:`, {
+    logger.debug(`[DocumentStore] Starting addDocument for:`, {
       url: doc.metadata.url,
       title: doc.metadata.title,
       chunks: doc.chunks.length
@@ -165,17 +166,17 @@ export class DocumentStore implements StorageProvider {
 
     // Add diagnostic logging for vector dimensions
     if (doc.chunks.length > 0) {
-      console.debug(`[DocumentStore] Sample vector dimensions: ${doc.chunks[0].vector.length}`);
-      console.debug(`[DocumentStore] Sample vector first 5 values: ${doc.chunks[0].vector.slice(0, 5)}`);
+      logger.debug(`[DocumentStore] Sample vector dimensions: ${doc.chunks[0].vector.length}`);
+      logger.debug(`[DocumentStore] Sample vector first 5 values: ${doc.chunks[0].vector.slice(0, 5)}`);
     }
 
     // Validate storage initialization
     if (!this.sqliteDb) {
-      console.error('[DocumentStore] SQLite not initialized during addDocument');
+      logger.debug('[DocumentStore] SQLite not initialized during addDocument');
       throw new Error('SQLite storage not initialized');
     }
     if (!this.lanceTable) {
-      console.error('[DocumentStore] LanceDB not initialized during addDocument');
+      logger.debug('[DocumentStore] LanceDB not initialized during addDocument');
       throw new Error('LanceDB storage not initialized');
     }
 
@@ -183,10 +184,10 @@ export class DocumentStore implements StorageProvider {
       // Check if document already exists
       const existing = await this.getDocument(doc.metadata.url);
       if (existing) {
-        console.debug(`[DocumentStore] Existing document found, will update:`, existing);
+        logger.debug(`[DocumentStore] Existing document found, will update:`, existing);
       }
 
-      console.debug(`[DocumentStore] Starting SQLite transaction`);
+      logger.debug(`[DocumentStore] Starting SQLite transaction`);
       await this.sqliteDb.run('BEGIN TRANSACTION');
 
       // Add metadata to SQLite
@@ -194,11 +195,11 @@ export class DocumentStore implements StorageProvider {
         'INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed) VALUES (?, ?, ?, ?)',
         [doc.metadata.url, doc.metadata.title, doc.metadata.favicon, doc.metadata.lastIndexed.toISOString()]
       );
-      console.debug(`[DocumentStore] Added metadata to SQLite`);
+      logger.debug(`[DocumentStore] Added metadata to SQLite`);
 
       // Delete existing chunks for this document
       await this.lanceTable.delete(`url = '${doc.metadata.url}'`);
-      console.debug(`[DocumentStore] Deleted existing chunks`);
+      logger.debug(`[DocumentStore] Deleted existing chunks`);
 
       // Add new chunks to LanceDB
       const rows = doc.chunks.map(chunk => ({
@@ -224,20 +225,16 @@ export class DocumentStore implements StorageProvider {
         props_description: chunk.metadata.props?.map(p => p.description) || ['']
       })) as LanceDbRow[];
 
-      console.debug(`[DocumentStore] Adding ${rows.length} chunks to LanceDB`);
+      logger.debug(`[DocumentStore] Adding ${rows.length} chunks to LanceDB`);
       await this.lanceTable.add(rows);
 
       // Verify data was added
       const rowCount = await this.lanceTable.countRows();
-      console.debug(`[DocumentStore] Table now contains ${rowCount} rows`);
-
-      // Log a sample of the data
-      const sampleData = await this.lanceTable.search([]).limit(1).execute();
-      console.debug(`[DocumentStore] Sample data:`, sampleData);
+      logger.debug(`[DocumentStore] Table now contains ${rowCount} rows`);
 
       // Commit transaction
       await this.sqliteDb.run('COMMIT');
-      console.debug(`[DocumentStore] Committed transaction`);
+      logger.debug(`[DocumentStore] Committed transaction`);
 
       // Clear search cache for this URL
       this.clearCacheForUrl(doc.metadata.url);
@@ -246,7 +243,7 @@ export class DocumentStore implements StorageProvider {
       if (this.sqliteDb) {
         await this.sqliteDb.run('ROLLBACK');
       }
-      console.error('[DocumentStore] Error adding document:', error);
+      logger.error('[DocumentStore] Error adding document:', error);
       throw error;
     }
   }
@@ -258,7 +255,7 @@ export class DocumentStore implements StorageProvider {
 
     const { limit = 10, includeVectors = false, filterByType, textQuery } = options;
 
-    console.debug(`[DocumentStore] Searching documents with vector:`, {
+    logger.debug(`[DocumentStore] Searching documents with vector:`, {
       dimensions: queryVector.length,
       limit,
       includeVectors,
@@ -268,12 +265,12 @@ export class DocumentStore implements StorageProvider {
 
     // Add validation for query vector
     if (queryVector.length === 0 && !textQuery) {
-      console.error('[DocumentStore] Empty query vector and no text query provided');
+      logger.debug('[DocumentStore] Empty query vector and no text query provided');
       return [];
     }
 
     // Log search parameters
-    console.debug(`[DocumentStore] Search parameters:`, {
+    logger.debug(`[DocumentStore] Search parameters:`, {
       vectorDimensions: queryVector.length,
       expectedDimensions: this.embeddings.dimensions,
       limit,
@@ -282,29 +279,29 @@ export class DocumentStore implements StorageProvider {
 
     // Ensure vector dimensions match if provided
     if (queryVector.length > 0 && queryVector.length !== this.embeddings.dimensions) {
-      console.error(`[DocumentStore] Vector dimension mismatch: got ${queryVector.length}, expected ${this.embeddings.dimensions}`);
+      logger.debug(`[DocumentStore] Vector dimension mismatch: got ${queryVector.length}, expected ${this.embeddings.dimensions}`);
       // Consider padding or truncating the vector to match expected dimensions
       if (queryVector.length < this.embeddings.dimensions) {
         // Pad the vector with zeros
         queryVector = [...queryVector, ...new Array(this.embeddings.dimensions - queryVector.length).fill(0)];
-        console.debug(`[DocumentStore] Padded vector to ${queryVector.length} dimensions`);
+        logger.debug(`[DocumentStore] Padded vector to ${queryVector.length} dimensions`);
       } else {
         // Truncate the vector
         queryVector = queryVector.slice(0, this.embeddings.dimensions);
-        console.debug(`[DocumentStore] Truncated vector to ${queryVector.length} dimensions`);
+        logger.debug(`[DocumentStore] Truncated vector to ${queryVector.length} dimensions`);
       }
     }
 
     try {
       // Log query vector for debugging
-      console.debug(`[DocumentStore] Query vector first 5 values: ${queryVector.slice(0, 5)}`);
+      logger.debug(`[DocumentStore] Query vector first 5 values: ${queryVector.slice(0, 5)}`);
 
       // Ensure we have a valid query vector
       if (queryVector.length === 0) {
-        console.error('[DocumentStore] Empty query vector provided for search');
+        logger.debug('[DocumentStore] Empty query vector provided for search');
         // Use a default vector of the correct dimension instead of an empty array
         queryVector = new Array(this.embeddings.dimensions).fill(0);
-        console.debug(`[DocumentStore] Using default zero vector with ${queryVector.length} dimensions`);
+        logger.debug(`[DocumentStore] Using default zero vector with ${queryVector.length} dimensions`);
       }
 
       // Create search query
@@ -316,11 +313,11 @@ export class DocumentStore implements StorageProvider {
 
       const results = await query.execute();
 
-      console.debug(`[DocumentStore] Found ${results.length} results`);
+      logger.debug(`[DocumentStore] Found ${results.length} results`);
 
       // Log the first result for debugging if available
       if (results.length > 0) {
-        console.debug(`[DocumentStore] First result:`, {
+        logger.debug(`[DocumentStore] First result:`, {
           id: results[0].id,
           score: results[0].score,
           hasVector: 'vector' in results[0],
@@ -331,7 +328,7 @@ export class DocumentStore implements StorageProvider {
 
       const searchResults = results.map((result: any) => {
         // Log the raw result for debugging
-        console.debug(`[DocumentStore] Raw search result:`, {
+        logger.debug(`[DocumentStore] Raw search result:`, {
           id: result.id,
           url: result.url,
           hasVector: !!result.vector,
@@ -375,18 +372,18 @@ export class DocumentStore implements StorageProvider {
 
       return searchResults;
     } catch (error) {
-      console.error('[DocumentStore] Error searching documents:', error);
+      logger.error('[DocumentStore] Error searching documents:', error);
       throw error;
     }
   }
 
   async searchByText(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
-    console.debug(`[DocumentStore] Searching documents by text:`, { query, options });
+    logger.debug(`[DocumentStore] Searching documents by text:`, { query, options });
 
     const cacheKey = `text:${query}:${JSON.stringify(options)}`;
     const cached = this.searchCache.get(cacheKey);
     if (cached) {
-      console.debug(`[DocumentStore] Returning cached results`);
+      logger.debug(`[DocumentStore] Returning cached results`);
       return cached;
     }
 
@@ -408,7 +405,7 @@ export class DocumentStore implements StorageProvider {
       this.searchCache.set(cacheKey, results);
       return results;
     } catch (error) {
-      console.error('[DocumentStore] Error searching documents by text:', error);
+      logger.error('[DocumentStore] Error searching documents by text:', error);
       throw error;
     }
   }
@@ -418,7 +415,7 @@ export class DocumentStore implements StorageProvider {
       throw new Error('Storage not initialized');
     }
 
-    console.debug(`[DocumentStore] Listing documents`);
+    logger.debug(`[DocumentStore] Listing documents`);
 
     try {
       const rows = await this.sqliteDb.all<Array<{
@@ -428,7 +425,7 @@ export class DocumentStore implements StorageProvider {
         last_indexed: string;
       }>>('SELECT url, title, favicon, last_indexed FROM documents ORDER BY last_indexed DESC');
 
-      console.debug(`[DocumentStore] Found ${rows.length} documents`);
+      logger.debug(`[DocumentStore] Found ${rows.length} documents`);
 
       return rows.map(row => ({
         url: row.url,
@@ -437,7 +434,7 @@ export class DocumentStore implements StorageProvider {
         lastIndexed: new Date(row.last_indexed)
       }));
     } catch (error) {
-      console.error('[DocumentStore] Error listing documents:', error);
+      logger.error('[DocumentStore] Error listing documents:', error);
       throw error;
     }
   }
@@ -447,7 +444,7 @@ export class DocumentStore implements StorageProvider {
       throw new Error('Storage not initialized');
     }
 
-    console.debug(`[DocumentStore] Deleting document: ${url}`);
+    logger.debug(`[DocumentStore] Deleting document: ${url}`);
 
     try {
       await this.sqliteDb.run('BEGIN TRANSACTION');
@@ -459,12 +456,12 @@ export class DocumentStore implements StorageProvider {
 
       // Clear cache for this URL
       this.clearCacheForUrl(url);
-      console.debug(`[DocumentStore] Document deleted successfully`);
+      logger.debug(`[DocumentStore] Document deleted successfully`);
     } catch (error) {
       if (this.sqliteDb) {
         await this.sqliteDb.run('ROLLBACK');
       }
-      console.error('[DocumentStore] Error deleting document:', error);
+      logger.error('[DocumentStore] Error deleting document:', error);
       throw error;
     }
   }
@@ -474,17 +471,17 @@ export class DocumentStore implements StorageProvider {
       throw new Error('Storage not initialized');
     }
 
-    console.debug(`[DocumentStore] Getting document: ${url}`);
+    logger.debug(`[DocumentStore] Getting document: ${url}`);
 
     try {
       // Check if SQLite is properly initialized
       if (!this.sqliteDb) {
-        console.error('[DocumentStore] SQLite not initialized during getDocument');
+        logger.debug('[DocumentStore] SQLite not initialized during getDocument');
         throw new Error('Storage not initialized');
       }
 
       // Log the query being executed
-      console.debug(`[DocumentStore] Executing SQLite query for URL: ${url}`);
+      logger.debug(`[DocumentStore] Executing SQLite query for URL: ${url}`);
 
       const row = await this.sqliteDb.get<{
         url: string;
@@ -494,17 +491,17 @@ export class DocumentStore implements StorageProvider {
       }>('SELECT url, title, favicon, last_indexed FROM documents WHERE url = ?', [url]);
 
       if (!row) {
-        console.debug(`[DocumentStore] Document not found in SQLite: ${url}`);
+        logger.debug(`[DocumentStore] Document not found in SQLite: ${url}`);
         return null;
       }
 
       // Check if LanceDB has any chunks for this document
       if (this.lanceTable) {
         const chunks = await this.lanceTable.countRows(`url = '${url}'`);
-        console.debug(`[DocumentStore] Found ${chunks} chunks in LanceDB for ${url}`);
+        logger.debug(`[DocumentStore] Found ${chunks} chunks in LanceDB for ${url}`);
       }
 
-      console.debug(`[DocumentStore] Document found in SQLite:`, row);
+      logger.debug(`[DocumentStore] Document found in SQLite:`, row);
 
       return {
         url: row.url,
@@ -513,7 +510,7 @@ export class DocumentStore implements StorageProvider {
         lastIndexed: new Date(row.last_indexed)
       };
     } catch (error) {
-      console.error('[DocumentStore] Error getting document:', error);
+      logger.error('[DocumentStore] Error getting document:', error);
       throw error;
     }
   }
@@ -534,29 +531,29 @@ export class DocumentStore implements StorageProvider {
    */
   async validateVectors(): Promise<boolean> {
     if (!this.lanceTable) {
-      console.error('[DocumentStore] Cannot validate vectors: Storage not initialized');
+      logger.debug('[DocumentStore] Cannot validate vectors: Storage not initialized');
       throw new Error('Storage not initialized');
     }
 
     try {
       // Get total row count
       const rowCount = await this.lanceTable.countRows();
-      console.debug(`[DocumentStore] Vector validation: Table contains ${rowCount} rows`);
+      logger.debug(`[DocumentStore] Vector validation: Table contains ${rowCount} rows`);
 
       if (rowCount === 0) {
-        console.debug('[DocumentStore] Vector validation: No rows found in vector table');
+        logger.debug('[DocumentStore] Vector validation: No rows found in vector table');
         return false;
       }
 
       // Get a sample row
       const sample = await this.lanceTable.search([]).limit(1).execute();
       if (sample.length === 0) {
-        console.debug('[DocumentStore] Vector validation: No rows returned from search');
+        logger.debug('[DocumentStore] Vector validation: No rows returned from search');
         return false;
       }
 
       // Log detailed information about the sample
-      console.debug('[DocumentStore] Vector validation sample:', {
+      logger.debug('[DocumentStore] Vector validation sample:', {
         hasVector: 'vector' in sample[0],
         vectorType: typeof sample[0].vector,
         isArray: Array.isArray(sample[0].vector),
@@ -566,13 +563,13 @@ export class DocumentStore implements StorageProvider {
 
       // Try a simple vector search with a random vector
       const testVector = new Array(this.embeddings.dimensions).fill(0).map(() => Math.random());
-      console.debug(`[DocumentStore] Testing vector search with random vector of length ${testVector.length}`);
+      logger.debug(`[DocumentStore] Testing vector search with random vector of length ${testVector.length}`);
 
       const searchResults = await this.lanceTable.search(testVector).limit(1).execute();
-      console.debug(`[DocumentStore] Vector search test returned ${searchResults.length} results`);
+      logger.debug(`[DocumentStore] Vector search test returned ${searchResults.length} results`);
 
       if (searchResults.length > 0) {
-        console.debug('[DocumentStore] Vector search test result:', {
+        logger.debug('[DocumentStore] Vector search test result:', {
           score: searchResults[0].score,
           hasVector: 'vector' in searchResults[0],
           vectorLength: Array.isArray(searchResults[0].vector) ? searchResults[0].vector.length : 'N/A'
@@ -583,7 +580,7 @@ export class DocumentStore implements StorageProvider {
       // Even if scores are null, the search is still working
       return rowCount > 0 && sample.length > 0 && searchResults.length > 0;
     } catch (error) {
-      console.error('[DocumentStore] Error validating vectors:', error);
+      logger.error('[DocumentStore] Error validating vectors:', error);
       return false;
     }
   }

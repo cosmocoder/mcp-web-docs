@@ -1,6 +1,7 @@
 import { Readability } from '@mozilla/readability';
 import { JSDOM } from 'jsdom';
 import { CrawlResult } from '../types.js';
+import { logger } from '../util/logger.js';
 
 export interface ArticleComponent {
   title: string;
@@ -236,7 +237,7 @@ function extractSections(mainContent: Element): ArticleComponent[] {
 
 export async function processHtmlContent(page: CrawlResult): Promise<ProcessedContent | undefined> {
   try {
-    console.debug(`[ContentProcessor] Processing content for ${page.url}`);
+    logger.debug(`[ContentProcessor] Processing content for ${page.url}`);
 
     const dom = new JSDOM(page.content);
     const doc = dom.window.document;
@@ -246,12 +247,12 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
 
     // If no main content found, use Readability
     if (!mainContent) {
-      console.debug('[ContentProcessor] No main content found, trying Readability');
+      logger.debug('[ContentProcessor] No main content found, trying Readability');
       const reader = new Readability(doc);
       const readability = reader.parse();
 
       if (!readability) {
-        console.error(`[ContentProcessor] No content could be extracted from ${page.url}`);
+        logger.debug(`[ContentProcessor] No content could be extracted from ${page.url}`);
         return undefined;
       }
 
@@ -269,17 +270,17 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
       };
     }
 
-    console.debug('[ContentProcessor] Found main content, extracting sections');
+    logger.debug('[ContentProcessor] Found main content, extracting sections');
 
     // Extract sections from main content
     const components = extractSections(mainContent);
 
     if (components.length === 0) {
-      console.error(`[ContentProcessor] No valid content sections found in ${page.url}`);
+      logger.debug(`[ContentProcessor] No valid content sections found in ${page.url}`);
       return undefined;
     }
 
-    console.debug(`[ContentProcessor] Extracted ${components.length} sections`);
+    logger.debug(`[ContentProcessor] Extracted ${components.length} sections`);
 
     const article: Article = {
       url: page.url,
@@ -296,8 +297,8 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
         .trim()
     };
   } catch (error) {
-    console.error('[ContentProcessor] Error processing HTML content:', error);
-    console.debug('[ContentProcessor] Error details:', error instanceof Error ? error.stack : error);
+    logger.debug('[ContentProcessor] Error processing HTML content:', error);
+    logger.debug('[ContentProcessor] Error details:', error instanceof Error ? error.stack : error);
     return undefined;
   }
 }

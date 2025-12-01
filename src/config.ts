@@ -1,6 +1,7 @@
 import { join } from 'path';
 import { homedir } from 'os';
 import { mkdir } from 'fs/promises';
+import { logger } from './util/logger.js';
 
 export interface DocsConfig {
   openaiApiKey: string;
@@ -27,7 +28,7 @@ const DEFAULT_CONFIG: Omit<DocsConfig, 'openaiApiKey'> = {
 };
 
 export async function loadConfig(): Promise<DocsConfig> {
-  console.debug('[Config] Loading configuration');
+  logger.debug('[Config] Loading configuration');
 
   const openaiApiKey = process.env.OPENAI_API_KEY;
   if (!openaiApiKey) {
@@ -37,12 +38,12 @@ export async function loadConfig(): Promise<DocsConfig> {
   // Optional GitHub token for higher rate limits
   const githubToken = process.env.GITHUB_TOKEN;
   if (githubToken) {
-    console.debug('[Config] GitHub token found');
+    logger.debug('[Config] GitHub token found');
   }
 
   // Ensure data directory exists and set up Crawlee storage
   try {
-    console.debug(`[Config] Creating data directory: ${DATA_DIR}`);
+    logger.debug(`[Config] Creating data directory: ${DATA_DIR}`);
     await mkdir(DATA_DIR, { recursive: true });
 
     // Set Crawlee storage directory
@@ -50,7 +51,7 @@ export async function loadConfig(): Promise<DocsConfig> {
     process.env.CRAWLEE_STORAGE_DIR = crawleeStorageDir;
     await mkdir(crawleeStorageDir, { recursive: true });
   } catch (error) {
-    console.error('[Config] Error creating data directory:', error);
+    logger.debug('[Config] Error creating data directory:', error);
     throw error;
   }
 
@@ -60,7 +61,7 @@ export async function loadConfig(): Promise<DocsConfig> {
     githubToken
   };
 
-  console.debug('[Config] Configuration loaded:', {
+  logger.debug('[Config] Configuration loaded:', {
     ...config,
     openaiApiKey: '***',
     githubToken: githubToken ? '***' : undefined

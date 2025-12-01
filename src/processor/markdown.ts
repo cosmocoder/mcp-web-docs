@@ -1,5 +1,6 @@
 import { CrawlResult } from '../types.js';
 import { Article, ArticleComponent, ProcessedContent } from './content.js';
+import { logger } from '../util/logger.js';
 
 function cleanText(text: string): string {
   return text
@@ -48,7 +49,7 @@ function extractFrontMatter(content: string): {
       endLine: match[0].split('\n').length - 1
     };
   } catch (e) {
-    console.error('[MarkdownProcessor] Error parsing front matter:', e);
+    logger.debug('[MarkdownProcessor] Error parsing front matter:', e);
     return { frontMatter: {}, content, endLine: 0 };
   }
 }
@@ -129,7 +130,7 @@ function processCodeBlocks(content: string): string {
 
 export async function processMarkdownContent(page: CrawlResult): Promise<ProcessedContent | undefined> {
   try {
-    console.debug(`[MarkdownProcessor] Processing content for ${page.url}`);
+    logger.debug(`[MarkdownProcessor] Processing content for ${page.url}`);
 
     // Extract front matter
     const { frontMatter, content: mainContent, endLine } = extractFrontMatter(page.content);
@@ -147,7 +148,7 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
     const validComponents = components.filter(comp => comp.body.length > 0);
 
     if (validComponents.length === 0) {
-      console.error(`[MarkdownProcessor] No valid content sections found in ${page.url}`);
+      logger.debug(`[MarkdownProcessor] No valid content sections found in ${page.url}`);
       return undefined;
     }
 

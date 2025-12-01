@@ -1,4 +1,8 @@
-import { PlaywrightCrawlerOptions } from 'crawlee';
+import { PlaywrightCrawlerOptions, log } from 'crawlee';
+
+// Suppress Crawlee's stdout logging for MCP compatibility
+// MCP servers must only output JSON-RPC messages to stdout
+log.setLevel(log.LEVELS.OFF);
 
 export const getBrowserConfig = (requestQueue: any): Partial<PlaywrightCrawlerOptions> => ({
   maxRequestsPerCrawl: 1000,
