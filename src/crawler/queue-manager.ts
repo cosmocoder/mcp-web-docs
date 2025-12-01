@@ -1,6 +1,7 @@
 import { RequestQueue, Dataset, Log, EnqueueLinksOptions } from 'crawlee';
 import { generateDocId } from '../util/docs.js';
 import { CrawlResult } from '../types.js';
+import { SiteDetectionRule } from './site-rules.js';
 
 export class QueueManager {
   private requestQueue: RequestQueue | null = null;
@@ -28,7 +29,7 @@ export class QueueManager {
     await dataset.drop();
   }
 
-  async handleQueueAndLinks(enqueueLinks: (options: EnqueueLinksOptions) => Promise<any>, log: Log): Promise<void> {
+  async handleQueueAndLinks(enqueueLinks: (options: EnqueueLinksOptions) => Promise<any>, log: Log, rule: SiteDetectionRule): Promise<void> {
     const queueInfo = await this.requestQueue!.getInfo();
     if (queueInfo) {
       log.info('Queue status:', {
@@ -38,15 +39,23 @@ export class QueueManager {
       });
     }
 
-    const enqueueResult = await enqueueLinks({
+    const enqueueOptions: EnqueueLinksOptions = {
       strategy: 'same-domain',
       transformRequestFunction(req: any) {
+        const url = new URL(req.url);
         return {
           ...req,
-          uniqueKey: new URL(req.url).pathname + new URL(req.url).search
+          uniqueKey: url.pathname + url.search
         };
       }
-    });
+    };
+
+    // Add site-specific link selectors if provided
+    if (rule.linkSelectors?.length) {
+      enqueueOptions.selector = rule.linkSelectors.join(', ');
+    }
+
+    const enqueueResult = await enqueueLinks(enqueueOptions);
 
     log.info('Enqueued links:', {
       processedCount: enqueueResult.processedRequests.length,

@@ -24,7 +24,22 @@ export interface DocumentChunk {
   endLine: number;
   vector: number[];
   metadata: {
-    type: 'overview';  // Default type, let embeddings determine actual content type
+    type: 'overview' | 'api' | 'example' | 'usage';
+    version?: string;
+    framework?: string;
+    language?: string;
+    codeBlocks?: {
+      code: string;
+      language: string;
+      context: string;
+    }[];
+    props?: {
+      name: string;
+      type: string;
+      required: boolean;
+      defaultValue?: string;
+      description: string;
+    }[];
   };
 }
 
@@ -42,16 +57,46 @@ export interface ProcessedDocument {
 }
 
 export interface SearchResult {
+  id: string;
   content: string;
   url: string;
   title: string;
   score: number;
+  vector?: number[];  // Make vector optional
+  metadata: {
+    type: 'overview' | 'api' | 'example' | 'usage';
+    path: string;
+    lastUpdated: Date;
+    version?: string;
+    framework?: string;
+    language?: string;
+    codeBlocks?: {
+      code: string;
+      language: string;
+      context: string;
+    }[];
+    props?: {
+      name: string;
+      type: string;
+      required: boolean;
+      defaultValue?: string;
+      description: string;
+    }[];
+  };
+}
+
+export interface SearchOptions {
+  limit?: number;
+  includeVectors?: boolean;
+  filterByType?: 'overview' | 'api' | 'example' | 'usage' | 'component_usage' | 'concept' | 'troubleshooting' | 'general';
+  textQuery?: string;
 }
 
 export interface StorageProvider {
   initialize(): Promise<void>;
   addDocument(doc: ProcessedDocument): Promise<void>;
-  searchDocuments(query: string, limit?: number): Promise<SearchResult[]>;
+  searchDocuments(queryVector: number[], options?: SearchOptions): Promise<SearchResult[]>;
+  searchByText(query: string, options?: SearchOptions): Promise<SearchResult[]>;
   listDocuments(): Promise<DocumentMetadata[]>;
   deleteDocument(url: string): Promise<void>;
   getDocument(url: string): Promise<DocumentMetadata | null>;

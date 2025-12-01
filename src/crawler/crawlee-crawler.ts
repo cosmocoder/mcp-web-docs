@@ -105,7 +105,7 @@ export class CrawleeCrawler extends BaseCrawler {
                 await rule.prepare(page, log);
               }
 
-              await this.queueManager.handleQueueAndLinks(enqueueLinks, log);
+              await this.queueManager.handleQueueAndLinks(enqueueLinks, log, rule);
 
               const title = await page.title();
               const { content, extractorUsed } = await this.extractContent(page, rule.type, rule.extractor);
