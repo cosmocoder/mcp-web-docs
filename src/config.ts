@@ -4,7 +4,6 @@ import { mkdir } from 'fs/promises';
 import { logger } from './util/logger.js';
 
 export interface DocsConfig {
-  openaiApiKey: string;
   githubToken?: string;
   maxDepth: number;
   maxRequestsPerCrawl: number;
@@ -17,7 +16,7 @@ export interface DocsConfig {
 
 const DATA_DIR = join(homedir(), '.mcp-web-docs');
 
-const DEFAULT_CONFIG: Omit<DocsConfig, 'openaiApiKey'> = {
+const DEFAULT_CONFIG: DocsConfig = {
   maxDepth: 4,
   maxRequestsPerCrawl: 1000, // Match DocsCrawler default for better coverage
   maxChunkSize: 1000,
@@ -29,11 +28,6 @@ const DEFAULT_CONFIG: Omit<DocsConfig, 'openaiApiKey'> = {
 
 export async function loadConfig(): Promise<DocsConfig> {
   logger.debug('[Config] Loading configuration');
-
-  const openaiApiKey = process.env.OPENAI_API_KEY;
-  if (!openaiApiKey) {
-    throw new Error('OPENAI_API_KEY environment variable is required');
-  }
 
   // Optional GitHub token for higher rate limits
   const githubToken = process.env.GITHUB_TOKEN;
@@ -55,15 +49,13 @@ export async function loadConfig(): Promise<DocsConfig> {
     throw error;
   }
 
-  const config = {
+  const config: DocsConfig = {
     ...DEFAULT_CONFIG,
-    openaiApiKey,
     githubToken
   };
 
   logger.debug('[Config] Configuration loaded:', {
     ...config,
-    openaiApiKey: '***',
     githubToken: githubToken ? '***' : undefined
   });
 

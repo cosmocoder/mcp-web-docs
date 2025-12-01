@@ -22,14 +22,27 @@ function shouldLog(level: LogLevel): boolean {
   return LOG_LEVEL_PRIORITY[level] >= LOG_LEVEL_PRIORITY[currentLevel];
 }
 
+function formatArg(arg: unknown): string {
+  if (arg instanceof Error) {
+    // Error objects don't serialize well with JSON.stringify
+    return `${arg.name}: ${arg.message}${arg.stack ? `\n${arg.stack}` : ''}`;
+  }
+  if (typeof arg === 'object' && arg !== null) {
+    try {
+      return JSON.stringify(arg, null, 2);
+    } catch {
+      return String(arg);
+    }
+  }
+  return String(arg);
+}
+
 function formatMessage(level: LogLevel, message: string, ...args: unknown[]): string {
   const timestamp = new Date().toISOString();
   const prefix = `[${timestamp}] [${level.toUpperCase()}]`;
 
   if (args.length > 0) {
-    return `${prefix} ${message} ${args.map(a =>
-      typeof a === 'object' ? JSON.stringify(a, null, 2) : String(a)
-    ).join(' ')}`;
+    return `${prefix} ${message} ${args.map(formatArg).join(' ')}`;
   }
   return `${prefix} ${message}`;
 }

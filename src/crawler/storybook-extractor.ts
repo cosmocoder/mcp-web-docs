@@ -1,5 +1,7 @@
 import { ContentExtractor, ExtractedContent } from './content-extractor-types.js';
-import { logger } from '../util/logger.js';
+
+// NOTE: This class is serialized and runs in the browser via Playwright's evaluate()
+// Do NOT import Node.js modules here - use console.error for logging
 
 export class StorybookExtractor implements ContentExtractor {
   private addContentToSections(content: string, sections: string[], addedSections: Set<string>): void {
@@ -84,7 +86,7 @@ export class StorybookExtractor implements ContentExtractor {
         await this.processSectionContent(content, sections, addedSections);
       }
     } catch (error) {
-      logger.debug('Error processing section:', error);
+      console.error('Error processing section:', error);
     }
   }
 
@@ -133,7 +135,7 @@ export class StorybookExtractor implements ContentExtractor {
           (button as HTMLButtonElement).click();
           await new Promise(resolve => setTimeout(resolve, 500));
         } catch (error) {
-          logger.debug('Error clicking expand button:', error);
+          console.error('Error clicking expand button:', error);
         }
       }
 
@@ -164,7 +166,7 @@ export class StorybookExtractor implements ContentExtractor {
 
           (button as HTMLButtonElement).click();
         } catch (error) {
-          logger.debug('Error handling code button:', error);
+          console.error('Error handling code button:', error);
         }
       }
 
@@ -179,7 +181,7 @@ export class StorybookExtractor implements ContentExtractor {
         await this.processSectionContent(child, sections, addedSections);
       }
     } catch (error) {
-      logger.debug('Error processing section content:', error);
+      console.error('Error processing section content:', error);
     }
   }
 
@@ -318,7 +320,7 @@ export class StorybookExtractor implements ContentExtractor {
 
       // Find all sidebar-subheading-action buttons (the "Show/Hide" buttons)
       const sidebarButtons = document.querySelectorAll('button.sidebar-subheading-action');
-      logger.debug(`[StorybookExtractor] Found ${sidebarButtons.length} sidebar buttons to expand`);
+      console.error(`[StorybookExtractor] Found ${sidebarButtons.length} sidebar buttons to expand`);
 
       // First pass: Click all buttons to show all sections
       for (const button of sidebarButtons) {
@@ -334,7 +336,7 @@ export class StorybookExtractor implements ContentExtractor {
 
       // Second pass: Click any new buttons that appeared
       const newButtons = document.querySelectorAll('button.sidebar-subheading-action');
-      logger.debug(`[StorybookExtractor] Found ${newButtons.length} total sidebar buttons after expansion`);
+      console.error(`[StorybookExtractor] Found ${newButtons.length} total sidebar buttons after expansion`);
 
       for (const button of newButtons) {
         if (this.isElementVisible(button)) {
@@ -347,7 +349,7 @@ export class StorybookExtractor implements ContentExtractor {
       // Final wait to ensure all sections have expanded
       await new Promise(resolve => setTimeout(resolve, 1000));
     } catch (error) {
-      logger.debug('[StorybookExtractor] Error expanding sidebar sections:', error);
+      console.error('[StorybookExtractor] Error expanding sidebar sections:', error);
     }
   }
 
@@ -407,7 +409,7 @@ export class StorybookExtractor implements ContentExtractor {
 
       this.addContentToSections('', sections, addedSections);
     } catch (error) {
-      logger.debug('Error processing table:', error);
+      console.error('Error processing table:', error);
     }
   }
 
@@ -423,7 +425,7 @@ export class StorybookExtractor implements ContentExtractor {
       }
       this.addContentToSections('', sections, addedSections);
     } catch (error) {
-      logger.debug('Error processing list:', error);
+      console.error('Error processing list:', error);
     }
   }
 
@@ -497,7 +499,7 @@ export class StorybookExtractor implements ContentExtractor {
         }
       }
     } catch (error) {
-      logger.debug('[StorybookExtractor] Error extracting type annotations:', error);
+      console.error('[StorybookExtractor] Error extracting type annotations:', error);
     }
   }
 
@@ -539,7 +541,7 @@ export class StorybookExtractor implements ContentExtractor {
 
       const mainArea = await this.waitForStorybookContent(document);
       if (!mainArea) {
-        logger.debug('Failed to find Storybook content area');
+        console.error('Failed to find Storybook content area');
         return emptyResult;
       }
 
@@ -651,7 +653,7 @@ export class StorybookExtractor implements ContentExtractor {
           }
         } catch (error) {
           // Cross-origin iframe - expected for external content
-          logger.debug('Error processing iframe (may be cross-origin):', error);
+          console.error('Error processing iframe (may be cross-origin):', error);
         }
       }
 
@@ -669,7 +671,7 @@ export class StorybookExtractor implements ContentExtractor {
         }
       };
     } catch (error) {
-      logger.debug('Error extracting Storybook content:', error);
+      console.error('Error extracting Storybook content:', error);
       return emptyResult;
     }
   }

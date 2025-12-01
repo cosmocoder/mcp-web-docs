@@ -23,7 +23,7 @@ import {
   McpError
 } from '@modelcontextprotocol/sdk/types.js';
 import { DocumentStore } from './storage/storage.js';
-import { OpenAIEmbeddings } from './embeddings/openai.js';
+import { FastEmbeddings } from './embeddings/fastembed.js';
 import { WebDocumentProcessor } from './processor/processor.js';
 import { IndexingStatusTracker } from './indexing/status.js';
 import { IndexingQueueManager } from './indexing/queue-manager.js';
@@ -105,7 +105,7 @@ class WebDocsServer {
     this.config = await loadConfig();
 
     // Initialize components that need config
-    const embeddings = new OpenAIEmbeddings(this.config.openaiApiKey);
+    const embeddings = new FastEmbeddings();
     this.store = new DocumentStore(
       this.config.dbPath,
       this.config.vectorDbPath,
