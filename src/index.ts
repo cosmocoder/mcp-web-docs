@@ -26,12 +26,13 @@ import { DocumentStore } from './storage/storage.js';
 import { OpenAIEmbeddings } from './embeddings/openai.js';
 import { WebDocumentProcessor } from './processor/processor.js';
 import { IndexingStatusTracker } from './indexing/status.js';
+import { IndexingQueueManager } from './indexing/queue-manager.js';
 import { DocsConfig, loadConfig, isValidUrl, normalizeUrl } from './config.js';
 import { DocsCrawler } from './crawler/docs-crawler.js';
 import { fetchFavicon } from './util/favicon.js';
-import { DocumentChunk } from './types.js';
-import { RAGPipeline } from './rag/pipeline.js';
+import { DocumentChunk, IndexingStatus } from './types.js';
 import { generateDocId } from './util/docs.js';
+import { logger } from './util/logger.js';
 
 class WebDocsServer {
   private server: Server;
@@ -39,13 +40,18 @@ class WebDocsServer {
   private store!: DocumentStore;
   private processor!: WebDocumentProcessor;
   private statusTracker: IndexingStatusTracker;
-  private docsIndexingQueue: Set<string>;
-  private ragPipeline!: RAGPipeline;
+  private indexingQueue: IndexingQueueManager;
+  private lastNotifiedProgress: Map<string, number> = new Map();
 
   constructor() {
     // Initialize basic components that don't need async initialization
     this.statusTracker = new IndexingStatusTracker();
-    this.docsIndexingQueue = new Set();
+    this.indexingQueue = new IndexingQueueManager();
+
+    // Set up status change listener for notifications
+    this.statusTracker.addStatusListener((status) => {
+      this.sendProgressNotification(status);
+    });
 
     // Initialize MCP server
     this.server = new Server(
@@ -64,7 +70,34 @@ class WebDocsServer {
     this.setupToolHandlers();
 
     // Handle errors
-    this.server.onerror = (error) => console.error('[MCP Error]', error);
+    this.server.onerror = (error) => logger.error('[MCP Error]', error);
+  }
+
+  /**
+   * Send progress notification to MCP client.
+   * Throttled to avoid flooding - only sends when progress changes by 5% or status changes.
+   */
+  private sendProgressNotification(status: IndexingStatus): void {
+    const progressPercent = Math.round(status.progress * 100);
+    const lastProgress = this.lastNotifiedProgress.get(status.id) ?? -1;
+
+    // Only notify on significant progress (5% increments) or status changes
+    const isStatusChange = status.status === 'complete' || status.status === 'failed' || status.status === 'cancelled';
+    const isSignificantProgress = progressPercent - lastProgress >= 5;
+
+    if (!isStatusChange && !isSignificantProgress) {
+      return;
+    }
+
+    this.lastNotifiedProgress.set(status.id, progressPercent);
+
+    // Clean up tracking for completed operations
+    if (isStatusChange) {
+      this.lastNotifiedProgress.delete(status.id);
+    }
+
+    // Log the notification (MCP SDK will handle actual notification if supported)
+    logger.info(`[Notification] ${status.status}: ${status.url} - ${progressPercent}% - ${status.description}`);
   }
 
   private async initialize() {
@@ -83,15 +116,6 @@ class WebDocsServer {
 
     // Initialize storage
     await this.store.initialize();
-
-    // Initialize RAG pipeline
-    this.ragPipeline = new RAGPipeline({
-      openaiApiKey: this.config.openaiApiKey,
-      dbPath: this.config.dbPath,
-      vectorDbPath: this.config.vectorDbPath,
-      maxCacheSize: this.config.cacheSize
-    });
-    await this.ragPipeline.initialize();
   }
 
   private setupToolHandlers(): void {
@@ -126,7 +150,7 @@ class WebDocsServer {
         },
         {
           name: 'search_documentation',
-          description: 'Basic search through indexed documentation',
+          description: 'Search through indexed documentation using semantic similarity',
           inputSchema: {
             type: 'object',
             properties: {
@@ -136,25 +160,7 @@ class WebDocsServer {
               },
               limit: {
                 type: 'number',
-                description: 'Maximum number of results'
-              }
-            },
-            required: ['query']
-          }
-        },
-        {
-          name: 'semantic_search',
-          description: 'Advanced semantic search with RAG capabilities',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              query: {
-                type: 'string',
-                description: 'Natural language query'
-              },
-              version: {
-                type: 'string',
-                description: 'Optional version to filter results'
+                description: 'Maximum number of results (default: 10)'
               }
             },
             required: ['query']
@@ -181,20 +187,6 @@ class WebDocsServer {
             type: 'object',
             properties: {}
           }
-        },
-        {
-          name: 'test_vector_search',
-          description: 'Test the vector search functionality directly',
-          inputSchema: {
-            type: 'object',
-            properties: {
-              text: {
-                type: 'string',
-                description: 'Text to convert to a vector for search'
-              }
-            },
-            required: ['text']
-          }
         }
       ]
     }));
@@ -208,14 +200,10 @@ class WebDocsServer {
           return this.handleListDocumentation();
         case 'search_documentation':
           return this.handleSearchDocumentation(request.params.arguments);
-        case 'semantic_search':
-          return this.handleSemanticSearch(request.params.arguments);
         case 'reindex_documentation':
           return this.handleReindexDocumentation(request.params.arguments);
         case 'get_indexing_status':
           return this.handleGetIndexingStatus();
-        case 'test_vector_search':
-          return this.handleTestVectorSearch(request.params.arguments);
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
       }
@@ -232,13 +220,24 @@ class WebDocsServer {
     const docTitle = title || new URL(normalizedUrl).hostname;
     const docId = generateDocId(normalizedUrl, docTitle);
 
+    // Cancel any existing operation for this URL
+    const controller = await this.indexingQueue.startOperation(normalizedUrl);
+
     // Start indexing process
     this.statusTracker.startIndexing(docId, normalizedUrl, docTitle);
 
-    // Start indexing in the background
-    void this.indexAndAdd(docId, normalizedUrl, docTitle).catch((error: any) => {
-      console.error('[WebDocsServer] Background indexing failed:', error);
-    });
+    // Start indexing in the background with abort support
+    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal)
+      .catch((error: any) => {
+        if (error?.name !== 'AbortError') {
+          logger.error('[WebDocsServer] Background indexing failed:', error);
+        }
+      })
+      .finally(() => {
+        this.indexingQueue.completeOperation(normalizedUrl);
+      });
+
+    this.indexingQueue.registerOperation(normalizedUrl, controller, operationPromise);
 
     return {
       content: [
@@ -264,7 +263,7 @@ class WebDocsServer {
 
   private async handleSearchDocumentation(args: any) {
     const { query, limit = 10 } = args;
-    const results = await this.store.searchByText(query, limit);
+    const results = await this.store.searchByText(query, { limit });
     return {
       content: [
         {
@@ -273,45 +272,6 @@ class WebDocsServer {
         }
       ]
     };
-  }
-
-  private async handleSemanticSearch(args: any) {
-    const { query } = args;
-
-    try {
-      const response = await this.ragPipeline.process(query);
-
-      // Format the response
-      const formattedResponse = {
-        answer: response.response.text,
-        codeExamples: response.response.codeExamples || [],
-        metadata: {
-          sources: response.response.metadata.sources,
-          confidence: response.response.metadata.confidence,
-          validation: {
-            factCheck: response.validation.factCheck,
-            codeCheck: response.validation.codeCheck,
-            consistencyCheck: response.validation.consistencyCheck,
-            details: response.validation.details
-          }
-        }
-      };
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(formattedResponse, null, 2)
-          }
-        ]
-      };
-    } catch (error) {
-      console.error('[WebDocsServer] Error in semantic search:', error);
-      throw new McpError(
-        ErrorCode.InternalError,
-        `Failed to process semantic search: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
   }
 
   private async handleReindexDocumentation(args: any) {
@@ -326,19 +286,35 @@ class WebDocsServer {
       throw new McpError(ErrorCode.InvalidParams, 'Documentation not found');
     }
 
+    // Cancel any existing operation for this URL
+    const wasCancelled = this.indexingQueue.isIndexing(normalizedUrl);
+    const controller = await this.indexingQueue.startOperation(normalizedUrl);
+
     const docId = generateDocId(normalizedUrl, doc.title);
     this.statusTracker.startIndexing(docId, normalizedUrl, doc.title);
 
-    // Start reindexing in the background
-    void this.indexAndAdd(docId, normalizedUrl, doc.title, true).catch((error: any) => {
-      console.error('[WebDocsServer] Background reindexing failed:', error);
-    });
+    // Start reindexing in the background with abort support
+    const operationPromise = this.indexAndAdd(docId, normalizedUrl, doc.title, true, controller.signal)
+      .catch((error: any) => {
+        if (error?.name !== 'AbortError') {
+          logger.error('[WebDocsServer] Background reindexing failed:', error);
+        }
+      })
+      .finally(() => {
+        this.indexingQueue.completeOperation(normalizedUrl);
+      });
+
+    this.indexingQueue.registerOperation(normalizedUrl, controller, operationPromise);
+
+    const message = wasCancelled
+      ? `Started re-indexing ${normalizedUrl}. Previous operation was cancelled.`
+      : `Started re-indexing ${normalizedUrl} - use get_indexing_status to monitor progress`;
 
     return {
       content: [
         {
           type: 'text',
-          text: `Started re-indexing ${normalizedUrl} - use get_indexing_status to monitor progress`
+          text: message
         }
       ]
     };
@@ -356,102 +332,48 @@ class WebDocsServer {
     };
   }
 
-  private async handleTestVectorSearch(args: any) {
-    const { text } = args;
-
-    try {
-      // Create embeddings provider
-      const embeddings = new OpenAIEmbeddings(this.config.openaiApiKey);
-
-      // Generate embedding for the text
-      console.debug(`[WebDocsServer] Generating embedding for text: "${text}"`);
-      const vector = await embeddings.embed(text);
-      console.debug(`[WebDocsServer] Generated embedding with length: ${vector.length}`);
-      console.debug(`[WebDocsServer] First 5 values: ${vector.slice(0, 5)}`);
-
-      // Validate vectors in database
-      console.debug(`[WebDocsServer] Validating vectors in database`);
-      const vectorsValid = await this.store.validateVectors();
-      console.debug(`[WebDocsServer] Vector validation result: ${vectorsValid}`);
-
-      // Perform direct search
-      console.debug(`[WebDocsServer] Performing vector search`);
-      const results = await this.store.searchDocuments(vector, {
-        limit: 5,
-        includeVectors: true
-      });
-      console.debug(`[WebDocsServer] Search returned ${results.length} results`);
-
-      // Force vectorsValid to true if we have results
-      // This is a workaround for the validateVectors method returning false
-      // even though the search is working
-      const effectiveVectorsValid = results.length > 0;
-      console.debug(`[WebDocsServer] Effective vector validation: ${effectiveVectorsValid}`);
-
-      // Return diagnostic information
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              diagnostics: {
-                vectorLength: vector.length,
-                vectorSample: vector.slice(0, 5),
-                vectorsValid: effectiveVectorsValid,
-                resultsCount: results.length
-              },
-              results: results.map((r: any) => ({
-                score: r.score || 1.0, // Provide a default score if null
-                title: r.title,
-                url: r.url,
-                content: r.content.substring(0, 100) + '...',
-                vectorIncluded: !!r.vector,
-                vectorLength: r.vector ? r.vector.length : 'N/A'
-              }))
-            }, null, 2)
-          }
-        ]
-      };
-    } catch (error) {
-      console.error('[WebDocsServer] Error in test vector search:', error);
-      throw new McpError(
-        ErrorCode.InternalError,
-        `Test search failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  private async indexAndAdd(id: string, url: string, title: string, reIndex: boolean = false) {
-    try {
-      console.debug(`[WebDocsServer] Starting indexAndAdd for ${url} (reIndex: ${reIndex})`);
-
-      if (this.docsIndexingQueue.has(url)) {
-        console.debug(`[WebDocsServer] Document ${url} is already being indexed`);
-        return;
+  private async indexAndAdd(
+    id: string,
+    url: string,
+    title: string,
+    reIndex: boolean = false,
+    signal?: AbortSignal
+  ) {
+    // Helper to check if operation was cancelled
+    const checkCancelled = () => {
+      if (signal?.aborted) {
+        logger.info(`[WebDocsServer] Operation cancelled for ${url}`);
+        this.statusTracker.cancelIndexing(id);
+        const error = new Error('Operation cancelled');
+        error.name = 'AbortError';
+        throw error;
       }
+    };
 
-      this.docsIndexingQueue.add(url);
-      console.debug(`[WebDocsServer] Added ${url} to indexing queue`);
+    try {
+      logger.info(`[WebDocsServer] Starting indexAndAdd for ${url} (reIndex: ${reIndex})`);
+      checkCancelled();
 
       // Check if document exists
-      console.debug(`[WebDocsServer] Checking if document exists: ${url}`);
+      logger.debug(`[WebDocsServer] Checking if document exists: ${url}`);
       const existingDoc = await this.store.getDocument(url);
 
       if (existingDoc) {
-        console.debug(`[WebDocsServer] Document exists: ${url}`);
+        logger.debug(`[WebDocsServer] Document exists: ${url}`);
         if (!reIndex) {
-          console.debug(`[WebDocsServer] Document ${url} already indexed and reIndex=false`);
+          logger.info(`[WebDocsServer] Document ${url} already indexed and reIndex=false`);
           this.statusTracker.completeIndexing(id);
-          this.docsIndexingQueue.delete(url);
           return;
         }
-        console.debug(`[WebDocsServer] Will reindex existing document: ${url}`);
+        logger.info(`[WebDocsServer] Will reindex existing document: ${url}`);
       } else {
-        console.debug(`[WebDocsServer] Document does not exist: ${url}`);
+        logger.debug(`[WebDocsServer] Document does not exist: ${url}`);
       }
 
+      checkCancelled();
+
       // Start crawling
-      console.debug(`[WebDocsServer] Starting crawl with depth=${this.config.maxDepth}, maxRequests=${this.config.maxRequestsPerCrawl}`);
+      logger.info(`[WebDocsServer] Starting crawl with depth=${this.config.maxDepth}, maxRequests=${this.config.maxRequestsPerCrawl}`);
       this.statusTracker.updateProgress(id, 0, 'Finding subpages');
       const crawler = new DocsCrawler(
         this.config.maxDepth,
@@ -463,9 +385,19 @@ class WebDocsServer {
       let processedPages = 0;
       let estimatedProgress = 0;
 
-      console.debug(`[WebDocsServer] Starting page crawl for ${url}`);
+      logger.info(`[WebDocsServer] Starting page crawl for ${url}`);
       for await (const page of crawler.crawl(url)) {
-        console.debug(`[WebDocsServer] Found page ${processedPages + 1}: ${page.path}`);
+        // Check for cancellation during crawl
+        if (signal?.aborted) {
+          logger.info(`[WebDocsServer] Crawl cancelled for ${url}`);
+          crawler.abort();
+          this.statusTracker.cancelIndexing(id);
+          const error = new Error('Operation cancelled');
+          error.name = 'AbortError';
+          throw error;
+        }
+
+        logger.debug(`[WebDocsServer] Found page ${processedPages + 1}: ${page.path}`);
         processedPages++;
         estimatedProgress += 1 / 2 ** processedPages;
 
@@ -474,60 +406,71 @@ class WebDocsServer {
           0.15 * estimatedProgress + Math.min(0.35, (0.35 * processedPages) / 500),
           `Finding subpages (${page.path})`
         );
+        this.statusTracker.updateStats(id, { pagesFound: processedPages });
 
         pages.push(page);
 
-        // Prevent UI lockup - wait proportional to queue size
-        const toWait = 100 * this.docsIndexingQueue.size + 50;
-        await new Promise(resolve => setTimeout(resolve, toWait));
+        // Small delay to allow other operations
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
 
       if (pages.length === 0) {
-        console.error('[WebDocsServer] No pages found during crawl');
+        logger.warn('[WebDocsServer] No pages found during crawl');
         throw new Error('No pages found to index');
       }
 
-      console.debug(`[WebDocsServer] Found ${pages.length} pages to process`);
-      console.debug('[WebDocsServer] Starting content processing and embedding generation');
+      logger.info(`[WebDocsServer] Found ${pages.length} pages to process`);
+      logger.info('[WebDocsServer] Starting content processing and embedding generation');
+      this.statusTracker.updateStats(id, { pagesFound: pages.length });
+
+      checkCancelled();
 
       // Process pages and create embeddings
       const chunks: DocumentChunk[] = [];
       const embeddings: number[][] = [];
 
       for (let i = 0; i < pages.length; i++) {
+        checkCancelled();
+
         const page = pages[i];
-        console.debug(`[WebDocsServer] Processing page ${i + 1}/${pages.length}: ${page.path}`);
+        logger.debug(`[WebDocsServer] Processing page ${i + 1}/${pages.length}: ${page.path}`);
 
         this.statusTracker.updateProgress(
           id,
           0.5 + 0.3 * (i / pages.length),
-          `Creating embeddings for ${page.path}`
+          `Creating embeddings (${i + 1}/${pages.length})`
         );
 
         try {
           const processed = await this.processor.process(page);
-          console.debug(`[WebDocsServer] Created ${processed.chunks.length} chunks for ${page.path}`);
+          logger.debug(`[WebDocsServer] Created ${processed.chunks.length} chunks for ${page.path}`);
 
           chunks.push(...processed.chunks);
           embeddings.push(...processed.chunks.map(chunk => chunk.vector));
+
+          this.statusTracker.updateStats(id, {
+            pagesProcessed: i + 1,
+            chunksCreated: chunks.length
+          });
         } catch (error) {
-          console.error(`[WebDocsServer] Error processing page ${page.path}:`, error);
+          logger.error(`[WebDocsServer] Error processing page ${page.path}:`, error);
         }
 
-        // Prevent UI lockup - wait proportional to queue size
-        const toWait = 50 * this.docsIndexingQueue.size + 20;
-        await new Promise(resolve => setTimeout(resolve, toWait));
+        // Small delay
+        await new Promise(resolve => setTimeout(resolve, 20));
       }
 
-      console.debug(`[WebDocsServer] Total chunks created: ${chunks.length}`);
+      logger.info(`[WebDocsServer] Total chunks created: ${chunks.length}`);
 
       if (embeddings.length === 0) {
-        console.error(`[WebDocsServer] No content was extracted from ${url}`);
-        console.debug(`[WebDocsServer] Pages found: ${pages.length}`);
-        console.debug(`[WebDocsServer] Chunks created: ${chunks.length}`);
+        logger.warn(`[WebDocsServer] No content was extracted from ${url}`);
+        logger.warn(`[WebDocsServer] Pages found: ${pages.length}`);
+        logger.warn(`[WebDocsServer] Chunks created: ${chunks.length}`);
         this.statusTracker.failIndexing(id, 'No content was extracted from the pages');
         return;
       }
+
+      checkCancelled();
 
       // Delete old data if reindexing
       if (reIndex && existingDoc) {
@@ -535,16 +478,18 @@ class WebDocsServer {
         await this.store.deleteDocument(url);
       }
 
+      checkCancelled();
+
       // Get favicon
       const favicon = await fetchFavicon(new URL(url));
 
-      // Store the data
+      // Store the data with retry logic
       this.statusTracker.updateProgress(id, 0.9, `Storing ${embeddings.length} chunks`);
-      await this.store.addDocument({
+      await this.addDocumentWithRetry({
         metadata: {
           url,
           title,
-          favicon,
+          favicon: favicon ?? undefined,
           lastIndexed: new Date()
         },
         chunks: chunks.map((chunk, i) => ({
@@ -553,31 +498,46 @@ class WebDocsServer {
         }))
       });
 
-      console.debug(`[WebDocsServer] Successfully indexed ${url}`);
-      console.debug(`[WebDocsServer] Pages processed: ${pages.length}`);
-      console.debug(`[WebDocsServer] Chunks stored: ${chunks.length}`);
+      logger.info(`[WebDocsServer] Successfully indexed ${url}`);
+      logger.info(`[WebDocsServer] Pages processed: ${pages.length}`);
+      logger.info(`[WebDocsServer] Chunks stored: ${chunks.length}`);
 
+      this.statusTracker.updateStats(id, { chunksCreated: chunks.length });
       this.statusTracker.completeIndexing(id);
     } catch (error) {
-      console.error('[WebDocsServer] Error during indexing:', error);
-      console.debug('[WebDocsServer] Error details:', error instanceof Error ? error.stack : error);
+      // Don't log AbortError as a real error
+      if (error instanceof Error && error.name === 'AbortError') {
+        logger.info(`[WebDocsServer] Indexing cancelled for ${url}`);
+        return;
+      }
 
-      // Get more context about the error
-      const errorContext = {
-        queueSize: this.docsIndexingQueue.size,
-        url,
-        reIndex,
-        error: error instanceof Error ? {
-          name: error.name,
-          message: error.message,
-          stack: error.stack
-        } : error
-      };
-      console.error('[WebDocsServer] Error context:', errorContext);
+      logger.error('[WebDocsServer] Error during indexing:', error);
+      logger.error('[WebDocsServer] Error details:', error instanceof Error ? error.stack : error);
 
       this.statusTracker.failIndexing(id, error instanceof Error ? error.message : 'Unknown error');
-    } finally {
-      this.docsIndexingQueue.delete(url);
+    }
+  }
+
+  /**
+   * Add document with retry logic for transient database conflicts
+   */
+  private async addDocumentWithRetry(
+    doc: { metadata: { url: string; title: string; favicon?: string; lastIndexed: Date }; chunks: DocumentChunk[] },
+    maxRetries = 3
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.store.addDocument(doc);
+        return;
+      } catch (error) {
+        const isConflict = error instanceof Error && error.message?.includes('Commit conflict');
+        if (isConflict && attempt < maxRetries) {
+          logger.warn(`[WebDocsServer] Database conflict, retrying (${attempt}/${maxRetries})...`);
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+          continue;
+        }
+        throw error;
+      }
     }
   }
 
@@ -589,21 +549,21 @@ class WebDocsServer {
     const transport = new StdioServerTransport();
     await this.server.connect(transport);
 
-    console.error('Web Docs MCP server running on stdio');
+    logger.info('Web Docs MCP server running on stdio');
   }
 }
 
 // Start server
 const server = new WebDocsServer();
-server.run().catch(console.error);
+server.run().catch((err) => logger.error('Server failed to start:', err));
 
-// Handle process signals
-process.on('SIGINT', () => {
-  console.error('Received SIGINT, shutting down...');
+// Handle process signals - cancel all operations before shutdown
+process.on('SIGINT', async () => {
+  logger.info('Received SIGINT, cancelling operations and shutting down...');
   process.exit(0);
 });
 
-process.on('SIGTERM', () => {
-  console.error('Received SIGTERM, shutting down...');
+process.on('SIGTERM', async () => {
+  logger.info('Received SIGTERM, cancelling operations and shutting down...');
   process.exit(0);
 });

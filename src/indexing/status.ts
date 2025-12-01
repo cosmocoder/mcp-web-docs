@@ -34,7 +34,11 @@ export class IndexingStatusTracker {
       title,
       status: 'indexing',
       progress: 0,
-      description: 'Starting indexing...'
+      description: 'Starting indexing...',
+      startedAt: new Date(),
+      pagesFound: 0,
+      pagesProcessed: 0,
+      chunksCreated: 0
     };
 
     const bar = this.multibar.create(100, 0, {
@@ -43,6 +47,21 @@ export class IndexingStatusTracker {
     });
 
     this.bars.set(id, bar);
+    this.statuses.set(id, status);
+    this.notifyListeners(status);
+  }
+
+  updateStats(id: string, stats: { pagesFound?: number; pagesProcessed?: number; chunksCreated?: number }): void {
+    const currentStatus = this.statuses.get(id);
+    if (!currentStatus) return;
+
+    const status: IndexingStatus = {
+      ...currentStatus,
+      pagesFound: stats.pagesFound ?? currentStatus.pagesFound,
+      pagesProcessed: stats.pagesProcessed ?? currentStatus.pagesProcessed,
+      chunksCreated: stats.chunksCreated ?? currentStatus.chunksCreated
+    };
+
     this.statuses.set(id, status);
     this.notifyListeners(status);
   }
@@ -135,6 +154,28 @@ export class IndexingStatusTracker {
       status: 'aborted',
       progress: 1,
       description: 'Indexing aborted'
+    };
+
+    this.statuses.set(id, status);
+    this.notifyListeners(status);
+  }
+
+  cancelIndexing(id: string): void {
+    const bar = this.bars.get(id);
+    const currentStatus = this.statuses.get(id);
+
+    if (!bar || !currentStatus) {
+      return;
+    }
+
+    bar.update(currentStatus.progress * 100, {
+      status: 'Cancelled (new operation started)'
+    });
+
+    const status: IndexingStatus = {
+      ...currentStatus,
+      status: 'cancelled',
+      description: 'Cancelled - replaced by new indexing operation'
     };
 
     this.statuses.set(id, status);

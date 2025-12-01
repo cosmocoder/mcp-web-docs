@@ -2,10 +2,15 @@ export interface IndexingStatus {
   id: string;
   url: string;
   title: string;
-  status: 'pending' | 'indexing' | 'complete' | 'failed' | 'aborted';
+  status: 'pending' | 'indexing' | 'complete' | 'failed' | 'aborted' | 'cancelled';
   progress: number;
   description: string;
   error?: string;
+  // Enhanced tracking fields
+  startedAt?: Date;
+  pagesFound?: number;
+  pagesProcessed?: number;
+  chunksCreated?: number;
 }
 
 export interface DocumentMetadata {
