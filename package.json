@@ -21,6 +21,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "@lancedb/lancedb": "^0.22.3",
     "@modelcontextprotocol/sdk": "1.23.0",
     "@mozilla/readability": "0.6.0",
     "@types/node": "22.15.29",
@@ -36,8 +37,7 @@
     "semver": "7.7.3",
     "sqlite": "5.1.1",
     "sqlite3": "5.1.7",
-    "typescript": "5.9.3",
-    "vectordb": "^0.16.0"
+    "typescript": "5.9.3"
   },
   "devDependencies": {
     "@types/cli-progress": "3.11.6",

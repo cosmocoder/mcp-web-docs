@@ -185,11 +185,31 @@ export class StorybookExtractor implements ContentExtractor {
     }
   }
 
-  private async processPropsTable(table: Element, sections: string[], addedSections: Set<string>): Promise<void> {
+  private async processPropsTable(table: Element, sections: string[], addedSections: Set<string>, componentName?: string): Promise<void> {
     // First, expand all "Show more" buttons in the table to reveal all type values
     await this.expandAllTypeValues(table);
 
-    this.addContentToSections('## Props', sections, addedSections);
+    // Check if there's already a heading before this table that includes a component name
+    // This handles cases like "TableHead Props", "TableBody Props" etc.
+    let propsHeading = '## Props';
+
+    // Look for the closest preceding heading
+    const closestHeading = this.findClosestPrecedingHeading(table);
+    if (closestHeading) {
+      const headingText = closestHeading.trim();
+      // If the heading already contains "Props" with a component name, use it as-is
+      if (/\w+\s+Props$/i.test(headingText)) {
+        propsHeading = `## ${headingText}`;
+      } else if (/^Props$/i.test(headingText) && componentName) {
+        // If it's just "Props", prepend the component name
+        propsHeading = `## ${componentName} Props`;
+      }
+    } else if (componentName) {
+      // No heading found, use component name
+      propsHeading = `## ${componentName} Props`;
+    }
+
+    this.addContentToSections(propsHeading, sections, addedSections);
     this.addContentToSections('', sections, addedSections);
     this.addContentToSections('| Name | Type | Default |', sections, addedSections);
     this.addContentToSections('|------|------|---------|', sections, addedSections);
@@ -250,6 +270,52 @@ export class StorybookExtractor implements ContentExtractor {
       }
     }
     this.addContentToSections('', sections, addedSections);
+  }
+
+  /**
+   * Find the closest heading element before the given element
+   * This helps detect if a Props table already has a component-prefixed heading
+   */
+  private findClosestPrecedingHeading(element: Element): string | null {
+    // Check previous siblings
+    let sibling = element.previousElementSibling;
+    let depth = 0;
+    const maxDepth = 5; // Don't look too far back
+
+    while (sibling && depth < maxDepth) {
+      // Check if this sibling is a heading
+      if (sibling.matches('h1, h2, h3, h4, h5, h6')) {
+        return sibling.textContent?.trim() || null;
+      }
+      // Check if sibling contains a heading
+      const heading = sibling.querySelector('h1, h2, h3, h4, h5, h6');
+      if (heading) {
+        return heading.textContent?.trim() || null;
+      }
+      sibling = sibling.previousElementSibling;
+      depth++;
+    }
+
+    // Check parent's previous siblings
+    let parent = element.parentElement;
+    depth = 0;
+    while (parent && depth < 3) {
+      sibling = parent.previousElementSibling;
+      while (sibling && depth < maxDepth) {
+        if (sibling.matches('h1, h2, h3, h4, h5, h6')) {
+          return sibling.textContent?.trim() || null;
+        }
+        const heading = sibling.querySelector('h1, h2, h3, h4, h5, h6');
+        if (heading) {
+          return heading.textContent?.trim() || null;
+        }
+        sibling = sibling.previousElementSibling;
+        depth++;
+      }
+      parent = parent.parentElement;
+    }
+
+    return null;
   }
 
   /**
@@ -730,7 +796,7 @@ export class StorybookExtractor implements ContentExtractor {
       }
 
       if (propsTable) {
-        await this.processPropsTable(propsTable, sections, addedSections);
+        await this.processPropsTable(propsTable, sections, addedSections, mainTitle);
       }
 
       // Also extract any inline type annotations from code examples
@@ -747,7 +813,7 @@ export class StorybookExtractor implements ContentExtractor {
               '.docblock-argstable, .docblock-argtable, table.docblock-table, [class*="ArgTable"]'
             );
             if (iframePropsTable && !propsTable) {
-              await this.processPropsTable(iframePropsTable, sections, addedSections);
+              await this.processPropsTable(iframePropsTable, sections, addedSections, mainTitle);
             }
 
             // Process any other content in the iframe

@@ -1,12 +1,16 @@
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
-import lancedb, { Connection, Table } from 'vectordb';
+import * as lancedb from '@lancedb/lancedb';
+import { Field, FixedSizeList, Float32, Schema, Utf8, Int32 } from 'apache-arrow';
 import QuickLRU from 'quick-lru';
 import { mkdir } from 'fs/promises';
 import { dirname } from 'path';
 import { DocumentMetadata, ProcessedDocument, SearchResult, SearchOptions, StorageProvider } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
 import { logger } from '../util/logger.js';
+
+type LanceDBConnection = Awaited<ReturnType<typeof lancedb.connect>>;
+type LanceDBTable = Awaited<ReturnType<LanceDBConnection['openTable']>>;
 
 type LanceDbRow = {
   url: string;
@@ -21,21 +25,17 @@ type LanceDbRow = {
   version: string;
   framework: string;
   language: string;
-  codeBlocks_code: string[];
-  codeBlocks_language: string[];
-  codeBlocks_context: string[];
-  props_name: string[];
-  props_type: string[];
-  props_required: boolean[];
-  props_defaultValue: string[];
-  props_description: string[];
+  // Serialized JSON for code blocks and props
+  codeBlocks: string;
+  props: string;
 };
 
 export class DocumentStore implements StorageProvider {
   private sqliteDb?: Database;
-  private lanceConn?: Connection;
-  private lanceTable?: Table;
+  private lanceConn?: LanceDBConnection;
+  private lanceTable?: LanceDBTable;
   private readonly searchCache: QuickLRU<string, SearchResult[]>;
+  private ftsIndexCreated = false;
 
   constructor(
     private readonly dbPath: string,
@@ -108,38 +108,43 @@ export class DocumentStore implements StorageProvider {
         // Only create the table if it doesn't exist
         if (!tableNames.includes('chunks')) {
           logger.debug(`[DocumentStore] Creating chunks table with dimensions: ${this.embeddings.dimensions}`);
-          // Create table with sample row to establish schema
-          const sampleRow = [{
-            url: '',
-            title: '',
-            content: '',
-            path: '',
-            startLine: 0,
-            endLine: 0,
-            vector: new Array(this.embeddings.dimensions).fill(0),
-            type: 'overview',
-            lastUpdated: new Date().toISOString(),
-            version: '',
-            framework: '',
-            language: '',
-            codeBlocks_code: [''],
-            codeBlocks_language: [''],
-            codeBlocks_context: [''],
-            props_name: [''],
-            props_type: [''],
-            props_required: [false],
-            props_defaultValue: [''],
-            props_description: ['']
-          }] as LanceDbRow[];
 
-          // Create table with default options
-          this.lanceTable = await this.lanceConn.createTable('chunks', sampleRow);
-          logger.debug(`[DocumentStore] Removing sample row`);
-          await this.lanceTable.delete("url = ''");
+          // Define schema using Apache Arrow
+          const vectorType = new FixedSizeList(
+            this.embeddings.dimensions,
+            new Field('item', new Float32(), true)
+          );
+
+          const schema = new Schema([
+            new Field('url', new Utf8(), false),
+            new Field('title', new Utf8(), false),
+            new Field('content', new Utf8(), false),
+            new Field('path', new Utf8(), false),
+            new Field('startLine', new Int32(), false),
+            new Field('endLine', new Int32(), false),
+            new Field('vector', vectorType, false),
+            new Field('type', new Utf8(), false),
+            new Field('lastUpdated', new Utf8(), false),
+            new Field('version', new Utf8(), true),
+            new Field('framework', new Utf8(), true),
+            new Field('language', new Utf8(), true),
+            // Flatten arrays to simple strings for better FTS support
+            new Field('codeBlocks', new Utf8(), true),
+            new Field('props', new Utf8(), true),
+          ]);
+
+          // Create empty table with schema
+          this.lanceTable = await this.lanceConn.createEmptyTable('chunks', schema, { mode: 'create' });
           logger.debug(`[DocumentStore] New chunks table created successfully`);
+
+          // Create FTS index for better text search
+          await this.createFTSIndex();
         } else {
           logger.debug(`[DocumentStore] Using existing chunks table`);
           this.lanceTable = await this.lanceConn.openTable('chunks');
+
+          // Try to create FTS index if it doesn't exist
+          await this.createFTSIndex();
         }
 
         // Verify table is accessible
@@ -215,14 +220,9 @@ export class DocumentStore implements StorageProvider {
         version: '',
         framework: '',
         language: '',
-        codeBlocks_code: chunk.metadata.codeBlocks?.map(b => b.code) || [''],
-        codeBlocks_language: chunk.metadata.codeBlocks?.map(b => b.language) || [''],
-        codeBlocks_context: chunk.metadata.codeBlocks?.map(b => b.context) || [''],
-        props_name: chunk.metadata.props?.map(p => p.name) || [''],
-        props_type: chunk.metadata.props?.map(p => p.type) || [''],
-        props_required: chunk.metadata.props?.map(p => p.required) || [false],
-        props_defaultValue: chunk.metadata.props?.map(p => p.defaultValue || '') || [''],
-        props_description: chunk.metadata.props?.map(p => p.description) || ['']
+        // Serialize code blocks and props as JSON strings
+        codeBlocks: JSON.stringify(chunk.metadata.codeBlocks || []),
+        props: JSON.stringify(chunk.metadata.props || [])
       })) as LanceDbRow[];
 
       logger.debug(`[DocumentStore] Adding ${rows.length} chunks to LanceDB`);
@@ -311,7 +311,7 @@ export class DocumentStore implements StorageProvider {
         query = query.where(`type = '${filterByType}'`);
       }
 
-      const results = await query.execute();
+      const results = await query.toArray();
 
       logger.debug(`[DocumentStore] Found ${results.length} results`);
 
@@ -326,54 +326,80 @@ export class DocumentStore implements StorageProvider {
         });
       }
 
-      const searchResults = results.map((result: any) => {
-        // Log the raw result for debugging
-        logger.debug(`[DocumentStore] Raw search result:`, {
-          id: result.id,
-          url: result.url,
-          hasVector: !!result.vector,
-          vectorType: result.vector ? typeof result.vector : 'undefined',
-          vectorLength: result.vector ? (Array.isArray(result.vector) ? result.vector.length : 'not an array') : 0
+        const searchResults = results.map((result: any) => {
+          // Log the raw result for debugging
+          logger.debug(`[DocumentStore] Raw search result:`, {
+            id: result.id,
+            url: result.url,
+            hasVector: !!result.vector,
+            vectorType: result.vector ? typeof result.vector : 'undefined',
+            vectorLength: result.vector ? (Array.isArray(result.vector) ? result.vector.length : 'not an array') : 0
+          });
+
+          // Parse JSON fields
+          let codeBlocks;
+          let props;
+          try {
+            codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined;
+          } catch {
+            codeBlocks = undefined;
+          }
+          try {
+            props = result.props ? JSON.parse(result.props) : undefined;
+          } catch {
+            props = undefined;
+          }
+
+          return {
+            id: String(result.id || result.url),
+            content: String(result.content),
+            url: String(result.url),
+            title: String(result.title),
+            score: result._distance != null ? 1 - result._distance : (result.score ?? null),
+            ...(includeVectors && { vector: result.vector as number[] }),
+            metadata: {
+              type: (result.type || 'overview') as 'overview' | 'api' | 'example' | 'usage',
+              path: String(result.path),
+              lastUpdated: new Date(result.lastUpdated ? String(result.lastUpdated) : Date.now()),
+              version: result.version as string | undefined,
+              framework: result.framework as string | undefined,
+              language: result.language as string | undefined,
+              codeBlocks,
+              props
+            }
+          };
         });
 
-        return {
-          id: String(result.id || result.url),
-          content: String(result.content),
-          url: String(result.url),
-          title: String(result.title),
-          score: Number(result.score),
-          ...(includeVectors && { vector: result.vector as number[] }),
-          metadata: {
-            type: (result.type || 'overview') as 'overview' | 'api' | 'example' | 'usage',
-            path: String(result.path),
-            lastUpdated: new Date(result.lastUpdated ? String(result.lastUpdated) : Date.now()),
-            version: result.version as string | undefined,
-            framework: result.framework as string | undefined,
-            language: result.language as string | undefined,
-            codeBlocks: result.codeBlocks_code ? Array.from({
-              length: (result.codeBlocks_code as string[]).length
-            }, (_, i) => ({
-              code: (result.codeBlocks_code as string[])[i],
-              language: (result.codeBlocks_language as string[])[i],
-              context: (result.codeBlocks_context as string[])[i]
-            })) : undefined,
-            props: result.props_name ? Array.from({
-              length: (result.props_name as string[]).length
-            }, (_, i) => ({
-              name: (result.props_name as string[])[i],
-              type: (result.props_type as string[])[i],
-              required: (result.props_required as boolean[])[i],
-              defaultValue: (result.props_defaultValue as string[])[i],
-              description: (result.props_description as string[])[i]
-            })) : undefined
-          }
-        };
-      });
-
-      return searchResults;
+        return searchResults;
     } catch (error) {
       logger.error('[DocumentStore] Error searching documents:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Create full-text search index on the content field
+   */
+  private async createFTSIndex(): Promise<void> {
+    if (!this.lanceTable || this.ftsIndexCreated) {
+      return;
+    }
+
+    try {
+      logger.debug('[DocumentStore] Creating FTS index on content field...');
+      await this.lanceTable.createIndex('content', {
+        config: lancedb.Index.fts()
+      });
+      this.ftsIndexCreated = true;
+      logger.debug('[DocumentStore] FTS index created successfully');
+    } catch (error: any) {
+      if (error.message?.toLowerCase().includes('already exists')) {
+        logger.debug('[DocumentStore] FTS index already exists');
+        this.ftsIndexCreated = true;
+      } else {
+        logger.warn('[DocumentStore] Failed to create FTS index:', error.message);
+        // Don't throw - FTS is optional, we can fall back to vector search
+      }
     }
   }
 
@@ -387,21 +413,104 @@ export class DocumentStore implements StorageProvider {
       return cached;
     }
 
+    const { limit = 10, filterByType } = options;
+
     try {
-      // Use LanceDB's native text search if available
-      if (this.lanceTable && 'textSearch' in this.lanceTable) {
-        const results = await this.searchDocuments([], {
-          ...options,
-          textQuery: query
-        });
-        this.searchCache.set(cacheKey, results);
-        return results;
+      if (!this.lanceTable) {
+        throw new Error('Storage not initialized');
       }
 
-      // Fallback to vector search
-      const queryVector = await this.embeddings.embed(query);
-      const results = await this.searchDocuments(queryVector, options);
+      // Try hybrid search: combine FTS with vector search for best results
+      logger.debug('[DocumentStore] Attempting hybrid search (FTS + vector)');
 
+      // Generate embedding for vector search
+      const queryVector = await this.embeddings.embed(query);
+
+      // Try FTS first if index exists
+      if (this.ftsIndexCreated) {
+        try {
+          // Use LanceDB's native full-text search (pass string instead of vector)
+          let ftsQuery = this.lanceTable
+            .search(query)
+            .limit(limit * 2); // Get more results for re-ranking
+
+          if (filterByType) {
+            ftsQuery = ftsQuery.where(`type = '${filterByType}'`);
+          }
+
+          const ftsResults = await ftsQuery.toArray();
+          logger.debug(`[DocumentStore] FTS returned ${ftsResults.length} results`);
+
+          if (ftsResults.length > 0) {
+            // Also do vector search for hybrid results
+            let vectorQuery = this.lanceTable
+              .search(queryVector)
+              .limit(limit * 2);
+
+            if (filterByType) {
+              vectorQuery = vectorQuery.where(`type = '${filterByType}'`);
+            }
+
+            const vectorResults = await vectorQuery.toArray();
+            logger.debug(`[DocumentStore] Vector search returned ${vectorResults.length} results`);
+
+            // Merge and deduplicate results, prioritizing FTS matches
+            const seenUrls = new Set<string>();
+            const mergedResults: any[] = [];
+
+            // Add FTS results first (they have exact matches)
+            for (const result of ftsResults) {
+              const key = `${result.url}:${result.path}:${result.startLine}`;
+              if (!seenUrls.has(key)) {
+                seenUrls.add(key);
+                mergedResults.push({ ...result, _ftsMatch: true });
+              }
+            }
+
+            // Add vector results that weren't in FTS
+            for (const result of vectorResults) {
+              const key = `${result.url}:${result.path}:${result.startLine}`;
+              if (!seenUrls.has(key)) {
+                seenUrls.add(key);
+                mergedResults.push(result);
+              }
+            }
+
+            // Parse and return top results
+            const searchResults = mergedResults.slice(0, limit).map((result: any) => {
+              let codeBlocks, props;
+              try { codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined; } catch { codeBlocks = undefined; }
+              try { props = result.props ? JSON.parse(result.props) : undefined; } catch { props = undefined; }
+
+              return {
+                id: String(result.url),
+                content: String(result.content),
+                url: String(result.url),
+                title: String(result.title),
+                score: result._distance != null ? 1 - result._distance : (result._score ?? null),
+                metadata: {
+                  type: (result.type || 'overview') as 'overview' | 'api' | 'example' | 'usage',
+                  path: String(result.path),
+                  lastUpdated: new Date(result.lastUpdated ? String(result.lastUpdated) : Date.now()),
+                  version: result.version as string | undefined,
+                  framework: result.framework as string | undefined,
+                  language: result.language as string | undefined,
+                  codeBlocks,
+                  props
+                }
+              };
+            });
+
+            this.searchCache.set(cacheKey, searchResults);
+            return searchResults;
+          }
+        } catch (ftsError: any) {
+          logger.debug('[DocumentStore] FTS search failed, falling back to vector search:', ftsError.message);
+        }
+      }
+
+      // Fallback to pure vector search
+      const results = await this.searchDocuments(queryVector, options);
       this.searchCache.set(cacheKey, results);
       return results;
     } catch (error) {
@@ -545,10 +654,10 @@ export class DocumentStore implements StorageProvider {
         return false;
       }
 
-      // Get a sample row
-      const sample = await this.lanceTable.search([]).limit(1).execute();
+      // Get a sample row using a query
+      const sample = await this.lanceTable.query().limit(1).toArray();
       if (sample.length === 0) {
-        logger.debug('[DocumentStore] Vector validation: No rows returned from search');
+        logger.debug('[DocumentStore] Vector validation: No rows returned from query');
         return false;
       }
 
@@ -565,7 +674,7 @@ export class DocumentStore implements StorageProvider {
       const testVector = new Array(this.embeddings.dimensions).fill(0).map(() => Math.random());
       logger.debug(`[DocumentStore] Testing vector search with random vector of length ${testVector.length}`);
 
-      const searchResults = await this.lanceTable.search(testVector).limit(1).execute();
+      const searchResults = await this.lanceTable.search(testVector).limit(1).toArray();
       logger.debug(`[DocumentStore] Vector search test returned ${searchResults.length} results`);
 
       if (searchResults.length > 0) {
