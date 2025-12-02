@@ -4,6 +4,7 @@ import { processHtmlContent } from './content.js';
 import { processMarkdownContent, processExtractedContent } from './markdown.js';
 import { isMarkdownPath } from '../config.js';
 import { logger } from '../util/logger.js';
+import { parseMetadata } from './metadata-parser.js';
 
 // Extractors that return already-formatted markdown content
 const FORMATTED_CONTENT_EXTRACTORS = [
@@ -11,6 +12,34 @@ const FORMATTED_CONTENT_EXTRACTORS = [
   'GithubPagesExtractor',
   // Add more extractors here as they're implemented
 ];
+
+/**
+ * Create a DocumentChunk with parsed metadata from the content
+ */
+function createChunkWithMetadata(
+  content: string,
+  baseMetadata: { url: string; title: string; path: string },
+  startLine: number,
+  endLine: number,
+  vector: number[]
+): DocumentChunk {
+  const parsed = parseMetadata(content);
+
+  return {
+    content,
+    startLine,
+    endLine,
+    vector,
+    url: baseMetadata.url,
+    title: baseMetadata.title,
+    path: baseMetadata.path,
+    metadata: {
+      type: parsed.contentType,
+      props: parsed.props.length > 0 ? parsed.props : undefined,
+      codeBlocks: parsed.codeBlocks.length > 0 ? parsed.codeBlocks : undefined
+    }
+  };
+}
 
 async function* semanticChunker(
   content: string,
@@ -50,18 +79,7 @@ async function* semanticChunker(
       // First yield current chunk if not empty
       if (currentChunk.trim().length > 0) {
         const vector = await embeddings.embed(currentChunk);
-        yield {
-          content: currentChunk.trim(),
-          startLine,
-          endLine: currentLine - 1,
-          vector,
-          url: metadata.url,
-          title: metadata.title,
-          path: metadata.path,
-          metadata: {
-            type: 'overview'
-          }
-        };
+        yield createChunkWithMetadata(currentChunk.trim(), metadata, startLine, currentLine - 1, vector);
         currentChunk = '';
       }
 
@@ -76,18 +94,13 @@ async function* semanticChunker(
         if (sentenceTokens + nextTokens > maxChunkSize - 5) {
           if (sentenceChunk.trim().length > 0) {
             const vector = await embeddings.embed(sentenceChunk);
-            yield {
-              content: sentenceChunk.trim(),
-              startLine: currentLine,
-              endLine: currentLine + sentenceChunk.split('\n').length - 1,
-              vector,
-              url: metadata.url,
-              title: metadata.title,
-              path: metadata.path,
-              metadata: {
-                type: 'overview'
-              }
-            };
+            yield createChunkWithMetadata(
+              sentenceChunk.trim(),
+              metadata,
+              currentLine,
+              currentLine + sentenceChunk.split('\n').length - 1,
+              vector
+            );
           }
           sentenceChunk = sentence;
           sentenceTokens = nextTokens;
@@ -100,36 +113,20 @@ async function* semanticChunker(
       // Yield remaining sentence chunk
       if (sentenceChunk.trim().length > 0) {
         const vector = await embeddings.embed(sentenceChunk);
-        yield {
-          content: sentenceChunk.trim(),
-          startLine: currentLine,
-          endLine: currentLine + sentenceChunk.split('\n').length - 1,
-          vector,
-          url: metadata.url,
-          title: metadata.title,
-          path: metadata.path,
-          metadata: {
-            type: 'overview'
-          }
-        };
+        yield createChunkWithMetadata(
+          sentenceChunk.trim(),
+          metadata,
+          currentLine,
+          currentLine + sentenceChunk.split('\n').length - 1,
+          vector
+        );
       }
     }
     // If adding section would exceed limit, yield current chunk and start new one
     else if (tokenCount + sectionTokens > maxChunkSize - 5) {
       if (currentChunk.trim().length > 0) {
         const vector = await embeddings.embed(currentChunk);
-        yield {
-          content: currentChunk.trim(),
-          startLine,
-          endLine: currentLine - 1,
-          vector,
-          url: metadata.url,
-          title: metadata.title,
-          path: metadata.path,
-          metadata: {
-            type: 'overview'
-          }
-        };
+        yield createChunkWithMetadata(currentChunk.trim(), metadata, startLine, currentLine - 1, vector);
       }
       currentChunk = sectionText;
       tokenCount = sectionTokens;
@@ -150,18 +147,7 @@ async function* semanticChunker(
   // Yield final chunk if not empty
   if (currentChunk.trim().length > 0) {
     const vector = await embeddings.embed(currentChunk);
-    yield {
-      content: currentChunk.trim(),
-      startLine,
-      endLine: currentLine - 1,
-      vector,
-      url: metadata.url,
-      title: metadata.title,
-      path: metadata.path,
-      metadata: {
-        type: 'overview'
-      }
-    };
+    yield createChunkWithMetadata(currentChunk.trim(), metadata, startLine, currentLine - 1, vector);
   }
 }
 

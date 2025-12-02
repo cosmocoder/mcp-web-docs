@@ -186,6 +186,9 @@ export class StorybookExtractor implements ContentExtractor {
   }
 
   private async processPropsTable(table: Element, sections: string[], addedSections: Set<string>): Promise<void> {
+    // First, expand all "Show more" buttons in the table to reveal all type values
+    await this.expandAllTypeValues(table);
+
     this.addContentToSections('## Props', sections, addedSections);
     this.addContentToSections('', sections, addedSections);
     this.addContentToSections('| Name | Type | Default |', sections, addedSections);
@@ -214,41 +217,8 @@ export class StorybookExtractor implements ContentExtractor {
       }
 
       // Cell 1: Type (in Storybook 7+, this is the Description column but contains type)
-      // The type values are often in nested generic/span elements
       if (cells[1]) {
-        const typeCell = cells[1];
-
-        // Method 1: Look for individual type value elements (Storybook 7 format)
-        // These are typically div/span elements containing quoted strings like "primary", "secondary"
-        const typeValueElements = typeCell.querySelectorAll(
-          '[class*="type"] > *, ' +
-          'div > div:not(:has(table)):not(:has(button)), ' +
-          'span[class]:not(:has(*)), ' +
-          'code'
-        );
-
-        if (typeValueElements.length > 0) {
-          const typeValues = Array.from(typeValueElements)
-            .map(el => el.textContent?.trim())
-            .filter(v => v && !v.includes('Show') && !v.includes('Deprecated'))
-            .map(v => v?.replace(/^["']|["']$/g, '')) // Remove quotes
-            .filter((v, i, arr) => arr.indexOf(v) === i); // Dedupe
-
-          if (typeValues.length > 0) {
-            type = typeValues.join(' \\| ');
-          }
-        }
-
-        // Method 2: Fallback to full text content
-        if (!type) {
-          const typeText = typeCell.textContent?.trim() || '';
-          // Clean up the type text - remove "Show X more..." and normalize
-          type = typeText
-            .replace(/Show \d+ more\.\.\.?/gi, '')
-            .replace(/Show less\.\.\.?/gi, '')
-            .replace(/Deprecated:[^|]+/gi, '')
-            .trim();
-        }
+        type = this.extractTypeFromCell(cells[1]);
       }
 
       // Cell 2: Default value
@@ -263,39 +233,171 @@ export class StorybookExtractor implements ContentExtractor {
         type = '-';
       }
 
-      // Clean and format type
-      let formattedType = type
-        .replace(/["']/g, '')           // Remove remaining quotes
-        .replace(/\s+/g, ' ')           // Normalize whitespace
-        .replace(/\s*\|\s*/g, ' \\| ')  // Normalize pipe separators
-        .trim();
-
-      // For very long type lists, keep them but make them readable
-      if (formattedType.length > 150) {
-        const parts = formattedType.split(' \\| ');
-        if (parts.length > 6) {
-          formattedType = parts.slice(0, 6).join(' \\| ') + ` (${parts.length - 6} more)`;
-        }
-      }
-
       // Clean default value
       const formattedDefault = defaultValue
         .replace(/\|/g, '\\|')
-        .replace(/^["']|["']$/g, '`$&`'.replace(/["']/g, ''))  // Wrap in backticks if quoted
-        .replace(/^"([^"]+)"$/, '`$1`')
-        .replace(/^'([^']+)'$/, '`$1`');
+        .replace(/^"([^"]+)"$/, '`"$1"`')
+        .replace(/^'([^']+)'$/, "`'$1'`");
 
       const formattedName = required ? `${name}*` : name;
 
       if (name && name !== 'Name') {
         this.addContentToSections(
-          `| ${formattedName} | ${formattedType || '-'} | ${formattedDefault} |`,
+          `| ${formattedName} | ${type || '-'} | ${formattedDefault} |`,
           sections,
           addedSections
         );
       }
     }
     this.addContentToSections('', sections, addedSections);
+  }
+
+  /**
+   * Click all "Show more" buttons in a props table to expand type values
+   */
+  private async expandAllTypeValues(table: Element): Promise<void> {
+    try {
+      // Find all "Show X more" buttons and click them
+      const showMoreButtons = table.querySelectorAll('button');
+      for (const button of showMoreButtons) {
+        const text = button.textContent?.toLowerCase() || '';
+        if (text.includes('show') && (text.includes('more') || /\d+/.test(text))) {
+          try {
+            (button as HTMLButtonElement).click();
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } catch (e) {
+            // Ignore click errors
+          }
+        }
+      }
+      // Wait for expansion to complete
+      await new Promise(resolve => setTimeout(resolve, 200));
+    } catch (error) {
+      console.error('[StorybookExtractor] Error expanding type values:', error);
+    }
+  }
+
+  /**
+   * Extract type values from a table cell, handling Storybook's various DOM structures
+   */
+  private extractTypeFromCell(cell: Element): string {
+    const typeValues: string[] = [];
+    const seenValues = new Set<string>();
+
+    // Helper to add a value if it's valid and not seen
+    const addValue = (val: string | null | undefined) => {
+      if (!val) return;
+      const cleaned = val
+        .trim()
+        .replace(/^["']|["']$/g, '') // Remove surrounding quotes
+        .replace(/^\||\|$/g, '')     // Remove leading/trailing pipes
+        .trim();
+
+      // Skip invalid values
+      if (!cleaned ||
+          cleaned.length < 1 ||
+          cleaned === '-' ||
+          /^show/i.test(cleaned) ||
+          /more\.\.\.?$/i.test(cleaned) ||
+          /^less\.\.\.?$/i.test(cleaned) ||
+          /^deprecated/i.test(cleaned) ||
+          seenValues.has(cleaned.toLowerCase())) {
+        return;
+      }
+
+      seenValues.add(cleaned.toLowerCase());
+      typeValues.push(cleaned);
+    };
+
+    // Strategy 1: Look for specific type value containers (Storybook 7+)
+    // These are usually spans/divs with specific classes containing individual values
+    const typeContainers = cell.querySelectorAll(
+      '[class*="argType"] span, ' +
+      '[class*="type-"] span, ' +
+      '[class*="union"] > span, ' +
+      '.css-in3yi3, ' +  // Common Storybook class for type values
+      'span[title]'      // Spans with title attributes often contain type info
+    );
+
+    if (typeContainers.length > 0) {
+      for (const container of typeContainers) {
+        // Get the direct text, not nested button text
+        const hasButton = container.querySelector('button');
+        if (hasButton) continue;
+
+        const text = container.textContent?.trim();
+        addValue(text);
+      }
+    }
+
+    // Strategy 2: If we have quoted strings in the cell, extract them
+    const cellText = cell.textContent || '';
+    const quotedMatches = cellText.match(/"([^"]+)"|'([^']+)'/g);
+    if (quotedMatches) {
+      for (const match of quotedMatches) {
+        addValue(match.replace(/["']/g, ''));
+      }
+    }
+
+    // Strategy 3: Look for literal type spans (often have specific styling)
+    const literalSpans = cell.querySelectorAll('span');
+    for (const span of literalSpans) {
+      // Only consider leaf spans (no child elements except text)
+      if (span.children.length === 0) {
+        const text = span.textContent?.trim();
+        // Check if it looks like a type value (quoted, or specific format)
+        if (text && (text.startsWith('"') || text.startsWith("'") ||
+            /^[a-z]+$/i.test(text) || // Simple word like "boolean", "string"
+            /^[A-Z][a-zA-Z<>[\]]+$/.test(text))) { // Type like "Ref<HTMLElement>"
+          addValue(text);
+        }
+      }
+    }
+
+    // Strategy 4: Check for code elements
+    const codeElements = cell.querySelectorAll('code');
+    for (const code of codeElements) {
+      addValue(code.textContent);
+    }
+
+    // Strategy 5: Fallback - parse the text content intelligently
+    if (typeValues.length === 0) {
+      // Clean up the full text
+      let fullText = cellText
+        .replace(/Show \d+ more\.\.\.?/gi, '')
+        .replace(/Show less\.\.\.?/gi, '')
+        .replace(/Deprecated:[^|]*/gi, '')
+        .trim();
+
+      // Check if it's a simple type (boolean, string, number, any, etc.)
+      if (/^(boolean|string|number|any|never|void|null|undefined|object|function)$/i.test(fullText)) {
+        return fullText.toLowerCase();
+      }
+
+      // Check if it looks like a React type
+      if (/^(Ref|React\.|HTMLElement|JSX\.)/i.test(fullText)) {
+        return fullText;
+      }
+
+      // Try to split by common separators if text has multiple values
+      if (fullText.includes('|') || fullText.includes(' or ')) {
+        const parts = fullText.split(/\s*\|\s*|\s+or\s+/);
+        for (const part of parts) {
+          addValue(part);
+        }
+      } else {
+        // Last resort: just use the text as-is
+        return fullText || '-';
+      }
+    }
+
+    // Format the output
+    if (typeValues.length === 0) {
+      return '-';
+    }
+
+    // Join with escaped pipe separators (\ |) so they don't break markdown tables
+    return typeValues.join(' \\| ');
   }
 
   private async waitForSidebar(document: Document): Promise<void> {
@@ -568,6 +670,10 @@ export class StorybookExtractor implements ContentExtractor {
       for (const heading of headings) {
         const title = heading.textContent?.trim();
         if (title && !addedSections.has(`## ${title}`)) {
+          // Skip "Props" section - it will be handled by processPropsTable
+          const isPropsSection = /^props$/i.test(title);
+          if (isPropsSection) continue;
+
           const level = heading.tagName === 'H1' ? '#' : '##';
           this.addContentToSections(`${level} ${title}`, sections, addedSections);
           this.addContentToSections('', sections, addedSections);
@@ -575,11 +681,13 @@ export class StorybookExtractor implements ContentExtractor {
           let current = heading.nextElementSibling;
           while (current && !current.matches('h1, h2, h3, h4')) {
             if (this.isElementVisible(current)) {
-              if (current.matches('table') && !current.matches('.docblock-argstable')) {
+              // Skip props tables - they will be handled separately
+              const isPropsTable = current.matches('.docblock-argstable, [class*="ArgTable"], [class*="argtable"]');
+              if (current.matches('table') && !isPropsTable) {
                 await this.processTableContent(current, sections, addedSections);
               } else if (current.matches('ul, ol')) {
                 await this.processListContent(current, sections, addedSections);
-              } else {
+              } else if (!isPropsTable) {
                 await this.processSectionContent(current, sections, addedSections);
               }
             }
