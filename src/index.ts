@@ -150,13 +150,38 @@ class WebDocsServer {
         },
         {
           name: 'search_documentation',
-          description: 'Search through indexed documentation using semantic similarity',
+          description: `Search through indexed documentation using hybrid search (full-text + semantic).
+
+## Query Tips for Best Results
+
+1. **Be specific** - Include unique terms from what you're looking for
+   - Instead of: "Button props"
+   - Try: "Button props onClick disabled loading"
+
+2. **Use exact phrases** - Wrap in quotes for exact matching
+   - "authentication middleware" finds that exact phrase
+   - authentication middleware finds pages with either word
+
+3. **Include context** - Add related terms to narrow results
+   - API docs: "GET /users endpoint authentication headers"
+   - Config: "webpack config entry output plugins"
+   - Functions: "parseJSON function parameters return type"
+
+4. **Combine concepts** - More terms = more precise results
+   - "Card component status primary negative props table"
+   - "database connection pool maxConnections timeout"
+
+## How Search Works
+- Full-text search with stemming (run → runs, running)
+- Fuzzy matching for typos (authetication → authentication)
+- Semantic similarity for conceptual matches
+- Results ranked by relevance combining all signals`,
           inputSchema: {
             type: 'object',
             properties: {
               query: {
                 type: 'string',
-                description: 'Search query'
+                description: 'Search query - be specific and include unique terms. Use quotes for exact phrases. Example: "Card component props headline status" or "REST API authentication Bearer token"'
               },
               limit: {
                 type: 'number',

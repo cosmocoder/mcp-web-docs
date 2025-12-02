@@ -1,6 +1,7 @@
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import * as lancedb from '@lancedb/lancedb';
+import { PhraseQuery, MatchQuery, BooleanQuery, Occur } from '@lancedb/lancedb';
 import { Field, FixedSizeList, Float32, Schema, Utf8, Int32 } from 'apache-arrow';
 import QuickLRU from 'quick-lru';
 import { mkdir } from 'fs/promises';
@@ -29,6 +30,44 @@ type LanceDbRow = {
   codeBlocks: string;
   props: string;
 };
+
+/**
+ * Query preprocessing result for improved search
+ */
+interface ProcessedQuery {
+  /** Exact phrases to match (from quoted strings) */
+  phrases: string[];
+  /** Cleaned query text for general search */
+  cleanedQuery: string;
+  /** Original query for fallback */
+  original: string;
+}
+
+/**
+ * Preprocesses a search query - keeps it generic for any documentation type.
+ * Only extracts explicitly quoted phrases, otherwise passes through to LanceDB's
+ * built-in tokenization which handles stop words and stemming.
+ */
+function preprocessQuery(query: string): ProcessedQuery {
+  const result: ProcessedQuery = {
+    phrases: [],
+    cleanedQuery: query,
+    original: query
+  };
+
+  // Extract quoted phrases for exact matching
+  const quotedPattern = /"([^"]+)"/g;
+  let match;
+  while ((match = quotedPattern.exec(query)) !== null) {
+    result.phrases.push(match[1]);
+  }
+
+  // Remove quotes from cleaned query
+  result.cleanedQuery = query.replace(/"([^"]+)"/g, '$1').trim();
+
+  logger.debug('[QueryPreprocess] Processed query:', result);
+  return result;
+}
 
 export class DocumentStore implements StorageProvider {
   private sqliteDb?: Database;
@@ -420,19 +459,76 @@ export class DocumentStore implements StorageProvider {
         throw new Error('Storage not initialized');
       }
 
-      // Try hybrid search: combine FTS with vector search for best results
-      logger.debug('[DocumentStore] Attempting hybrid search (FTS + vector)');
+      // Preprocess query - only extracts quoted phrases, keeps everything else generic
+      const processedQuery = preprocessQuery(query);
 
       // Generate embedding for vector search
       const queryVector = await this.embeddings.embed(query);
 
-      // Try FTS first if index exists
+      logger.debug('[DocumentStore] Attempting hybrid search (FTS + vector with RRF)');
+
+      // Strategy 1: If user provided quoted phrases, use phrase matching
+      if (this.ftsIndexCreated && processedQuery.phrases.length > 0) {
+        try {
+          logger.debug('[DocumentStore] Using phrase-based search for quoted terms:', processedQuery.phrases);
+
+          // Build boolean query: phrase matches (must) + general terms (should)
+          const queries: [Occur, PhraseQuery | MatchQuery][] = [];
+
+          // Add phrase queries for quoted phrases (exact match)
+          for (const phrase of processedQuery.phrases) {
+            queries.push([Occur.Must, new PhraseQuery(phrase, 'content', { slop: 0 })]);
+          }
+
+          // Add fuzzy match for the overall cleaned query
+          if (processedQuery.cleanedQuery) {
+            queries.push([Occur.Should, new MatchQuery(processedQuery.cleanedQuery, 'content', { fuzziness: 1 })]);
+          }
+
+          const boolQuery = new BooleanQuery(queries);
+
+          let ftsQuery = this.lanceTable
+            .query()
+            .fullTextSearch(boolQuery)
+            .limit(limit * 2);
+
+          if (filterByType) {
+            ftsQuery = ftsQuery.where(`type = '${filterByType}'`);
+          }
+
+          const ftsResults = await ftsQuery.toArray();
+          logger.debug(`[DocumentStore] Phrase-based FTS returned ${ftsResults.length} results`);
+
+          if (ftsResults.length > 0) {
+            // Combine with vector search for semantic relevance
+            let vectorQuery = this.lanceTable.search(queryVector).limit(limit * 2);
+            if (filterByType) {
+              vectorQuery = vectorQuery.where(`type = '${filterByType}'`);
+            }
+            const vectorResults = await vectorQuery.toArray();
+
+            const mergedResults = this.mergeAndRankResults(ftsResults, vectorResults, limit);
+            const searchResults = this.formatSearchResults(mergedResults);
+
+            this.searchCache.set(cacheKey, searchResults);
+            return searchResults;
+          }
+        } catch (phraseError: any) {
+          logger.debug('[DocumentStore] Phrase-based search failed:', phraseError.message);
+        }
+      }
+
+      // Strategy 2: Standard hybrid search - FTS with fuzziness + vector search
       if (this.ftsIndexCreated) {
         try {
-          // Use LanceDB's native full-text search (pass string instead of vector)
+          // LanceDB's FTS already handles stop words and stemming
+          // Add fuzziness for typo tolerance
+          const matchQuery = new MatchQuery(processedQuery.cleanedQuery, 'content', { fuzziness: 1 });
+
           let ftsQuery = this.lanceTable
-            .search(query)
-            .limit(limit * 2); // Get more results for re-ranking
+            .query()
+            .fullTextSearch(matchQuery)
+            .limit(limit * 2);
 
           if (filterByType) {
             ftsQuery = ftsQuery.where(`type = '${filterByType}'`);
@@ -441,66 +537,18 @@ export class DocumentStore implements StorageProvider {
           const ftsResults = await ftsQuery.toArray();
           logger.debug(`[DocumentStore] FTS returned ${ftsResults.length} results`);
 
-          if (ftsResults.length > 0) {
-            // Also do vector search for hybrid results
-            let vectorQuery = this.lanceTable
-              .search(queryVector)
-              .limit(limit * 2);
+          // Always combine with vector search for best results
+          let vectorQuery = this.lanceTable.search(queryVector).limit(limit * 2);
+          if (filterByType) {
+            vectorQuery = vectorQuery.where(`type = '${filterByType}'`);
+          }
+          const vectorResults = await vectorQuery.toArray();
+          logger.debug(`[DocumentStore] Vector search returned ${vectorResults.length} results`);
 
-            if (filterByType) {
-              vectorQuery = vectorQuery.where(`type = '${filterByType}'`);
-            }
-
-            const vectorResults = await vectorQuery.toArray();
-            logger.debug(`[DocumentStore] Vector search returned ${vectorResults.length} results`);
-
-            // Merge and deduplicate results, prioritizing FTS matches
-            const seenUrls = new Set<string>();
-            const mergedResults: any[] = [];
-
-            // Add FTS results first (they have exact matches)
-            for (const result of ftsResults) {
-              const key = `${result.url}:${result.path}:${result.startLine}`;
-              if (!seenUrls.has(key)) {
-                seenUrls.add(key);
-                mergedResults.push({ ...result, _ftsMatch: true });
-              }
-            }
-
-            // Add vector results that weren't in FTS
-            for (const result of vectorResults) {
-              const key = `${result.url}:${result.path}:${result.startLine}`;
-              if (!seenUrls.has(key)) {
-                seenUrls.add(key);
-                mergedResults.push(result);
-              }
-            }
-
-            // Parse and return top results
-            const searchResults = mergedResults.slice(0, limit).map((result: any) => {
-              let codeBlocks, props;
-              try { codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined; } catch { codeBlocks = undefined; }
-              try { props = result.props ? JSON.parse(result.props) : undefined; } catch { props = undefined; }
-
-              return {
-                id: String(result.url),
-                content: String(result.content),
-                url: String(result.url),
-                title: String(result.title),
-                score: result._distance != null ? 1 - result._distance : (result._score ?? null),
-                metadata: {
-                  type: (result.type || 'overview') as 'overview' | 'api' | 'example' | 'usage',
-                  path: String(result.path),
-                  lastUpdated: new Date(result.lastUpdated ? String(result.lastUpdated) : Date.now()),
-                  version: result.version as string | undefined,
-                  framework: result.framework as string | undefined,
-                  language: result.language as string | undefined,
-                  codeBlocks,
-                  props
-                }
-              };
-            });
-
+          // Merge using RRF even if one is empty - ensures we get results
+          const mergedResults = this.mergeAndRankResults(ftsResults, vectorResults, limit);
+          if (mergedResults.length > 0) {
+            const searchResults = this.formatSearchResults(mergedResults);
             this.searchCache.set(cacheKey, searchResults);
             return searchResults;
           }
@@ -509,7 +557,8 @@ export class DocumentStore implements StorageProvider {
         }
       }
 
-      // Fallback to pure vector search
+      // Strategy 3: Fallback to pure vector search (semantic similarity)
+      logger.debug('[DocumentStore] Falling back to pure vector search');
       const results = await this.searchDocuments(queryVector, options);
       this.searchCache.set(cacheKey, results);
       return results;
@@ -517,6 +566,70 @@ export class DocumentStore implements StorageProvider {
       logger.error('[DocumentStore] Error searching documents by text:', error);
       throw error;
     }
+  }
+
+  /**
+   * Merge FTS and vector results using Reciprocal Rank Fusion (RRF)
+   */
+  private mergeAndRankResults(ftsResults: any[], vectorResults: any[], limit: number): any[] {
+    const k = 60; // RRF constant
+    const scores = new Map<string, { result: any; score: number }>();
+
+    // Score FTS results
+    ftsResults.forEach((result, rank) => {
+      const key = `${result.url}:${result.path}:${result.startLine}`;
+      const rrfScore = 1 / (k + rank + 1);
+      scores.set(key, { result, score: rrfScore });
+    });
+
+    // Add/combine vector results
+    vectorResults.forEach((result, rank) => {
+      const key = `${result.url}:${result.path}:${result.startLine}`;
+      const rrfScore = 1 / (k + rank + 1);
+
+      if (scores.has(key)) {
+        // Combine scores if result appears in both
+        const existing = scores.get(key)!;
+        existing.score += rrfScore;
+      } else {
+        scores.set(key, { result, score: rrfScore });
+      }
+    });
+
+    // Sort by combined RRF score and return top results
+    return Array.from(scores.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(item => ({ ...item.result, _rrfScore: item.score }));
+  }
+
+  /**
+   * Format raw LanceDB results into SearchResult objects
+   */
+  private formatSearchResults(results: any[]): SearchResult[] {
+    return results.map((result: any) => {
+      let codeBlocks, props;
+      try { codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined; } catch { codeBlocks = undefined; }
+      try { props = result.props ? JSON.parse(result.props) : undefined; } catch { props = undefined; }
+
+      return {
+        id: String(result.url),
+        content: String(result.content),
+        url: String(result.url),
+        title: String(result.title),
+        score: result._rrfScore ?? (result._distance != null ? 1 - result._distance : (result._score ?? null)),
+        metadata: {
+          type: (result.type || 'overview') as 'overview' | 'api' | 'example' | 'usage',
+          path: String(result.path),
+          lastUpdated: new Date(result.lastUpdated ? String(result.lastUpdated) : Date.now()),
+          version: result.version as string | undefined,
+          framework: result.framework as string | undefined,
+          language: result.language as string | undefined,
+          codeBlocks,
+          props
+        }
+      };
+    });
   }
 
   async listDocuments(): Promise<DocumentMetadata[]> {
