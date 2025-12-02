@@ -263,10 +263,10 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
           title: readability.title || page.path,
           components: [{
             title: readability.title || 'Content',
-            body: cleanText(readability.textContent)
+            body: cleanText(readability.textContent || '')
           }]
         },
-        content: cleanText(readability.textContent)
+        content: cleanText(readability.textContent || '')
       };
     }
 
