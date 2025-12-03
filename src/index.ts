@@ -34,6 +34,9 @@ import { DocumentChunk, IndexingStatus } from './types.js';
 import { generateDocId } from './util/docs.js';
 import { logger } from './util/logger.js';
 
+/** Progress token type from MCP spec */
+type ProgressToken = string | number;
+
 class WebDocsServer {
   private server: Server;
   private config!: DocsConfig;
@@ -41,6 +44,9 @@ class WebDocsServer {
   private processor!: WebDocumentProcessor;
   private statusTracker: IndexingStatusTracker;
   private indexingQueue: IndexingQueueManager;
+  /** Maps operation ID to progress token for MCP notifications */
+  private progressTokens: Map<string, ProgressToken> = new Map();
+  /** Tracks last notified progress to throttle notifications */
   private lastNotifiedProgress: Map<string, number> = new Map();
 
   constructor() {
@@ -48,7 +54,7 @@ class WebDocsServer {
     this.statusTracker = new IndexingStatusTracker();
     this.indexingQueue = new IndexingQueueManager();
 
-    // Set up status change listener for notifications
+    // Set up status change listener for MCP progress notifications
     this.statusTracker.addStatusListener((status) => {
       this.sendProgressNotification(status);
     });
@@ -74,10 +80,19 @@ class WebDocsServer {
   }
 
   /**
-   * Send progress notification to MCP client.
-   * Throttled to avoid flooding - only sends when progress changes by 5% or status changes.
+   * Send MCP progress notification to client.
+   * Only sends if the client provided a progressToken in the original request.
+   * Throttled to avoid flooding - sends on 5% increments or status changes.
    */
-  private sendProgressNotification(status: IndexingStatus): void {
+  private async sendProgressNotification(status: IndexingStatus): Promise<void> {
+    const progressToken = this.progressTokens.get(status.id);
+
+    // Only send if we have a progress token from the client
+    if (!progressToken) {
+      logger.debug(`[Progress] No token for ${status.id}, skipping notification`);
+      return;
+    }
+
     const progressPercent = Math.round(status.progress * 100);
     const lastProgress = this.lastNotifiedProgress.get(status.id) ?? -1;
 
@@ -91,13 +106,35 @@ class WebDocsServer {
 
     this.lastNotifiedProgress.set(status.id, progressPercent);
 
+    // Build human-readable message
+    let message = status.description;
+    if (status.pagesProcessed !== undefined && status.pagesFound !== undefined) {
+      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages)`;
+    }
+
+    try {
+      // Send MCP progress notification per spec:
+      // https://modelcontextprotocol.io/specification/2025-03-26/basic/utilities/progress
+      await this.server.notification({
+        method: 'notifications/progress',
+        params: {
+          progressToken,
+          progress: progressPercent,
+          total: 100,
+          message
+        }
+      });
+
+      logger.info(`[Progress] Sent notification: ${progressPercent}% - ${message}`);
+    } catch (error) {
+      logger.debug(`[Progress] Failed to send notification:`, error);
+    }
+
     // Clean up tracking for completed operations
     if (isStatusChange) {
       this.lastNotifiedProgress.delete(status.id);
+      this.progressTokens.delete(status.id);
     }
-
-    // Log the notification (MCP SDK will handle actual notification if supported)
-    logger.info(`[Notification] ${status.status}: ${status.url} - ${progressPercent}% - ${status.description}`);
   }
 
   private async initialize() {
@@ -218,15 +255,20 @@ class WebDocsServer {
 
     // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      // Extract progressToken from request metadata (per MCP spec)
+      // Clients can include this to receive progress notifications
+      const args = request.params.arguments as Record<string, unknown> | undefined;
+      const progressToken = (args?._meta as Record<string, unknown> | undefined)?.progressToken as ProgressToken | undefined;
+
       switch (request.params.name) {
         case 'add_documentation':
-          return this.handleAddDocumentation(request.params.arguments);
+          return this.handleAddDocumentation(request.params.arguments, progressToken);
         case 'list_documentation':
           return this.handleListDocumentation();
         case 'search_documentation':
           return this.handleSearchDocumentation(request.params.arguments);
         case 'reindex_documentation':
-          return this.handleReindexDocumentation(request.params.arguments);
+          return this.handleReindexDocumentation(request.params.arguments, progressToken);
         case 'get_indexing_status':
           return this.handleGetIndexingStatus();
         default:
@@ -235,7 +277,7 @@ class WebDocsServer {
     });
   }
 
-  private async handleAddDocumentation(args: any) {
+  private async handleAddDocumentation(args: any, progressToken?: ProgressToken) {
     const { url, title } = args;
     if (!isValidUrl(url)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
@@ -244,6 +286,12 @@ class WebDocsServer {
     const normalizedUrl = normalizeUrl(url);
     const docTitle = title || new URL(normalizedUrl).hostname;
     const docId = generateDocId(normalizedUrl, docTitle);
+
+    // Store progress token if provided by client
+    if (progressToken !== undefined) {
+      this.progressTokens.set(docId, progressToken);
+      logger.info(`[Progress] Registered token for ${docId}: ${progressToken}`);
+    }
 
     // Cancel any existing operation for this URL
     const controller = await this.indexingQueue.startOperation(normalizedUrl);
@@ -268,7 +316,12 @@ class WebDocsServer {
       content: [
         {
           type: 'text',
-          text: `Started indexing ${normalizedUrl} - use get_indexing_status to monitor progress`
+          text: JSON.stringify({
+            status: 'started',
+            message: `Started indexing ${normalizedUrl}`,
+            docId,
+            instruction: 'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.'
+          }, null, 2)
         }
       ]
     };
@@ -299,7 +352,7 @@ class WebDocsServer {
     };
   }
 
-  private async handleReindexDocumentation(args: any) {
+  private async handleReindexDocumentation(args: any, progressToken?: ProgressToken) {
     const { url } = args;
     if (!isValidUrl(url)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
@@ -316,6 +369,13 @@ class WebDocsServer {
     const controller = await this.indexingQueue.startOperation(normalizedUrl);
 
     const docId = generateDocId(normalizedUrl, doc.title);
+
+    // Store progress token if provided by client
+    if (progressToken !== undefined) {
+      this.progressTokens.set(docId, progressToken);
+      logger.info(`[Progress] Registered token for ${docId}: ${progressToken}`);
+    }
+
     this.statusTracker.startIndexing(docId, normalizedUrl, doc.title);
 
     // Start reindexing in the background with abort support
@@ -331,15 +391,18 @@ class WebDocsServer {
 
     this.indexingQueue.registerOperation(normalizedUrl, controller, operationPromise);
 
-    const message = wasCancelled
-      ? `Started re-indexing ${normalizedUrl}. Previous operation was cancelled.`
-      : `Started re-indexing ${normalizedUrl} - use get_indexing_status to monitor progress`;
-
     return {
       content: [
         {
           type: 'text',
-          text: message
+          text: JSON.stringify({
+            status: 'started',
+            message: wasCancelled
+              ? `Started re-indexing ${normalizedUrl}. Previous operation was cancelled.`
+              : `Started re-indexing ${normalizedUrl}`,
+            docId,
+            instruction: 'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.'
+          }, null, 2)
         }
       ]
     };
@@ -347,11 +410,23 @@ class WebDocsServer {
 
   private handleGetIndexingStatus() {
     const statuses = this.statusTracker.getAllStatuses();
+
+    // Check if any operations are still in progress
+    const hasActiveOperations = statuses.some(s => s.status === 'indexing');
+
+    // Add instruction for agent
+    const response = {
+      statuses,
+      instruction: hasActiveOperations
+        ? 'Operations still in progress. Call get_indexing_status again in a few seconds to check progress.'
+        : 'All operations complete. No need to poll again.'
+    };
+
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(statuses, null, 2)
+          text: JSON.stringify(response, null, 2)
         }
       ]
     };
