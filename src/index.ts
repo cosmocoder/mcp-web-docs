@@ -302,6 +302,10 @@ class WebDocsServer {
                 type: 'string',
                 description: 'Search query - be specific and include unique terms. Use quotes for exact phrases. Example: "Card component props headline status" or "REST API authentication Bearer token"'
               },
+              url: {
+                type: 'string',
+                description: 'Optional: Filter results to a specific documentation site by its URL. If not provided, searches all indexed docs.'
+              },
               limit: {
                 type: 'number',
                 description: 'Maximum number of results (default: 10)'
@@ -472,8 +476,12 @@ class WebDocsServer {
   }
 
   private async handleSearchDocumentation(args: any) {
-    const { query, limit = 10 } = args;
-    const results = await this.store.searchByText(query, { limit });
+    const { query, url, limit = 10 } = args;
+
+    // Normalize URL if provided for filtering
+    const filterUrl = url ? normalizeUrl(url) : undefined;
+
+    const results = await this.store.searchByText(query, { limit, filterUrl });
     return {
       content: [
         {

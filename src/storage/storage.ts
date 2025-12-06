@@ -452,7 +452,22 @@ export class DocumentStore implements StorageProvider {
       return cached;
     }
 
-    const { limit = 10, filterByType } = options;
+    const { limit = 10, filterByType, filterUrl } = options;
+
+    // Build WHERE clause for filtering
+    const buildWhereClause = (): string | undefined => {
+      const conditions: string[] = [];
+      if (filterByType) {
+        conditions.push(`type = '${filterByType}'`);
+      }
+      if (filterUrl) {
+        // Filter by base URL - use LIKE to match URLs that start with the base URL
+        conditions.push(`url LIKE '${filterUrl}%'`);
+      }
+      return conditions.length > 0 ? conditions.join(' AND ') : undefined;
+    };
+
+    const whereClause = buildWhereClause();
 
     try {
       if (!this.lanceTable) {
@@ -492,8 +507,8 @@ export class DocumentStore implements StorageProvider {
             .fullTextSearch(boolQuery)
             .limit(limit * 2);
 
-          if (filterByType) {
-            ftsQuery = ftsQuery.where(`type = '${filterByType}'`);
+          if (whereClause) {
+            ftsQuery = ftsQuery.where(whereClause);
           }
 
           const ftsResults = await ftsQuery.toArray();
@@ -502,8 +517,8 @@ export class DocumentStore implements StorageProvider {
           if (ftsResults.length > 0) {
             // Combine with vector search for semantic relevance
             let vectorQuery = this.lanceTable.search(queryVector).limit(limit * 2);
-            if (filterByType) {
-              vectorQuery = vectorQuery.where(`type = '${filterByType}'`);
+            if (whereClause) {
+              vectorQuery = vectorQuery.where(whereClause);
             }
             const vectorResults = await vectorQuery.toArray();
 
@@ -530,8 +545,8 @@ export class DocumentStore implements StorageProvider {
             .fullTextSearch(matchQuery)
             .limit(limit * 2);
 
-          if (filterByType) {
-            ftsQuery = ftsQuery.where(`type = '${filterByType}'`);
+          if (whereClause) {
+            ftsQuery = ftsQuery.where(whereClause);
           }
 
           const ftsResults = await ftsQuery.toArray();
@@ -539,8 +554,8 @@ export class DocumentStore implements StorageProvider {
 
           // Always combine with vector search for best results
           let vectorQuery = this.lanceTable.search(queryVector).limit(limit * 2);
-          if (filterByType) {
-            vectorQuery = vectorQuery.where(`type = '${filterByType}'`);
+          if (whereClause) {
+            vectorQuery = vectorQuery.where(whereClause);
           }
           const vectorResults = await vectorQuery.toArray();
           logger.debug(`[DocumentStore] Vector search returned ${vectorResults.length} results`);

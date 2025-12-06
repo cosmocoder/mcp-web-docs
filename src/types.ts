@@ -95,6 +95,8 @@ export interface SearchOptions {
   includeVectors?: boolean;
   filterByType?: 'overview' | 'api' | 'example' | 'usage' | 'component_usage' | 'concept' | 'troubleshooting' | 'general';
   textQuery?: string;
+  /** Filter results to a specific documentation site by its base URL */
+  filterUrl?: string;
 }
 
 export interface StorageProvider {
