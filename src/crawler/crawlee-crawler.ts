@@ -8,9 +8,36 @@ import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
 
+/** Storage state for authentication (cookies and localStorage) */
+export interface StorageState {
+  cookies: Array<{
+    name: string;
+    value: string;
+    domain: string;
+    path: string;
+    expires?: number;
+    httpOnly?: boolean;
+    secure?: boolean;
+    sameSite?: 'Strict' | 'Lax' | 'None';
+  }>;
+  origins?: Array<{
+    origin: string;
+    localStorage: Array<{ name: string; value: string }>;
+  }>;
+}
+
 export class CrawleeCrawler extends BaseCrawler {
   private crawler: PlaywrightCrawler | null = null;
   private queueManager: QueueManager = new QueueManager();
+  private storageState?: StorageState;
+
+  /**
+   * Set authentication cookies/localStorage to use when crawling
+   */
+  setStorageState(state: StorageState): void {
+    this.storageState = state;
+    logger.info(`[CrawleeCrawler] Set storage state with ${state.cookies?.length || 0} cookies`);
+  }
 
   private async findContentFrame(page: Page): Promise<Frame | null> {
     const frames = await page.frames();
@@ -83,8 +110,42 @@ export class CrawleeCrawler extends BaseCrawler {
     logger.debug(`[${this.constructor.name}] Starting crawl of: ${url}`);
     await this.queueManager.initialize(url);
 
+    // Build crawler options with optional authentication
+    const crawlerOptions = getBrowserConfig(this.queueManager.getRequestQueue());
+
+    // If we have storage state (auth cookies), configure the browser to use them
+    if (this.storageState) {
+      logger.info(`[CrawleeCrawler] Using authenticated session with ${this.storageState.cookies?.length || 0} cookies`);
+      crawlerOptions.launchContext = {
+        ...crawlerOptions.launchContext,
+        launchOptions: {
+          ...crawlerOptions.launchContext?.launchOptions,
+        }
+      };
+      crawlerOptions.browserPoolOptions = {
+        ...crawlerOptions.browserPoolOptions,
+        preLaunchHooks: [
+          async (pageId) => {
+            // Storage state will be set in preNavigationHooks instead
+            logger.debug(`[CrawleeCrawler] Browser launching for page ${pageId}`);
+          }
+        ]
+      };
+      // Add cookies via preNavigationHooks
+      const existingHooks = crawlerOptions.preNavigationHooks || [];
+      crawlerOptions.preNavigationHooks = [
+        ...existingHooks,
+        async ({ page }) => {
+          if (this.storageState?.cookies) {
+            logger.debug(`[CrawleeCrawler] Setting ${this.storageState.cookies.length} cookies before navigation`);
+            await page.context().addCookies(this.storageState.cookies);
+          }
+        }
+      ];
+    }
+
     this.crawler = new PlaywrightCrawler({
-      ...getBrowserConfig(this.queueManager.getRequestQueue()),
+      ...crawlerOptions,
       requestHandler: async ({ request, page, enqueueLinks, log }) => {
         if (this.isAborting) {
           log.debug('Crawl aborted');

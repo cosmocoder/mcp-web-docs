@@ -29,6 +29,7 @@ import { IndexingStatusTracker } from './indexing/status.js';
 import { IndexingQueueManager } from './indexing/queue-manager.js';
 import { DocsConfig, loadConfig, isValidUrl, normalizeUrl } from './config.js';
 import { DocsCrawler } from './crawler/docs-crawler.js';
+import { AuthManager, BrowserType } from './crawler/auth.js';
 import { fetchFavicon } from './util/favicon.js';
 import { DocumentChunk, IndexingStatus } from './types.js';
 import { generateDocId } from './util/docs.js';
@@ -44,6 +45,7 @@ class WebDocsServer {
   private processor!: WebDocumentProcessor;
   private statusTracker: IndexingStatusTracker;
   private indexingQueue: IndexingQueueManager;
+  private authManager!: AuthManager;
   /** Maps operation ID to progress token for MCP notifications */
   private progressTokens: Map<string, ProgressToken> = new Map();
   /** Tracks last notified progress to throttle notifications */
@@ -151,6 +153,10 @@ class WebDocsServer {
     );
     this.processor = new WebDocumentProcessor(embeddings, this.config.maxChunkSize);
 
+    // Initialize auth manager for handling authenticated crawls
+    this.authManager = new AuthManager(this.config.dataDir);
+    await this.authManager.initialize();
+
     // Initialize storage
     await this.store.initialize();
   }
@@ -161,7 +167,7 @@ class WebDocsServer {
       tools: [
         {
           name: 'add_documentation',
-          description: 'Add new documentation site for indexing',
+          description: 'Add new documentation site for indexing. Supports authenticated sites via the auth options.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -172,6 +178,82 @@ class WebDocsServer {
               title: {
                 type: 'string',
                 description: 'Optional title for the documentation'
+              },
+              id: {
+                type: 'string',
+                description: 'Optional custom ID for the documentation (used for storage and identification). If not provided, an ID is auto-generated from the URL.'
+              },
+              auth: {
+                type: 'object',
+                description: 'Authentication options for protected documentation sites',
+                properties: {
+                  requiresAuth: {
+                    type: 'boolean',
+                    description: 'Set to true to open a browser for interactive login before crawling'
+                  },
+                  browser: {
+                    type: 'string',
+                    enum: ['chromium', 'chrome', 'firefox', 'webkit', 'edge'],
+                    description: 'Browser to use for authentication (default: chromium)'
+                  },
+                  loginUrl: {
+                    type: 'string',
+                    description: 'Login page URL if different from main URL'
+                  },
+                  loginSuccessPattern: {
+                    type: 'string',
+                    description: 'URL regex pattern that indicates successful login'
+                  },
+                  loginSuccessSelector: {
+                    type: 'string',
+                    description: 'CSS selector that appears after successful login'
+                  },
+                  loginTimeoutSecs: {
+                    type: 'number',
+                    description: 'Timeout for login in seconds (default: 300)'
+                  }
+                }
+              }
+            },
+            required: ['url']
+          }
+        },
+        {
+          name: 'authenticate',
+          description: 'Open a browser window for interactive login to a protected site. The session will be saved and reused for future crawls. Use this before add_documentation for sites that require login.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the site to authenticate to'
+              },
+              browser: {
+                type: 'string',
+                enum: ['chromium', 'chrome', 'firefox', 'webkit', 'edge'],
+                description: 'Browser to use (default: chromium). Use "chrome" or "edge" to use your installed browser.'
+              },
+              loginUrl: {
+                type: 'string',
+                description: 'Login page URL if different from main URL'
+              },
+              loginTimeoutSecs: {
+                type: 'number',
+                description: 'Timeout for login in seconds (default: 300 = 5 minutes)'
+              }
+            },
+            required: ['url']
+          }
+        },
+        {
+          name: 'clear_auth',
+          description: 'Clear saved authentication session for a domain',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the site to clear authentication for'
               }
             },
             required: ['url']
@@ -249,6 +331,24 @@ class WebDocsServer {
             type: 'object',
             properties: {}
           }
+        },
+        {
+          name: 'delete_documentation',
+          description: 'Delete an indexed documentation site and all its data (vectors, metadata, cached crawl data, and optionally auth session)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the documentation site to delete'
+              },
+              clearAuth: {
+                type: 'boolean',
+                description: 'Also clear saved authentication session for this domain (default: false)'
+              }
+            },
+            required: ['url']
+          }
         }
       ]
     }));
@@ -271,6 +371,12 @@ class WebDocsServer {
           return this.handleReindexDocumentation(request.params.arguments, progressToken);
         case 'get_indexing_status':
           return this.handleGetIndexingStatus();
+        case 'authenticate':
+          return this.handleAuthenticate(request.params.arguments);
+        case 'clear_auth':
+          return this.handleClearAuth(request.params.arguments);
+        case 'delete_documentation':
+          return this.handleDeleteDocumentation(request.params.arguments);
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
       }
@@ -278,14 +384,40 @@ class WebDocsServer {
   }
 
   private async handleAddDocumentation(args: any, progressToken?: ProgressToken) {
-    const { url, title } = args;
+    const { url, title, id, auth } = args;
     if (!isValidUrl(url)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
     }
 
     const normalizedUrl = normalizeUrl(url);
     const docTitle = title || new URL(normalizedUrl).hostname;
-    const docId = generateDocId(normalizedUrl, docTitle);
+    // Use custom ID if provided, otherwise auto-generate
+    const docId = id || generateDocId(normalizedUrl, docTitle);
+
+    // Handle inline authentication if requested
+    if (auth?.requiresAuth) {
+      const hasExistingSession = await this.authManager.hasSession(normalizedUrl);
+      if (!hasExistingSession) {
+        logger.info(`[WebDocsServer] auth.requiresAuth=true, starting interactive login for ${normalizedUrl}`);
+        try {
+          await this.authManager.performInteractiveLogin(normalizedUrl, {
+            browser: auth.browser,
+            loginUrl: auth.loginUrl,
+            loginSuccessPattern: auth.loginSuccessPattern,
+            loginSuccessSelector: auth.loginSuccessSelector,
+            loginTimeoutSecs: auth.loginTimeoutSecs
+          });
+          logger.info(`[WebDocsServer] Authentication successful for ${normalizedUrl}`);
+        } catch (error: any) {
+          throw new McpError(
+            ErrorCode.InternalError,
+            `Authentication failed: ${error.message}. Please try using the 'authenticate' tool separately.`
+          );
+        }
+      } else {
+        logger.info(`[WebDocsServer] Using existing saved session for ${normalizedUrl}`);
+      }
+    }
 
     // Store progress token if provided by client
     if (progressToken !== undefined) {
@@ -432,6 +564,200 @@ class WebDocsServer {
     };
   }
 
+  /**
+   * Handle interactive authentication request.
+   * Opens a visible browser for the user to login manually.
+   */
+  private async handleAuthenticate(args: any) {
+    const { url, browser, loginUrl, loginTimeoutSecs = 300 } = args;
+    // Note: browser is undefined if not provided, which triggers auto-detection in performInteractiveLogin
+
+    if (!isValidUrl(url)) {
+      throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
+    }
+
+    const normalizedUrl = normalizeUrl(url);
+    const domain = new URL(normalizedUrl).hostname;
+
+    // Check if we already have a session
+    const hasSession = await this.authManager.hasSession(normalizedUrl);
+    if (hasSession) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'existing_session',
+              message: `Already have a saved session for ${domain}. Use clear_auth first if you need to re-authenticate.`,
+              domain
+            }, null, 2)
+          }
+        ]
+      };
+    }
+
+    try {
+      logger.info(`[Auth] Opening ${browser} browser for authentication to ${domain}`);
+
+      // Perform interactive login
+      await this.authManager.performInteractiveLogin(normalizedUrl, {
+        browser: browser as BrowserType,
+        loginUrl,
+        loginTimeoutSecs
+      });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'success',
+              message: `Successfully authenticated to ${domain}. Session saved for future crawls.`,
+              domain,
+              instruction: 'You can now use add_documentation to crawl this site. The saved session will be used automatically.'
+            }, null, 2)
+          }
+        ]
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error(`[Auth] Authentication failed:`, errorMessage);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'failed',
+              message: `Authentication failed: ${errorMessage}`,
+              domain
+            }, null, 2)
+          }
+        ]
+      };
+    }
+  }
+
+  /**
+   * Handle clearing saved authentication for a domain
+   */
+  private async handleClearAuth(args: any) {
+    const { url } = args;
+
+    if (!isValidUrl(url)) {
+      throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
+    }
+
+    const normalizedUrl = normalizeUrl(url);
+    const domain = new URL(normalizedUrl).hostname;
+
+    await this.authManager.clearSession(normalizedUrl);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({
+            status: 'success',
+            message: `Cleared saved authentication for ${domain}`,
+            domain
+          }, null, 2)
+        }
+      ]
+    };
+  }
+
+  /**
+   * Handle deleting an indexed documentation site and all its data
+   */
+  private async handleDeleteDocumentation(args: any) {
+    const { url, clearAuth = false } = args;
+
+    if (!isValidUrl(url)) {
+      throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
+    }
+
+    const normalizedUrl = normalizeUrl(url);
+    const domain = new URL(normalizedUrl).hostname;
+
+    // Check if document exists
+    const doc = await this.store.getDocument(normalizedUrl);
+    if (!doc) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'not_found',
+              message: `No indexed documentation found for ${normalizedUrl}`,
+              url: normalizedUrl
+            }, null, 2)
+          }
+        ]
+      };
+    }
+
+    const deletedItems: string[] = [];
+
+    try {
+      // 1. Delete from SQLite and LanceDB (via store)
+      await this.store.deleteDocument(normalizedUrl);
+      deletedItems.push('document metadata (SQLite)', 'vector chunks (LanceDB)');
+      logger.info(`[WebDocsServer] Deleted document from store: ${normalizedUrl}`);
+
+      // 2. Delete Crawlee dataset
+      const docId = generateDocId(normalizedUrl, doc.title);
+      try {
+        const { Dataset } = await import('crawlee');
+        const dataset = await Dataset.open(docId);
+        await dataset.drop();
+        deletedItems.push('crawl cache (Crawlee dataset)');
+        logger.info(`[WebDocsServer] Deleted Crawlee dataset: ${docId}`);
+      } catch (e) {
+        logger.debug(`[WebDocsServer] No Crawlee dataset to delete for ${docId}`);
+      }
+
+      // 3. Optionally clear auth session
+      if (clearAuth) {
+        await this.authManager.clearSession(normalizedUrl);
+        deletedItems.push('authentication session');
+        logger.info(`[WebDocsServer] Cleared auth session for ${domain}`);
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'success',
+              message: `Successfully deleted documentation for ${normalizedUrl}`,
+              url: normalizedUrl,
+              title: doc.title,
+              deletedItems
+            }, null, 2)
+          }
+        ]
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error(`[WebDocsServer] Error deleting documentation:`, errorMessage);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              status: 'error',
+              message: `Failed to delete documentation: ${errorMessage}`,
+              url: normalizedUrl,
+              deletedItems
+            }, null, 2)
+          }
+        ]
+      };
+    }
+  }
+
   private async indexAndAdd(
     id: string,
     url: string,
@@ -480,6 +806,18 @@ class WebDocsServer {
         this.config.maxRequestsPerCrawl,
         this.config.githubToken
       );
+
+      // Load saved authentication session if available
+      const savedSession = await this.authManager.loadSession(url);
+      if (savedSession) {
+        try {
+          const storageState = JSON.parse(savedSession);
+          crawler.setStorageState(storageState);
+          logger.info(`[WebDocsServer] Using saved authentication session for ${url}`);
+        } catch (e) {
+          logger.warn(`[WebDocsServer] Failed to parse saved session:`, e);
+        }
+      }
 
       const pages = [];
       let processedPages = 0;

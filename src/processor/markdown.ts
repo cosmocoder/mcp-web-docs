@@ -54,18 +54,66 @@ function extractFrontMatter(content: string): {
   }
 }
 
+/**
+ * Detect if a line looks like a section header.
+ * Handles:
+ * - Markdown headers: # Title, ## Title, etc.
+ * - Docusaurus-style headers: Title​ (with zero-width space or other unicode)
+ * - Plain text headers: Short lines that end with special characters
+ */
+function isLikelyHeader(line: string, prevLine: string, nextLine: string): { isHeader: boolean; level: number; title: string } {
+  // Standard markdown header
+  const headerMatch = line.match(/^(#{1,6})\s+(.+)$/);
+  if (headerMatch) {
+    return { isHeader: true, level: headerMatch[1].length, title: headerMatch[2].trim() };
+  }
+
+  // Clean the line of zero-width spaces and other unicode markers
+  const cleanLine = line.replace(/[\u200B-\u200D\uFEFF\u2060]/g, '').trim();
+
+  // Skip empty lines or very long lines (unlikely to be headers)
+  if (!cleanLine || cleanLine.length > 80) {
+    return { isHeader: false, level: 0, title: '' };
+  }
+
+  // Docusaurus-style header: ends with unicode marker (​) and is relatively short
+  // These are typically section titles like "Hooks​", "Example​", "Important​"
+  if (line.includes('\u200B') || line.includes('\u200D') || line.includes('\u2060')) {
+    // Check if this looks like a title (short, possibly with capitalization)
+    if (cleanLine.length < 50 && cleanLine.length > 0) {
+      return { isHeader: true, level: 2, title: cleanLine };
+    }
+  }
+
+  // Plain text header detection:
+  // - Short line (< 50 chars)
+  // - Previous line is empty or doesn't exist
+  // - Next line is not empty (has content following)
+  // - Line contains mostly letters/spaces (not code)
+  if (cleanLine.length < 50 &&
+      cleanLine.length > 2 &&
+      (!prevLine || prevLine.trim() === '') &&
+      nextLine && nextLine.trim() !== '' &&
+      /^[A-Z][A-Za-z0-9\s\-_()]+$/.test(cleanLine)) {
+    return { isHeader: true, level: 2, title: cleanLine };
+  }
+
+  return { isHeader: false, level: 0, title: '' };
+}
+
 function parseMarkdownSections(content: string, startLine: number = 0): MarkdownSection[] {
   const lines = content.split('\n');
   const sections: MarkdownSection[] = [];
   let currentSection: MarkdownSection | null = null;
 
-  const headerRegex = /^(#{1,6})\s+(.+)$/;
-
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const headerMatch = line.match(headerRegex);
+    const prevLine = i > 0 ? lines[i - 1] : '';
+    const nextLine = i < lines.length - 1 ? lines[i + 1] : '';
 
-    if (headerMatch) {
+    const headerInfo = isLikelyHeader(line, prevLine, nextLine);
+
+    if (headerInfo.isHeader) {
       // Save previous section if exists
       if (currentSection) {
         currentSection.endLine = startLine + i - 1;
@@ -74,8 +122,8 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
 
       // Start new section
       currentSection = {
-        level: headerMatch[1].length,
-        title: headerMatch[2].trim(),
+        level: headerInfo.level,
+        title: headerInfo.title,
         content: '',
         startLine: startLine + i,
         endLine: startLine + i
@@ -91,7 +139,7 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
       if (!sections.length) {
         currentSection = {
           level: 1,
-          title: 'Introduction',
+          title: 'Content',
           content: line,
           startLine,
           endLine: startLine

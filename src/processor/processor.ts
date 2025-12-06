@@ -6,10 +6,11 @@ import { isMarkdownPath } from '../config.js';
 import { logger } from '../util/logger.js';
 import { parseMetadata } from './metadata-parser.js';
 
-// Extractors that return already-formatted markdown content
+// Extractors that return already-formatted or plain text content (not raw HTML)
 const FORMATTED_CONTENT_EXTRACTORS = [
   'StorybookExtractor',
   'GithubPagesExtractor',
+  'DefaultExtractor', // Crawlee's default extractor returns plain text, not HTML
   // Add more extractors here as they're implemented
 ];
 

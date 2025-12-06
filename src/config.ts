@@ -10,6 +10,7 @@ export interface DocsConfig {
   maxChunkSize: number;
   maxConcurrentRequests: number;
   cacheSize: number;
+  dataDir: string;
   dbPath: string;
   vectorDbPath: string;
 }
@@ -22,6 +23,7 @@ const DEFAULT_CONFIG: DocsConfig = {
   maxChunkSize: 1000,
   maxConcurrentRequests: 3, // Allow concurrent requests for better performance while maintaining stability
   cacheSize: 1000,
+  dataDir: DATA_DIR,
   dbPath: join(DATA_DIR, 'docs.db'),
   vectorDbPath: join(DATA_DIR, 'vectors')
 };

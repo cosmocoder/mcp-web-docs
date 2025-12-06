@@ -1,6 +1,6 @@
 import { URL } from 'url';
 import { CrawlResult, DocsCrawlerType, WebCrawler } from '../types.js';
-import { CrawleeCrawler } from './crawlee-crawler.js';
+import { CrawleeCrawler, StorageState } from './crawlee-crawler.js';
 import { GitHubCrawler } from './github.js';
 import { logger } from '../util/logger.js';
 
@@ -8,6 +8,7 @@ export class DocsCrawler implements WebCrawler {
   private readonly GITHUB_HOST = 'github.com';
   private readonly MIN_PAGES = 2; // Require at least 2 pages for component libraries
   private isAborting = false;
+  private storageState?: StorageState;
 
   constructor(
     private readonly maxDepth: number = 4,
@@ -15,6 +16,14 @@ export class DocsCrawler implements WebCrawler {
     private readonly githubToken?: string,
     private readonly onProgress?: (progress: number, description: string) => void
   ) {}
+
+  /**
+   * Set authentication storage state (cookies) to use when crawling
+   */
+  setStorageState(state: StorageState): void {
+    this.storageState = state;
+    logger.info(`[DocsCrawler] Set storage state with ${state.cookies?.length || 0} cookies`);
+  }
 
   async *crawl(url: string): AsyncGenerator<CrawlResult, DocsCrawlerType> {
     const startUrl = new URL(url);
@@ -51,6 +60,12 @@ export class DocsCrawler implements WebCrawler {
     // Use Crawlee for all other sites
     logger.debug('[DocsCrawler] Using Crawlee crawler');
     const crawleeCrawler = new CrawleeCrawler(this.maxDepth, this.maxRequestsPerCrawl, this.onProgress);
+
+    // Pass authentication if available
+    if (this.storageState) {
+      crawleeCrawler.setStorageState(this.storageState);
+    }
+
     let pageCount = 0;
 
     try {
