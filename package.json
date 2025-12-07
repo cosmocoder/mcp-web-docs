@@ -1,9 +1,18 @@
 {
-  "name": "mcp-web-docs",
-  "version": "1.0.0",
-  "description": "MCP server for crawling and indexing web documentation",
+  "name": "@cosmocoder/mcp-web-docs",
+  "version": "0.1.0",
+  "description": "MCP server for crawling and indexing web documentation - works with any website",
   "type": "module",
   "main": "build/index.js",
+  "bin": {
+    "mcp-web-docs": "build/index.js"
+  },
+  "files": [
+    "build",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "build": "tsc && chmod +x build/index.js",
     "start": "node build/index.js",
@@ -17,12 +26,28 @@
   },
   "keywords": [
     "mcp",
+    "model-context-protocol",
     "documentation",
     "indexing",
-    "search"
+    "search",
+    "crawler",
+    "ai",
+    "llm",
+    "cursor",
+    "claude",
+    "semantic-search",
+    "vector-search"
   ],
-  "author": "",
+  "author": "cosmocoder",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cosmocoder/mcp-web-docs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cosmocoder/mcp-web-docs/issues"
+  },
+  "homepage": "https://github.com/cosmocoder/mcp-web-docs#readme",
   "dependencies": {
     "@lancedb/lancedb": "^0.22.3",
     "@modelcontextprotocol/sdk": "1.23.0",
