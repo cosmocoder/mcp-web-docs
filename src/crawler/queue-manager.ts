@@ -1,4 +1,4 @@
-import { RequestQueue, Dataset, Log, EnqueueLinksOptions } from 'crawlee';
+import { RequestQueue, Dataset, Log, EnqueueLinksOptions, EnqueueStrategy } from 'crawlee';
 import { generateDocId } from '../util/docs.js';
 import { CrawlResult } from '../types.js';
 import { SiteDetectionRule } from './site-rules.js';
@@ -30,7 +30,7 @@ export class QueueManager {
     await dataset.drop();
   }
 
-  async handleQueueAndLinks(enqueueLinks: (options: EnqueueLinksOptions) => Promise<any>, log: Log, rule: SiteDetectionRule): Promise<void> {
+  async handleQueueAndLinks(enqueueLinks: (options: EnqueueLinksOptions) => Promise<{ processedRequests: { uniqueKey: string }[] }>, log: Log, rule: SiteDetectionRule): Promise<void> {
     const queueInfo = await this.requestQueue!.getInfo();
     if (queueInfo) {
       log.info('Queue status:', {
@@ -41,8 +41,8 @@ export class QueueManager {
     }
 
     const enqueueOptions: EnqueueLinksOptions = {
-      strategy: 'same-domain',
-      transformRequestFunction(req: any) {
+      strategy: 'same-domain' as EnqueueStrategy,
+      transformRequestFunction(req) {
         const url = new URL(req.url);
         return {
           ...req,
@@ -60,7 +60,7 @@ export class QueueManager {
 
     log.info('Enqueued links:', {
       processedCount: enqueueResult.processedRequests.length,
-      urls: enqueueResult.processedRequests.map((r: any) => r.uniqueKey)
+      urls: enqueueResult.processedRequests.map((r: { uniqueKey: string }) => r.uniqueKey)
     });
   }
 

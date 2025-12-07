@@ -365,7 +365,7 @@ export class DocumentStore implements StorageProvider {
         });
       }
 
-        const searchResults = results.map((result: any) => {
+        const searchResults = results.map((result: LanceDbRow & { id?: string; score?: number; _distance?: number }) => {
           // Log the raw result for debugging
           logger.debug(`[DocumentStore] Raw search result:`, {
             id: result.id,
@@ -394,7 +394,7 @@ export class DocumentStore implements StorageProvider {
             content: String(result.content),
             url: String(result.url),
             title: String(result.title),
-            score: result._distance != null ? 1 - result._distance : (result.score ?? null),
+            score: result._distance != null ? 1 - result._distance : (result.score ?? 0),
             ...(includeVectors && { vector: result.vector as number[] }),
             metadata: {
               type: (result.type || 'overview') as 'overview' | 'api' | 'example' | 'usage',
@@ -431,12 +431,13 @@ export class DocumentStore implements StorageProvider {
       });
       this.ftsIndexCreated = true;
       logger.debug('[DocumentStore] FTS index created successfully');
-    } catch (error: any) {
-      if (error.message?.toLowerCase().includes('already exists')) {
+    } catch (error) {
+      const err = error as Error;
+      if (err.message?.toLowerCase().includes('already exists')) {
         logger.debug('[DocumentStore] FTS index already exists');
         this.ftsIndexCreated = true;
       } else {
-        logger.warn('[DocumentStore] Failed to create FTS index:', error.message);
+        logger.warn('[DocumentStore] Failed to create FTS index:', err.message);
         // Don't throw - FTS is optional, we can fall back to vector search
       }
     }
@@ -528,8 +529,9 @@ export class DocumentStore implements StorageProvider {
             this.searchCache.set(cacheKey, searchResults);
             return searchResults;
           }
-        } catch (phraseError: any) {
-          logger.debug('[DocumentStore] Phrase-based search failed:', phraseError.message);
+        } catch (phraseError) {
+          const err = phraseError as Error;
+          logger.debug('[DocumentStore] Phrase-based search failed:', err.message);
         }
       }
 
@@ -567,8 +569,9 @@ export class DocumentStore implements StorageProvider {
             this.searchCache.set(cacheKey, searchResults);
             return searchResults;
           }
-        } catch (ftsError: any) {
-          logger.debug('[DocumentStore] FTS search failed, falling back to vector search:', ftsError.message);
+        } catch (ftsError) {
+          const err = ftsError as Error;
+          logger.debug('[DocumentStore] FTS search failed, falling back to vector search:', err.message);
         }
       }
 
@@ -586,9 +589,9 @@ export class DocumentStore implements StorageProvider {
   /**
    * Merge FTS and vector results using Reciprocal Rank Fusion (RRF)
    */
-  private mergeAndRankResults(ftsResults: any[], vectorResults: any[], limit: number): any[] {
+  private mergeAndRankResults(ftsResults: LanceDbRow[], vectorResults: LanceDbRow[], limit: number): (LanceDbRow & { _rrfScore: number })[] {
     const k = 60; // RRF constant
-    const scores = new Map<string, { result: any; score: number }>();
+    const scores = new Map<string, { result: LanceDbRow; score: number }>();
 
     // Score FTS results
     ftsResults.forEach((result, rank) => {
@@ -621,8 +624,8 @@ export class DocumentStore implements StorageProvider {
   /**
    * Format raw LanceDB results into SearchResult objects
    */
-  private formatSearchResults(results: any[]): SearchResult[] {
-    return results.map((result: any) => {
+  private formatSearchResults(results: (LanceDbRow & { _rrfScore?: number; _distance?: number; _score?: number })[]): SearchResult[] {
+    return results.map((result) => {
       let codeBlocks, props;
       try { codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined; } catch { codeBlocks = undefined; }
       try { props = result.props ? JSON.parse(result.props) : undefined; } catch { props = undefined; }
@@ -632,7 +635,7 @@ export class DocumentStore implements StorageProvider {
         content: String(result.content),
         url: String(result.url),
         title: String(result.title),
-        score: result._rrfScore ?? (result._distance != null ? 1 - result._distance : (result._score ?? null)),
+        score: result._rrfScore ?? (result._distance != null ? 1 - result._distance : (result._score ?? 0)),
         metadata: {
           type: (result.type || 'overview') as 'overview' | 'api' | 'example' | 'usage',
           path: String(result.path),

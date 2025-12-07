@@ -331,7 +331,7 @@ export class StorybookExtractor implements ContentExtractor {
           try {
             (button as HTMLButtonElement).click();
             await new Promise(resolve => setTimeout(resolve, 100));
-          } catch (e) {
+          } catch {
             // Ignore click errors
           }
         }
@@ -429,7 +429,7 @@ export class StorybookExtractor implements ContentExtractor {
     // Strategy 5: Fallback - parse the text content intelligently
     if (typeValues.length === 0) {
       // Clean up the full text
-      let fullText = cellText
+      const fullText = cellText
         .replace(/Show \d+ more\.\.\.?/gi, '')
         .replace(/Show less\.\.\.?/gi, '')
         .replace(/Deprecated:[^|]*/gi, '')
@@ -673,9 +673,10 @@ export class StorybookExtractor implements ContentExtractor {
 
   private async waitForStorybookAPI(): Promise<void> {
     return new Promise(resolve => {
-      if (typeof (window as any).__STORYBOOK_CLIENT_API__ !== 'undefined') {
+      const win = window as unknown as { __STORYBOOK_CLIENT_API__?: { storyStore?: { ready?: boolean } } };
+      if (typeof win.__STORYBOOK_CLIENT_API__ !== 'undefined') {
         const checkReady = () => {
-          const api = (window as any).__STORYBOOK_CLIENT_API__;
+          const api = win.__STORYBOOK_CLIENT_API__;
           if (api?.storyStore?.ready) {
             resolve();
           } else {

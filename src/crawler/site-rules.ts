@@ -21,7 +21,7 @@ export const siteRules: SiteDetectionRule[] = [
                  document.querySelector('meta[name="storybook-version"]') ||
                  document.baseURI?.includes('path=/docs/') ||
                  document.baseURI?.includes('path=/story/') ||
-                 (window as any).__STORYBOOK_CLIENT_API__);
+                 (window as unknown as { __STORYBOOK_CLIENT_API__?: unknown }).__STORYBOOK_CLIENT_API__);
       });
     },
     prepare: async (page, log) => {

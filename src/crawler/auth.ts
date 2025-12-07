@@ -46,11 +46,12 @@ export async function detectDefaultBrowser(): Promise<BrowserType> {
     // Unknown browser, default to chromium
     logger.warn(`[Auth] Unknown browser "${browser.name}" (id: ${browser.id}), falling back to chromium`);
     return 'chromium';
-  } catch (error: any) {
+  } catch (error) {
+    const err = error as Error;
     logger.error(`[Auth] ✗ default-browser package threw an error:`);
-    logger.error(`[Auth]   Error name: ${error?.name}`);
-    logger.error(`[Auth]   Error message: ${error?.message}`);
-    logger.error(`[Auth]   Error stack: ${error?.stack}`);
+    logger.error(`[Auth]   Error name: ${err?.name}`);
+    logger.error(`[Auth]   Error message: ${err?.message}`);
+    logger.error(`[Auth]   Error stack: ${err?.stack}`);
     logger.info('[Auth] Falling back to chromium');
     return 'chromium';
   }
@@ -228,13 +229,14 @@ export class AuthManager {
     url: string,
     options: AuthOptions = {}
   ): Promise<string> {
-    let {
-      browser: browserType,
+    const {
+      browser: initialBrowserType,
       loginSuccessPattern,
       loginSuccessSelector,
       loginUrl,
       loginTimeoutSecs = 300 // 5 minutes default
     } = options;
+    let browserType = initialBrowserType;
 
     logger.info(`[AuthManager] === Starting Interactive Login ===`);
     logger.info(`[AuthManager] Target URL: ${url}`);

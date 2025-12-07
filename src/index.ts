@@ -387,35 +387,37 @@ class WebDocsServer {
     });
   }
 
-  private async handleAddDocumentation(args: any, progressToken?: ProgressToken) {
-    const { url, title, id, auth } = args;
-    if (!isValidUrl(url)) {
+  private async handleAddDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
+    const { url, title, id, auth } = args ?? {} as Record<string, unknown>;
+    if (!isValidUrl(url as string)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
     }
 
-    const normalizedUrl = normalizeUrl(url);
-    const docTitle = title || new URL(normalizedUrl).hostname;
+    const normalizedUrl = normalizeUrl(url as string);
+    const docTitle = (title as string) || new URL(normalizedUrl).hostname;
     // Use custom ID if provided, otherwise auto-generate
-    const docId = id || generateDocId(normalizedUrl, docTitle);
+    const docId = (id as string) || generateDocId(normalizedUrl, docTitle);
 
     // Handle inline authentication if requested
-    if (auth?.requiresAuth) {
+    const authOptions = auth as { requiresAuth?: boolean; browser?: BrowserType; loginUrl?: string; loginSuccessPattern?: string; loginSuccessSelector?: string; loginTimeoutSecs?: number } | undefined;
+    if (authOptions?.requiresAuth) {
       const hasExistingSession = await this.authManager.hasSession(normalizedUrl);
       if (!hasExistingSession) {
         logger.info(`[WebDocsServer] auth.requiresAuth=true, starting interactive login for ${normalizedUrl}`);
         try {
           await this.authManager.performInteractiveLogin(normalizedUrl, {
-            browser: auth.browser,
-            loginUrl: auth.loginUrl,
-            loginSuccessPattern: auth.loginSuccessPattern,
-            loginSuccessSelector: auth.loginSuccessSelector,
-            loginTimeoutSecs: auth.loginTimeoutSecs
+            browser: authOptions.browser,
+            loginUrl: authOptions.loginUrl,
+            loginSuccessPattern: authOptions.loginSuccessPattern,
+            loginSuccessSelector: authOptions.loginSuccessSelector,
+            loginTimeoutSecs: authOptions.loginTimeoutSecs
           });
           logger.info(`[WebDocsServer] Authentication successful for ${normalizedUrl}`);
-        } catch (error: any) {
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
           throw new McpError(
             ErrorCode.InternalError,
-            `Authentication failed: ${error.message}. Please try using the 'authenticate' tool separately.`
+            `Authentication failed: ${errorMessage}. Please try using the 'authenticate' tool separately.`
           );
         }
       } else {
@@ -437,8 +439,9 @@ class WebDocsServer {
 
     // Start indexing in the background with abort support
     const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal)
-      .catch((error: any) => {
-        if (error?.name !== 'AbortError') {
+      .catch((error) => {
+        const err = error as Error;
+        if (err?.name !== 'AbortError') {
           logger.error('[WebDocsServer] Background indexing failed:', error);
         }
       })
@@ -475,13 +478,13 @@ class WebDocsServer {
     };
   }
 
-  private async handleSearchDocumentation(args: any) {
-    const { query, url, limit = 10 } = args;
+  private async handleSearchDocumentation(args: Record<string, unknown> | undefined) {
+    const { query, url, limit = 10 } = args ?? {} as Record<string, unknown>;
 
     // Normalize URL if provided for filtering
-    const filterUrl = url ? normalizeUrl(url) : undefined;
+    const filterUrl = url ? normalizeUrl(url as string) : undefined;
 
-    const results = await this.store.searchByText(query, { limit, filterUrl });
+    const results = await this.store.searchByText(query as string, { limit: limit as number, filterUrl });
     return {
       content: [
         {
@@ -492,13 +495,13 @@ class WebDocsServer {
     };
   }
 
-  private async handleReindexDocumentation(args: any, progressToken?: ProgressToken) {
-    const { url } = args;
-    if (!isValidUrl(url)) {
+  private async handleReindexDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
+    const { url } = args ?? {} as Record<string, unknown>;
+    if (!isValidUrl(url as string)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
     }
 
-    const normalizedUrl = normalizeUrl(url);
+    const normalizedUrl = normalizeUrl(url as string);
     const doc = await this.store.getDocument(normalizedUrl);
     if (!doc) {
       throw new McpError(ErrorCode.InvalidParams, 'Documentation not found');
@@ -520,8 +523,9 @@ class WebDocsServer {
 
     // Start reindexing in the background with abort support
     const operationPromise = this.indexAndAdd(docId, normalizedUrl, doc.title, true, controller.signal)
-      .catch((error: any) => {
-        if (error?.name !== 'AbortError') {
+      .catch((error) => {
+        const err = error as Error;
+        if (err?.name !== 'AbortError') {
           logger.error('[WebDocsServer] Background reindexing failed:', error);
         }
       })
@@ -576,15 +580,15 @@ class WebDocsServer {
    * Handle interactive authentication request.
    * Opens a visible browser for the user to login manually.
    */
-  private async handleAuthenticate(args: any) {
-    const { url, browser, loginUrl, loginTimeoutSecs = 300 } = args;
+  private async handleAuthenticate(args: Record<string, unknown> | undefined) {
+    const { url, browser, loginUrl, loginTimeoutSecs = 300 } = args ?? {} as Record<string, unknown>;
     // Note: browser is undefined if not provided, which triggers auto-detection in performInteractiveLogin
 
-    if (!isValidUrl(url)) {
+    if (!isValidUrl(url as string)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
     }
 
-    const normalizedUrl = normalizeUrl(url);
+    const normalizedUrl = normalizeUrl(url as string);
     const domain = new URL(normalizedUrl).hostname;
 
     // Check if we already have a session
@@ -609,9 +613,9 @@ class WebDocsServer {
 
       // Perform interactive login
       await this.authManager.performInteractiveLogin(normalizedUrl, {
-        browser: browser as BrowserType,
-        loginUrl,
-        loginTimeoutSecs
+        browser: browser as BrowserType | undefined,
+        loginUrl: loginUrl as string | undefined,
+        loginTimeoutSecs: loginTimeoutSecs as number
       });
 
       return {
@@ -649,14 +653,14 @@ class WebDocsServer {
   /**
    * Handle clearing saved authentication for a domain
    */
-  private async handleClearAuth(args: any) {
-    const { url } = args;
+  private async handleClearAuth(args: Record<string, unknown> | undefined) {
+    const { url } = args ?? {} as Record<string, unknown>;
 
-    if (!isValidUrl(url)) {
+    if (!isValidUrl(url as string)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
     }
 
-    const normalizedUrl = normalizeUrl(url);
+    const normalizedUrl = normalizeUrl(url as string);
     const domain = new URL(normalizedUrl).hostname;
 
     await this.authManager.clearSession(normalizedUrl);
@@ -678,14 +682,14 @@ class WebDocsServer {
   /**
    * Handle deleting an indexed documentation site and all its data
    */
-  private async handleDeleteDocumentation(args: any) {
-    const { url, clearAuth = false } = args;
+  private async handleDeleteDocumentation(args: Record<string, unknown> | undefined) {
+    const { url, clearAuth = false } = args ?? {} as Record<string, unknown>;
 
-    if (!isValidUrl(url)) {
+    if (!isValidUrl(url as string)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
     }
 
-    const normalizedUrl = normalizeUrl(url);
+    const normalizedUrl = normalizeUrl(url as string);
     const domain = new URL(normalizedUrl).hostname;
 
     // Check if document exists
@@ -721,12 +725,12 @@ class WebDocsServer {
         await dataset.drop();
         deletedItems.push('crawl cache (Crawlee dataset)');
         logger.info(`[WebDocsServer] Deleted Crawlee dataset: ${docId}`);
-      } catch (e) {
+      } catch {
         logger.debug(`[WebDocsServer] No Crawlee dataset to delete for ${docId}`);
       }
 
       // 3. Optionally clear auth session
-      if (clearAuth) {
+      if (clearAuth as boolean) {
         await this.authManager.clearSession(normalizedUrl);
         deletedItems.push('authentication session');
         logger.info(`[WebDocsServer] Cleared auth session for ${domain}`);

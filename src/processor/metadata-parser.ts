@@ -60,7 +60,7 @@ function parseMarkdownTable(tableLines: string[]): Record<string, string>[] {
   if (tableLines.length < 2) return [];
 
   // Find header row (first non-empty row with pipes)
-  let headerIndex = tableLines.findIndex(l => l.includes('|') && !isTableSeparator(l));
+  const headerIndex = tableLines.findIndex(l => l.includes('|') && !isTableSeparator(l));
   if (headerIndex === -1) return [];
 
   const headers = splitTableRow(tableLines[headerIndex]).map(h => h.toLowerCase().trim());

@@ -58,7 +58,7 @@ function extractFrontMatter(content: string): {
  * Detect if a line looks like a section header.
  * Handles:
  * - Markdown headers: # Title, ## Title, etc.
- * - Docusaurus-style headers: Title​ (with zero-width space or other unicode)
+ * - Docusaurus-style headers: Title (with zero-width space or other unicode)
  * - Plain text headers: Short lines that end with special characters
  */
 function isLikelyHeader(line: string, prevLine: string, nextLine: string): { isHeader: boolean; level: number; title: string } {
@@ -76,8 +76,8 @@ function isLikelyHeader(line: string, prevLine: string, nextLine: string): { isH
     return { isHeader: false, level: 0, title: '' };
   }
 
-  // Docusaurus-style header: ends with unicode marker (​) and is relatively short
-  // These are typically section titles like "Hooks​", "Example​", "Important​"
+  // Docusaurus-style header: ends with unicode marker (\\u200B) and is relatively short
+  // These are typically section titles like "Hooks", "Example", "Important"
   if (line.includes('\u200B') || line.includes('\u200D') || line.includes('\u2060')) {
     // Check if this looks like a title (short, possibly with capitalization)
     if (cleanLine.length < 50 && cleanLine.length > 0) {

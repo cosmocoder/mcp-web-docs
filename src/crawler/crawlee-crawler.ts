@@ -3,6 +3,7 @@ import { CrawlResult } from '../types.js';
 import { BaseCrawler } from './base.js';
 import { Page, Frame } from 'playwright';
 import { siteRules } from './site-rules.js';
+import { ContentExtractor } from './content-extractor-types.js';
 import { QueueManager } from './queue-manager.js';
 import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
@@ -69,7 +70,7 @@ export class CrawleeCrawler extends BaseCrawler {
     return frame;
   }
 
-  private async evaluateExtractor(context: Page | Frame, extractor: any): Promise<string> {
+  private async evaluateExtractor(context: Page | Frame, extractor: ContentExtractor): Promise<string> {
     const extractorCode = extractor.constructor.toString();
     return context.evaluate(async (code: string) => {
       const ExtractorClass = new Function(`return ${code}`)();
@@ -79,7 +80,7 @@ export class CrawleeCrawler extends BaseCrawler {
     }, extractorCode);
   }
 
-  private async extractContent(page: Page, siteType: string, extractor: any): Promise<{ content: string; extractorUsed: string }> {
+  private async extractContent(page: Page, siteType: string, extractor: ContentExtractor): Promise<{ content: string; extractorUsed: string }> {
     let content = '';
     let extractorUsed = extractor.constructor.name;
 
@@ -98,7 +99,7 @@ export class CrawleeCrawler extends BaseCrawler {
       } else {
         content = await this.evaluateExtractor(page, extractor);
       }
-    } catch (error) {
+    } catch {
       content = await page.evaluate<string>(() => document.body.textContent || '');
       extractorUsed = 'ErrorFallback';
     }
@@ -111,7 +112,7 @@ export class CrawleeCrawler extends BaseCrawler {
     await this.queueManager.initialize(url);
 
     // Build crawler options with optional authentication
-    const crawlerOptions = getBrowserConfig(this.queueManager.getRequestQueue());
+    const crawlerOptions = getBrowserConfig(this.queueManager.getRequestQueue() ?? undefined);
 
     // If we have storage state (auth cookies), configure the browser to use them
     if (this.storageState) {
