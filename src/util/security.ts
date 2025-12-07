@@ -395,3 +395,132 @@ export function validateToolArgs<T>(args: Record<string, unknown> | undefined, s
   return result.data;
 }
 
+// ============ Error Sanitization ============
+
+/** Patterns that indicate sensitive information in error messages */
+const SENSITIVE_ERROR_PATTERNS = [
+  /password[=:]\s*\S+/gi,
+  /token[=:]\s*\S+/gi,
+  /key[=:]\s*\S+/gi,
+  /secret[=:]\s*\S+/gi,
+  /cookie[=:]\s*\S+/gi,
+  /authorization[=:]\s*\S+/gi,
+  /bearer\s+\S+/gi,
+  /api[_-]?key[=:]\s*\S+/gi,
+  // File paths that might reveal system info
+  /\/Users\/[^/\s]+/g,
+  /\/home\/[^/\s]+/g,
+  /C:\\Users\\[^\\\s]+/gi,
+];
+
+/** Error messages that are safe to pass through */
+const SAFE_ERROR_PREFIXES = [
+  'Invalid URL',
+  'Invalid arguments',
+  'Access to',
+  'Documentation not found',
+  'Schema validation failed',
+  'Unsafe regex pattern',
+  'Authentication failed',
+  'Already have a saved session',
+];
+
+/**
+ * Sanitize an error message for safe return to clients.
+ * Removes sensitive information like file paths, credentials, and system details.
+ * @param error - The error to sanitize
+ * @returns A safe error message
+ */
+export function sanitizeErrorMessage(error: unknown): string {
+  let message: string;
+
+  if (error instanceof Error) {
+    message = error.message;
+  } else if (typeof error === 'string') {
+    message = error;
+  } else {
+    return 'An unexpected error occurred';
+  }
+
+  // Check if it's a known safe error message
+  for (const prefix of SAFE_ERROR_PREFIXES) {
+    if (message.startsWith(prefix)) {
+      // Still sanitize sensitive patterns even in "safe" messages
+      return redactSensitivePatterns(message);
+    }
+  }
+
+  // Redact sensitive patterns
+  message = redactSensitivePatterns(message);
+
+  // If the message is very long or contains stack traces, truncate it
+  if (message.length > 200 || message.includes('\n    at ')) {
+    // Extract just the first line/sentence
+    const firstLine = message.split('\n')[0];
+    const truncated = firstLine.length > 200 ? firstLine.substring(0, 200) + '...' : firstLine;
+    return truncated;
+  }
+
+  return message;
+}
+
+/**
+ * Redact sensitive patterns from a string
+ */
+function redactSensitivePatterns(text: string): string {
+  let result = text;
+  for (const pattern of SENSITIVE_ERROR_PATTERNS) {
+    result = result.replace(pattern, '[REDACTED]');
+  }
+  return result;
+}
+
+// ============ Log Sanitization ============
+
+/** Patterns to redact in log output */
+const SENSITIVE_LOG_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
+  // Cookies
+  { pattern: /"value":\s*"[^"]+"/g, replacement: '"value": "[REDACTED]"' },
+  { pattern: /cookie[s]?[=:]\s*[^\s,}\]]+/gi, replacement: 'cookies=[REDACTED]' },
+  // Tokens and keys
+  { pattern: /bearer\s+[a-zA-Z0-9._-]+/gi, replacement: 'Bearer [REDACTED]' },
+  { pattern: /token[=:]\s*[a-zA-Z0-9._-]+/gi, replacement: 'token=[REDACTED]' },
+  { pattern: /api[_-]?key[=:]\s*[a-zA-Z0-9._-]+/gi, replacement: 'apiKey=[REDACTED]' },
+  { pattern: /password[=:]\s*[^\s,}\]]+/gi, replacement: 'password=[REDACTED]' },
+  { pattern: /secret[=:]\s*[^\s,}\]]+/gi, replacement: 'secret=[REDACTED]' },
+  // Authorization headers
+  { pattern: /authorization[=:]\s*[^\s,}\]]+/gi, replacement: 'authorization=[REDACTED]' },
+  // Session IDs
+  { pattern: /session[_-]?id[=:]\s*[a-zA-Z0-9._-]+/gi, replacement: 'sessionId=[REDACTED]' },
+  // Base64 encoded data (often contains sensitive info)
+  { pattern: /eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, replacement: '[JWT_REDACTED]' },
+];
+
+/**
+ * Redact sensitive information from log messages.
+ * Use this before logging any data that might contain credentials.
+ * @param data - The data to sanitize for logging
+ * @returns Sanitized string safe for logging
+ */
+export function redactForLogging(data: unknown): string {
+  let text: string;
+
+  if (typeof data === 'string') {
+    text = data;
+  } else if (data instanceof Error) {
+    text = data.message;
+  } else {
+    try {
+      text = JSON.stringify(data);
+    } catch {
+      text = String(data);
+    }
+  }
+
+  for (const { pattern, replacement } of SENSITIVE_LOG_PATTERNS) {
+    text = text.replace(pattern, replacement);
+  }
+
+  return text;
+}
+

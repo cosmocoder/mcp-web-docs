@@ -33,6 +33,7 @@ import {
   StorageStateSchema,
   safeJsonParse,
   validateToolArgs,
+  sanitizeErrorMessage,
   AddDocumentationArgsSchema,
   AuthenticateArgsSchema,
   ClearAuthArgsSchema,
@@ -403,7 +404,7 @@ class WebDocsServer {
     try {
       validatedArgs = validateToolArgs(args, AddDocumentationArgsSchema);
     } catch (error) {
-      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
     const { url, title, id, auth: authOptions } = validatedArgs;
@@ -431,10 +432,9 @@ class WebDocsServer {
           });
           logger.info(`[WebDocsServer] Authentication successful for ${normalizedUrl}`);
         } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
           throw new McpError(
             ErrorCode.InternalError,
-            `Authentication failed: ${errorMessage}. Please try using the 'authenticate' tool separately.`
+            `Authentication failed: ${sanitizeErrorMessage(error)}. Please try using the 'authenticate' tool separately.`
           );
         }
       } else {
@@ -506,7 +506,7 @@ class WebDocsServer {
     try {
       validatedArgs = validateToolArgs(args, SearchDocumentationArgsSchema);
     } catch (error) {
-      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
     const { query, url, limit = 10 } = validatedArgs;
@@ -531,7 +531,7 @@ class WebDocsServer {
     try {
       validatedArgs = validateToolArgs(args, ReindexDocumentationArgsSchema);
     } catch (error) {
-      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
     const { url } = validatedArgs;
@@ -632,7 +632,7 @@ class WebDocsServer {
     try {
       validatedArgs = validateToolArgs(args, AuthenticateArgsSchema);
     } catch (error) {
-      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
     const { url, browser, loginUrl, loginTimeoutSecs = 300 } = validatedArgs;
@@ -694,8 +694,8 @@ class WebDocsServer {
         ],
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error(`[Auth] Authentication failed:`, errorMessage);
+      const safeErrorMessage = sanitizeErrorMessage(error);
+      logger.error(`[Auth] Authentication failed:`, safeErrorMessage);
 
       return {
         content: [
@@ -704,7 +704,7 @@ class WebDocsServer {
             text: JSON.stringify(
               {
                 status: 'failed',
-                message: `Authentication failed: ${errorMessage}`,
+                message: `Authentication failed: ${safeErrorMessage}`,
                 domain,
               },
               null,
@@ -725,7 +725,7 @@ class WebDocsServer {
     try {
       validatedArgs = validateToolArgs(args, ClearAuthArgsSchema);
     } catch (error) {
-      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
     const { url } = validatedArgs;
@@ -761,7 +761,7 @@ class WebDocsServer {
     try {
       validatedArgs = validateToolArgs(args, DeleteDocumentationArgsSchema);
     } catch (error) {
-      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
     const { url, clearAuth = false } = validatedArgs;
@@ -835,8 +835,8 @@ class WebDocsServer {
         ],
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      logger.error(`[WebDocsServer] Error deleting documentation:`, errorMessage);
+      const safeErrorMessage = sanitizeErrorMessage(error);
+      logger.error(`[WebDocsServer] Error deleting documentation:`, safeErrorMessage);
 
       return {
         content: [
@@ -845,7 +845,7 @@ class WebDocsServer {
             text: JSON.stringify(
               {
                 status: 'error',
-                message: `Failed to delete documentation: ${errorMessage}`,
+                message: `Failed to delete documentation: ${safeErrorMessage}`,
                 url: normalizedUrl,
                 deletedItems,
               },

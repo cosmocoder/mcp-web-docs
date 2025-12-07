@@ -4,7 +4,12 @@
  *
  * MCP servers must keep stdout clean for JSON-RPC communication,
  * so all logs go to stderr regardless of level.
+ *
+ * Security: All log output is automatically redacted to remove sensitive
+ * information like cookies, tokens, passwords, and API keys.
  */
+
+import { redactForLogging } from './security.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -25,26 +30,31 @@ function shouldLog(level: LogLevel): boolean {
 function formatArg(arg: unknown): string {
   if (arg instanceof Error) {
     // Error objects don't serialize well with JSON.stringify
-    return `${arg.name}: ${arg.message}${arg.stack ? `\n${arg.stack}` : ''}`;
+    const errorStr = `${arg.name}: ${arg.message}${arg.stack ? `\n${arg.stack}` : ''}`;
+    return redactForLogging(errorStr);
   }
   if (typeof arg === 'object' && arg !== null) {
     try {
-      return JSON.stringify(arg, null, 2);
+      const jsonStr = JSON.stringify(arg, null, 2);
+      return redactForLogging(jsonStr);
     } catch {
-      return String(arg);
+      return redactForLogging(String(arg));
     }
   }
-  return String(arg);
+  return redactForLogging(String(arg));
 }
 
 function formatMessage(level: LogLevel, message: string, ...args: unknown[]): string {
   const timestamp = new Date().toISOString();
   const prefix = `[${timestamp}] [${level.toUpperCase()}]`;
 
+  // Redact the main message as well
+  const safeMessage = redactForLogging(message);
+
   if (args.length > 0) {
-    return `${prefix} ${message} ${args.map(formatArg).join(' ')}`;
+    return `${prefix} ${safeMessage} ${args.map(formatArg).join(' ')}`;
   }
-  return `${prefix} ${message}`;
+  return `${prefix} ${safeMessage}`;
 }
 
 export const logger = {
