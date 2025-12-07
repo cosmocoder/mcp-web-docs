@@ -34,6 +34,9 @@ import {
   safeJsonParse,
   validateToolArgs,
   sanitizeErrorMessage,
+  detectPromptInjection,
+  wrapExternalContent,
+  addInjectionWarnings,
   AddDocumentationArgsSchema,
   AuthenticateArgsSchema,
   ClearAuthArgsSchema,
@@ -515,11 +518,36 @@ class WebDocsServer {
     const filterUrl = url ? normalizeUrl(url) : undefined;
 
     const results = await this.store.searchByText(query, { limit, filterUrl });
+
+    // Apply prompt injection detection and external content markers to results
+    const safeResults = results.map((result) => {
+      // Detect prompt injection patterns in the content
+      const injectionResult = detectPromptInjection(result.content);
+
+      // Add injection warnings if detected
+      let safeContent = addInjectionWarnings(result.content, injectionResult);
+
+      // Wrap with external content markers
+      safeContent = wrapExternalContent(safeContent, result.url);
+
+      return {
+        ...result,
+        content: safeContent,
+        // Include security metadata
+        security: {
+          isExternalContent: true,
+          injectionDetected: injectionResult.hasInjection,
+          injectionSeverity: injectionResult.maxSeverity,
+          detectionCount: injectionResult.detections.length,
+        },
+      };
+    });
+
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(results, null, 2),
+          text: JSON.stringify(safeResults, null, 2),
         },
       ],
     };
@@ -988,6 +1016,25 @@ class WebDocsServer {
       }
 
       logger.info(`[WebDocsServer] Total chunks created: ${chunks.length}`);
+
+      // Scan for potential prompt injection patterns in indexed content
+      let injectionWarnings = 0;
+      for (const chunk of chunks) {
+        const injectionResult = detectPromptInjection(chunk.content);
+        if (injectionResult.hasInjection) {
+          injectionWarnings++;
+          if (injectionResult.maxSeverity === 'high') {
+            logger.warn(
+              `[Security] HIGH severity prompt injection pattern detected in ${chunk.path || 'unknown'}: ${injectionResult.detections[0]?.description}`
+            );
+          }
+        }
+      }
+      if (injectionWarnings > 0) {
+        logger.warn(
+          `[Security] Detected ${injectionWarnings} chunks with potential prompt injection patterns in ${url}. Content will be marked when returned in search results.`
+        );
+      }
 
       if (embeddings.length === 0) {
         logger.warn(`[WebDocsServer] No content was extracted from ${url}`);

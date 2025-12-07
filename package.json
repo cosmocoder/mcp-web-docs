@@ -49,6 +49,7 @@
   },
   "homepage": "https://github.com/cosmocoder/mcp-web-docs#readme",
   "dependencies": {
+    "@andersmyrmel/vard": "^1.2.0",
     "@lancedb/lancedb": "^0.22.3",
     "@modelcontextprotocol/sdk": "1.23.0",
     "@mozilla/readability": "0.6.0",
