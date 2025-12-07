@@ -34,3 +34,6 @@ npm-debug.log*
 *yalc*
 
 .vscode/*.log
+
+node_modules/
+build/
