@@ -9,6 +9,7 @@
     "start": "node build/index.js",
     "dev": "tsc -w",
     "lint": "eslint . --ext .js,.ts",
+    "test:types": "tsc --noEmit",
     "clean": "rm -rf build",
     "postinstall": "npx playwright install"
   },
