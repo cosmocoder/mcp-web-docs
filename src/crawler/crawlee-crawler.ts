@@ -35,6 +35,10 @@ export class CrawleeCrawler extends BaseCrawler {
   private isFirstPage: boolean = true;
   private sessionExpiredError: SessionExpiredError | null = null;
   private expectedUrl: string = '';
+  /** The allowed hostname for crawling - pages outside this domain are skipped */
+  private allowedHostname: string = '';
+  /** Track pages skipped due to domain mismatch */
+  private skippedExternalPages: number = 0;
 
   /**
    * Set authentication cookies/localStorage to use when crawling
@@ -42,6 +46,40 @@ export class CrawleeCrawler extends BaseCrawler {
   setStorageState(state: StorageState): void {
     this.storageState = state;
     logger.info(`[CrawleeCrawler] Set storage state with ${state.cookies?.length || 0} cookies`);
+  }
+
+  /**
+   * Check if a URL is within the allowed domain for this crawl.
+   * This prevents following redirects or links to external domains.
+   *
+   * @param url - The URL to check
+   * @returns true if the URL is within the allowed domain
+   */
+  private isWithinAllowedDomain(url: string): boolean {
+    if (!this.allowedHostname) {
+      return true; // No restriction if not set
+    }
+
+    try {
+      const urlObj = new URL(url);
+      const hostname = urlObj.hostname.toLowerCase();
+      const allowed = this.allowedHostname.toLowerCase();
+
+      // Exact match
+      if (hostname === allowed) {
+        return true;
+      }
+
+      // Allow subdomains (e.g., docs.example.com when allowed is example.com)
+      // But NOT the other way around (github.com is not allowed for *.github.io)
+      if (hostname.endsWith('.' + allowed)) {
+        return true;
+      }
+
+      return false;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -172,6 +210,15 @@ export class CrawleeCrawler extends BaseCrawler {
     this.isFirstPage = true;
     this.sessionExpiredError = null;
     this.expectedUrl = url;
+    this.skippedExternalPages = 0;
+
+    // Extract and store the allowed hostname from the initial URL
+    try {
+      this.allowedHostname = new URL(url).hostname;
+      logger.info(`[CrawleeCrawler] Domain restriction: only crawling pages on ${this.allowedHostname}`);
+    } catch {
+      this.allowedHostname = '';
+    }
 
     await this.queueManager.initialize(url);
 
@@ -224,9 +271,50 @@ export class CrawleeCrawler extends BaseCrawler {
             page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway')),
           ]);
 
+          // Get the actual URL after any redirects
+          const actualUrl = page.url();
+
+          // Check if the page redirected outside the allowed domain
+          if (!this.isWithinAllowedDomain(actualUrl)) {
+            const requestedHostname = new URL(request.url).hostname;
+            const actualHostname = new URL(actualUrl).hostname;
+
+            if (this.isFirstPage) {
+              // First page redirected outside domain - likely auth redirect (session expired)
+              logger.warn(
+                `[CrawleeCrawler] First page redirected outside allowed domain: ${requestedHostname} → ${actualHostname}`
+              );
+
+              if (this.storageState) {
+                // We had auth but got redirected - session expired
+                this.sessionExpiredError = new SessionExpiredError(
+                  `Authentication session has expired - page redirected to external domain (${actualHostname})`,
+                  this.expectedUrl,
+                  actualUrl,
+                  { isLoginPage: true, confidence: 1.0, reasons: [`Redirected from ${requestedHostname} to ${actualHostname}`] }
+                );
+                log.error(`Session expired - redirected to external domain: ${actualHostname}. Aborting crawl.`);
+                this.abort();
+                return;
+              } else {
+                // No auth but redirected - might be site misconfiguration
+                log.error(`First page redirected to external domain: ${actualHostname}. Aborting crawl.`);
+                this.abort();
+                return;
+              }
+            } else {
+              // Subsequent page redirected outside domain - skip it
+              this.skippedExternalPages++;
+              log.warning(
+                `Skipping page that redirected outside domain: ${request.url} → ${actualUrl} (skipped ${this.skippedExternalPages} external pages)`
+              );
+              return;
+            }
+          }
+
           // Check for login page on first page (detects expired sessions)
           if (this.isFirstPage && this.storageState) {
-            const isLoginPage = await this.checkForLoginPage(page, request.url);
+            const isLoginPage = await this.checkForLoginPage(page, actualUrl);
             if (isLoginPage) {
               log.error('Session appears expired - first page is a login page. Aborting crawl.');
               this.abort();
@@ -284,6 +372,13 @@ export class CrawleeCrawler extends BaseCrawler {
 
       await crawlerPromise;
       logger.debug('Crawler finished');
+
+      // Log summary of domain-restricted crawling
+      if (this.skippedExternalPages > 0) {
+        logger.warn(
+          `[CrawleeCrawler] Skipped ${this.skippedExternalPages} pages that redirected outside the allowed domain (${this.allowedHostname})`
+        );
+      }
 
       // Check if we detected an expired session during crawling
       if (this.sessionExpiredError) {
