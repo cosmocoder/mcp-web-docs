@@ -63,10 +63,12 @@
     "pdfjs-dist": "5.4.449",
     "playwright": "1.57.0",
     "quick-lru": "7.3.0",
+    "safe-regex2": "^5.0.0",
     "semver": "7.7.3",
     "sqlite": "5.1.1",
     "sqlite3": "5.1.7",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "zod": "4.1.13"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

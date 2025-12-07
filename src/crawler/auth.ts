@@ -1,8 +1,18 @@
 import { chromium, firefox, webkit, Browser, BrowserContext, Page } from 'playwright';
-import { mkdir, readFile, writeFile, access } from 'fs/promises';
-import { join } from 'path';
+import { mkdir, readFile, writeFile, access, chmod } from 'fs/promises';
+import { join, resolve } from 'path';
 import defaultBrowser from 'default-browser';
 import { logger } from '../util/logger.js';
+import {
+  encryptData,
+  decryptData,
+  createSafeRegex,
+  isSafeRegex,
+  StorageStateSchema,
+  StoredSessionSchema,
+  safeJsonParse,
+  type ValidatedStoredSession,
+} from '../util/security.js';
 
 /** Supported browser types */
 export type BrowserType = 'chromium' | 'chrome' | 'firefox' | 'webkit' | 'edge';
@@ -78,14 +88,6 @@ export interface AuthOptions {
   loginTimeoutSecs?: number;
 }
 
-/** Session storage for authenticated domains */
-interface StoredSession {
-  domain: string;
-  storageState: string; // JSON string of cookies/localStorage
-  createdAt: string;
-  browser: BrowserType;
-}
-
 /**
  * Manages authentication sessions for crawling protected pages.
  * Opens a visible browser for user to login, then saves the session for reuse.
@@ -104,12 +106,30 @@ export class AuthManager {
   }
 
   /**
-   * Get the session file path for a domain
+   * Get the session file path for a domain with path traversal protection
    */
   private getSessionPath(domain: string): string {
-    // Sanitize domain for filename
-    const safeDomain = domain.replace(/[^a-zA-Z0-9.-]/g, '_');
-    return join(this.sessionsDir, `${safeDomain}.json`);
+    // Strict sanitization - only allow alphanumeric, dots, and hyphens
+    // Limit length to prevent filesystem issues
+    const safeDomain = domain
+      .toLowerCase()
+      .replace(/[^a-z0-9.-]/g, '_')
+      .slice(0, 100);
+
+    if (!safeDomain || safeDomain === '.' || safeDomain === '..') {
+      throw new Error('Invalid domain for session storage');
+    }
+
+    const filename = `${safeDomain}.json`;
+    const fullPath = resolve(this.sessionsDir, filename);
+
+    // Verify the resolved path stays within the sessions directory (path traversal protection)
+    const resolvedSessionsDir = resolve(this.sessionsDir);
+    if (!fullPath.startsWith(resolvedSessionsDir + '/') && fullPath !== resolvedSessionsDir) {
+      throw new Error('Invalid session path: path traversal detected');
+    }
+
+    return fullPath;
   }
 
   /**
@@ -128,36 +148,61 @@ export class AuthManager {
 
   /**
    * Load a saved session for a domain
+   * Sessions are encrypted at rest and validated on load
    */
   async loadSession(url: string): Promise<string | null> {
     const domain = new URL(url).hostname;
     const sessionPath = this.getSessionPath(domain);
     try {
       const data = await readFile(sessionPath, 'utf-8');
-      const session: StoredSession = JSON.parse(data);
-      logger.info(`[AuthManager] Loaded saved session for ${domain}`);
-      return session.storageState;
-    } catch {
+
+      // Validate the session structure
+      const session: ValidatedStoredSession = safeJsonParse(data, StoredSessionSchema);
+
+      // Decrypt the storage state
+      const decryptedStorageState = decryptData(session.storageState);
+
+      // Validate the decrypted storage state structure
+      safeJsonParse(decryptedStorageState, StorageStateSchema);
+
+      logger.info(`[AuthManager] Loaded and validated saved session for ${domain}`);
+      return decryptedStorageState;
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      logger.debug(`[AuthManager] Failed to load session for ${domain}: ${errorMsg}`);
       return null;
     }
   }
 
   /**
-   * Save a session for a domain
+   * Save a session for a domain with encryption
+   * The storage state is encrypted before being written to disk
    */
   private async saveSession(url: string, storageState: string, browser: BrowserType): Promise<void> {
     const domain = new URL(url).hostname;
     const sessionPath = this.getSessionPath(domain);
 
-    const session: StoredSession = {
+    // Validate the storage state structure before saving
+    safeJsonParse(storageState, StorageStateSchema);
+
+    // Encrypt the storage state before saving
+    const encryptedStorageState = encryptData(storageState);
+
+    const session = {
       domain,
-      storageState,
+      storageState: encryptedStorageState,
       createdAt: new Date().toISOString(),
       browser,
+      version: 2 as const, // Schema version for future migrations
     };
 
-    await writeFile(sessionPath, JSON.stringify(session, null, 2));
-    logger.info(`[AuthManager] Saved session for ${domain}`);
+    // Write with restrictive permissions (owner read/write only)
+    await writeFile(sessionPath, JSON.stringify(session, null, 2), { mode: 0o600 });
+
+    // Ensure permissions are set correctly (in case file already existed)
+    await chmod(sessionPath, 0o600);
+
+    logger.info(`[AuthManager] Saved encrypted session for ${domain}`);
   }
 
   /**
@@ -367,7 +412,13 @@ export class AuthManager {
 
     // If we have specific success criteria, wait for them
     if (successPattern) {
-      const pattern = new RegExp(successPattern);
+      // Validate the regex pattern to prevent ReDoS attacks
+      if (!isSafeRegex(successPattern)) {
+        logger.error(`[AuthManager] Unsafe regex pattern provided: ${successPattern}`);
+        throw new Error('Unsafe regex pattern: may cause catastrophic backtracking (ReDoS)');
+      }
+
+      const pattern = createSafeRegex(successPattern);
       logger.info(`[AuthManager] Waiting for URL to match pattern: ${successPattern}`);
       try {
         await page.waitForURL(pattern, { timeout: timeoutMs });

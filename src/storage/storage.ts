@@ -9,6 +9,7 @@ import { dirname } from 'path';
 import { DocumentMetadata, ProcessedDocument, SearchResult, SearchOptions, StorageProvider } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
 import { logger } from '../util/logger.js';
+import { escapeFilterValue } from '../util/security.js';
 
 type LanceDBConnection = Awaited<ReturnType<typeof lancedb.connect>>;
 type LanceDBTable = Awaited<ReturnType<LanceDBConnection['openTable']>>;
@@ -240,8 +241,8 @@ export class DocumentStore implements StorageProvider {
       ]);
       logger.debug(`[DocumentStore] Added metadata to SQLite`);
 
-      // Delete existing chunks for this document
-      await this.lanceTable.delete(`url = '${doc.metadata.url}'`);
+      // Delete existing chunks for this document (using escaped value to prevent injection)
+      await this.lanceTable.delete(`url = '${escapeFilterValue(doc.metadata.url)}'`);
       logger.debug(`[DocumentStore] Deleted existing chunks`);
 
       // Add new chunks to LanceDB
@@ -346,7 +347,7 @@ export class DocumentStore implements StorageProvider {
       let query = this.lanceTable.search(queryVector).limit(limit);
 
       if (filterByType) {
-        query = query.where(`type = '${filterByType}'`);
+        query = query.where(`type = '${escapeFilterValue(filterByType)}'`);
       }
 
       const results = await query.toArray();
@@ -454,15 +455,17 @@ export class DocumentStore implements StorageProvider {
 
     const { limit = 10, filterByType, filterUrl } = options;
 
-    // Build WHERE clause for filtering
+    // Build WHERE clause for filtering (using escaped values to prevent injection)
     const buildWhereClause = (): string | undefined => {
       const conditions: string[] = [];
       if (filterByType) {
-        conditions.push(`type = '${filterByType}'`);
+        conditions.push(`type = '${escapeFilterValue(filterByType)}'`);
       }
       if (filterUrl) {
         // Filter by base URL - use LIKE to match URLs that start with the base URL
-        conditions.push(`url LIKE '${filterUrl}%'`);
+        // Escape the filterUrl and also escape LIKE wildcards within the value
+        const escapedUrl = escapeFilterValue(filterUrl).replace(/%/g, '\\%').replace(/_/g, '\\_');
+        conditions.push(`url LIKE '${escapedUrl}%'`);
       }
       return conditions.length > 0 ? conditions.join(' AND ') : undefined;
     };
@@ -703,7 +706,7 @@ export class DocumentStore implements StorageProvider {
       await this.sqliteDb.run('BEGIN TRANSACTION');
 
       await this.sqliteDb.run('DELETE FROM documents WHERE url = ?', [url]);
-      await this.lanceTable.delete(`url = '${url}'`);
+      await this.lanceTable.delete(`url = '${escapeFilterValue(url)}'`);
 
       await this.sqliteDb.run('COMMIT');
 
@@ -750,7 +753,7 @@ export class DocumentStore implements StorageProvider {
 
       // Check if LanceDB has any chunks for this document
       if (this.lanceTable) {
-        const chunks = await this.lanceTable.countRows(`url = '${url}'`);
+        const chunks = await this.lanceTable.countRows(`url = '${escapeFilterValue(url)}'`);
         logger.debug(`[DocumentStore] Found ${chunks} chunks in LanceDB for ${url}`);
       }
 

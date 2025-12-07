@@ -2,6 +2,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { mkdir } from 'fs/promises';
 import { logger } from './util/logger.js';
+import { validatePublicUrl } from './util/security.js';
 
 export interface DocsConfig {
   githubToken?: string;
@@ -127,6 +128,30 @@ export function isValidUrl(urlString: string): boolean {
     const url = new URL(urlString);
     return url.protocol === 'http:' || url.protocol === 'https:';
   } catch {
+    return false;
+  }
+}
+
+/**
+ * Validate URL and check for SSRF attacks (blocks private/internal networks)
+ * @param urlString - URL to validate
+ * @param allowPrivate - If true, skips SSRF checks (for trusted internal use)
+ * @returns true if URL is valid and safe
+ */
+export function isValidPublicUrl(urlString: string, allowPrivate = false): boolean {
+  if (!isValidUrl(urlString)) {
+    return false;
+  }
+
+  if (allowPrivate) {
+    return true;
+  }
+
+  try {
+    validatePublicUrl(urlString);
+    return true;
+  } catch (error) {
+    logger.debug(`[Config] URL blocked by SSRF protection: ${urlString}`, error);
     return false;
   }
 }

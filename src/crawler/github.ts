@@ -2,13 +2,7 @@ import { URL } from 'url';
 import { CrawlResult } from '../types.js';
 import { BaseCrawler } from './base.js';
 import { logger } from '../util/logger.js';
-
-interface GitHubFile {
-  path: string;
-  type: 'file' | 'dir';
-  url: string;
-  content?: string;
-}
+import { GitHubFilesArraySchema, type ValidatedGitHubFile } from '../util/security.js';
 
 export class GitHubCrawler extends BaseCrawler {
   private readonly API_BASE = 'https://api.github.com';
@@ -123,7 +117,7 @@ export class GitHubCrawler extends BaseCrawler {
     }
   }
 
-  private async fetchRepoContents(repoInfo: { owner: string; repo: string; branch: string }, path: string): Promise<GitHubFile[]> {
+  private async fetchRepoContents(repoInfo: { owner: string; repo: string; branch: string }, path: string): Promise<ValidatedGitHubFile[]> {
     await this.rateLimit();
 
     const url = `${this.API_BASE}/repos/${repoInfo.owner}/${repoInfo.repo}/contents/${path}`;
@@ -145,7 +139,16 @@ export class GitHubCrawler extends BaseCrawler {
         throw new Error(`GitHub API error: ${response.status}`);
       }
 
-      return await response.json();
+      const rawData = await response.json();
+
+      // Validate the response structure to prevent prototype pollution and ensure expected format
+      const validationResult = GitHubFilesArraySchema.safeParse(rawData);
+      if (!validationResult.success) {
+        logger.warn(`[GitHubCrawler] Invalid GitHub API response structure: ${validationResult.error.message}`);
+        return [];
+      }
+
+      return validationResult.data;
     } catch (error) {
       logger.debug(`[GitHubCrawler] Error fetching repo contents for ${path}:`, error);
       return [];

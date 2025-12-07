@@ -22,13 +22,26 @@ import { FastEmbeddings } from './embeddings/fastembed.js';
 import { WebDocumentProcessor } from './processor/processor.js';
 import { IndexingStatusTracker } from './indexing/status.js';
 import { IndexingQueueManager } from './indexing/queue-manager.js';
-import { DocsConfig, loadConfig, isValidUrl, normalizeUrl } from './config.js';
+import { DocsConfig, loadConfig, isValidPublicUrl, normalizeUrl } from './config.js';
 import { DocsCrawler } from './crawler/docs-crawler.js';
-import { AuthManager, BrowserType } from './crawler/auth.js';
+import { AuthManager } from './crawler/auth.js';
 import { fetchFavicon } from './util/favicon.js';
 import { DocumentChunk, IndexingStatus } from './types.js';
 import { generateDocId } from './util/docs.js';
 import { logger } from './util/logger.js';
+import {
+  StorageStateSchema,
+  safeJsonParse,
+  validateToolArgs,
+  AddDocumentationArgsSchema,
+  AuthenticateArgsSchema,
+  ClearAuthArgsSchema,
+  SearchDocumentationArgsSchema,
+  ReindexDocumentationArgsSchema,
+  DeleteDocumentationArgsSchema,
+  type ValidatedStorageState,
+} from './util/security.js';
+import type { StorageState } from './crawler/crawlee-crawler.js';
 
 /** Progress token type from MCP spec */
 type ProgressToken = string | number;
@@ -383,27 +396,25 @@ class WebDocsServer {
   }
 
   private async handleAddDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
-    const { url, title, id, auth } = args ?? ({} as Record<string, unknown>);
-    if (!isValidUrl(url as string)) {
-      throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, AddDocumentationArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
     }
 
-    const normalizedUrl = normalizeUrl(url as string);
-    const docTitle = (title as string) || new URL(normalizedUrl).hostname;
-    // Use custom ID if provided, otherwise auto-generate
-    const docId = (id as string) || generateDocId(normalizedUrl, docTitle);
+    const { url, title, id, auth: authOptions } = validatedArgs;
 
-    // Handle inline authentication if requested
-    const authOptions = auth as
-      | {
-          requiresAuth?: boolean;
-          browser?: BrowserType;
-          loginUrl?: string;
-          loginSuccessPattern?: string;
-          loginSuccessSelector?: string;
-          loginTimeoutSecs?: number;
-        }
-      | undefined;
+    // Additional SSRF protection check
+    if (!isValidPublicUrl(url)) {
+      throw new McpError(ErrorCode.InvalidParams, 'Access to private networks is blocked');
+    }
+
+    const normalizedUrl = normalizeUrl(url);
+    const docTitle = title || new URL(normalizedUrl).hostname;
+    // Use custom ID if provided, otherwise auto-generate
+    const docId = id || generateDocId(normalizedUrl, docTitle);
     if (authOptions?.requiresAuth) {
       const hasExistingSession = await this.authManager.hasSession(normalizedUrl);
       if (!hasExistingSession) {
@@ -488,12 +499,20 @@ class WebDocsServer {
   }
 
   private async handleSearchDocumentation(args: Record<string, unknown> | undefined) {
-    const { query, url, limit = 10 } = args ?? ({} as Record<string, unknown>);
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, SearchDocumentationArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
+    }
+
+    const { query, url, limit = 10 } = validatedArgs;
 
     // Normalize URL if provided for filtering
-    const filterUrl = url ? normalizeUrl(url as string) : undefined;
+    const filterUrl = url ? normalizeUrl(url) : undefined;
 
-    const results = await this.store.searchByText(query as string, { limit: limit as number, filterUrl });
+    const results = await this.store.searchByText(query, { limit, filterUrl });
     return {
       content: [
         {
@@ -505,9 +524,19 @@ class WebDocsServer {
   }
 
   private async handleReindexDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
-    const { url } = args ?? ({} as Record<string, unknown>);
-    if (!isValidUrl(url as string)) {
-      throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, ReindexDocumentationArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
+    }
+
+    const { url } = validatedArgs;
+
+    // Additional SSRF protection check
+    if (!isValidPublicUrl(url)) {
+      throw new McpError(ErrorCode.InvalidParams, 'Access to private networks is blocked');
     }
 
     const normalizedUrl = normalizeUrl(url as string);
@@ -595,14 +624,22 @@ class WebDocsServer {
    * Opens a visible browser for the user to login manually.
    */
   private async handleAuthenticate(args: Record<string, unknown> | undefined) {
-    const { url, browser, loginUrl, loginTimeoutSecs = 300 } = args ?? ({} as Record<string, unknown>);
-    // Note: browser is undefined if not provided, which triggers auto-detection in performInteractiveLogin
-
-    if (!isValidUrl(url as string)) {
-      throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, AuthenticateArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
     }
 
-    const normalizedUrl = normalizeUrl(url as string);
+    const { url, browser, loginUrl, loginTimeoutSecs = 300 } = validatedArgs;
+
+    // Additional SSRF protection check
+    if (!isValidPublicUrl(url)) {
+      throw new McpError(ErrorCode.InvalidParams, 'Access to private networks is blocked');
+    }
+
+    const normalizedUrl = normalizeUrl(url);
     const domain = new URL(normalizedUrl).hostname;
 
     // Check if we already have a session
@@ -627,13 +664,13 @@ class WebDocsServer {
     }
 
     try {
-      logger.info(`[Auth] Opening ${browser} browser for authentication to ${domain}`);
+      logger.info(`[Auth] Opening ${browser || 'auto-detected'} browser for authentication to ${domain}`);
 
       // Perform interactive login
       await this.authManager.performInteractiveLogin(normalizedUrl, {
-        browser: browser as BrowserType | undefined,
-        loginUrl: loginUrl as string | undefined,
-        loginTimeoutSecs: loginTimeoutSecs as number,
+        browser,
+        loginUrl,
+        loginTimeoutSecs,
       });
 
       return {
@@ -680,13 +717,16 @@ class WebDocsServer {
    * Handle clearing saved authentication for a domain
    */
   private async handleClearAuth(args: Record<string, unknown> | undefined) {
-    const { url } = args ?? ({} as Record<string, unknown>);
-
-    if (!isValidUrl(url as string)) {
-      throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, ClearAuthArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
     }
 
-    const normalizedUrl = normalizeUrl(url as string);
+    const { url } = validatedArgs;
+    const normalizedUrl = normalizeUrl(url);
     const domain = new URL(normalizedUrl).hostname;
 
     await this.authManager.clearSession(normalizedUrl);
@@ -713,13 +753,16 @@ class WebDocsServer {
    * Handle deleting an indexed documentation site and all its data
    */
   private async handleDeleteDocumentation(args: Record<string, unknown> | undefined) {
-    const { url, clearAuth = false } = args ?? ({} as Record<string, unknown>);
-
-    if (!isValidUrl(url as string)) {
-      throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, DeleteDocumentationArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, error instanceof Error ? error.message : 'Invalid arguments');
     }
 
-    const normalizedUrl = normalizeUrl(url as string);
+    const { url, clearAuth = false } = validatedArgs;
+    const normalizedUrl = normalizeUrl(url);
     const domain = new URL(normalizedUrl).hostname;
 
     // Check if document exists
@@ -855,11 +898,14 @@ class WebDocsServer {
       const savedSession = await this.authManager.loadSession(url);
       if (savedSession) {
         try {
-          const storageState = JSON.parse(savedSession);
-          crawler.setStorageState(storageState);
-          logger.info(`[WebDocsServer] Using saved authentication session for ${url}`);
+          // Validate the session structure before using it
+          const validatedState: ValidatedStorageState = safeJsonParse(savedSession, StorageStateSchema);
+          // The validated state is structurally compatible with StorageState
+          crawler.setStorageState(validatedState as StorageState);
+          logger.info(`[WebDocsServer] Using validated authentication session for ${url}`);
         } catch (e) {
-          logger.warn(`[WebDocsServer] Failed to parse saved session:`, e);
+          logger.warn(`[WebDocsServer] Failed to parse or validate saved session:`, e);
+          // Continue without authentication rather than failing
         }
       }
 
