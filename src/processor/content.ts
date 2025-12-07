@@ -59,7 +59,7 @@ function findMainContent(doc: Document): Element | null {
     '.gatsby-content',
     '.mdx-content',
     '.nextra-content',
-    '.nuxt-content'
+    '.nuxt-content',
   ];
 
   // Try each selector
@@ -101,7 +101,7 @@ function getAllTextContent(element: Element): string {
   // Handle lists specially
   if (element.tagName === 'UL' || element.tagName === 'OL') {
     const items = Array.from(element.querySelectorAll('li'))
-      .map(li => '- ' + li.textContent?.trim())
+      .map((li) => '- ' + li.textContent?.trim())
       .filter(Boolean)
       .join('\n');
     if (items) {
@@ -113,9 +113,9 @@ function getAllTextContent(element: Element): string {
   // Handle tables specially
   if (element.tagName === 'TABLE') {
     const rows = Array.from(element.querySelectorAll('tr'))
-      .map(tr =>
+      .map((tr) =>
         Array.from(tr.querySelectorAll('td, th'))
-          .map(cell => cell.textContent?.trim() || '')
+          .map((cell) => cell.textContent?.trim() || '')
           .join(' | ')
       )
       .filter(Boolean)
@@ -175,19 +175,21 @@ function extractContentBetweenElements(start: Element, end: Element | null): str
 
 function extractSections(mainContent: Element): ArticleComponent[] {
   const headerSelectors = [
-    'h1', 'h2', 'h3', 'h4',
+    'h1',
+    'h2',
+    'h3',
+    'h4',
     '[class*="heading"]',
     '[class*="title"]',
     '[class*="sbdocs-h"]',
     '[class*="story-title"]',
     '[class*="docblock-title"]',
-    '[class*="docs-title"]'
+    '[class*="docs-title"]',
   ];
-  const headers = Array.from(mainContent.querySelectorAll(headerSelectors.join(',')))
-    .filter(header => {
-      const text = header.textContent?.trim();
-      return text && text.length > 0;
-    });
+  const headers = Array.from(mainContent.querySelectorAll(headerSelectors.join(','))).filter((header) => {
+    const text = header.textContent?.trim();
+    return text && text.length > 0;
+  });
 
   if (headers.length === 0) {
     // No headers found, treat entire content as one section
@@ -203,14 +205,11 @@ function extractSections(mainContent: Element): ArticleComponent[] {
 
   // Process content before first header
   if (headers[0].previousElementSibling) {
-    const introContent = extractContentBetweenElements(
-      mainContent.firstElementChild as Element,
-      headers[0]
-    );
+    const introContent = extractContentBetweenElements(mainContent.firstElementChild as Element, headers[0]);
     if (introContent.length > 0) {
       components.push({
         title: 'Introduction',
-        body: introContent
+        body: introContent,
       });
     }
   }
@@ -228,10 +227,10 @@ function extractSections(mainContent: Element): ArticleComponent[] {
 
   // Filter out empty components and normalize
   return components
-    .filter(comp => comp.body.length > 0)
-    .map(comp => ({
+    .filter((comp) => comp.body.length > 0)
+    .map((comp) => ({
       title: comp.title,
-      body: cleanText(comp.body)
+      body: cleanText(comp.body),
     }));
 }
 
@@ -261,12 +260,14 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
           url: page.url,
           path: page.path,
           title: readability.title || page.path,
-          components: [{
-            title: readability.title || 'Content',
-            body: cleanText(readability.textContent || '')
-          }]
+          components: [
+            {
+              title: readability.title || 'Content',
+              body: cleanText(readability.textContent || ''),
+            },
+          ],
         },
-        content: cleanText(readability.textContent || '')
+        content: cleanText(readability.textContent || ''),
       };
     }
 
@@ -286,15 +287,15 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
       url: page.url,
       path: page.path,
       title: page.title || components[0].title,
-      components
+      components,
     };
 
     return {
       article,
       content: components
-        .map(comp => `${comp.title}\n\n${comp.body}`)
+        .map((comp) => `${comp.title}\n\n${comp.body}`)
         .join('\n\n')
-        .trim()
+        .trim(),
     };
   } catch (error) {
     logger.debug('[ContentProcessor] Error processing HTML content:', error);

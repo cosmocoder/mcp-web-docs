@@ -16,12 +16,7 @@ Configuration.getGlobalConfig().set('logLevel', 'OFF');
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  McpError
-} from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { DocumentStore } from './storage/storage.js';
 import { FastEmbeddings } from './embeddings/fastembed.js';
 import { WebDocumentProcessor } from './processor/processor.js';
@@ -65,12 +60,12 @@ class WebDocsServer {
     this.server = new Server(
       {
         name: 'mcp-web-docs',
-        version: '1.0.0'
+        version: '1.0.0',
       },
       {
         capabilities: {
-          tools: {}
-        }
+          tools: {},
+        },
       }
     );
 
@@ -123,8 +118,8 @@ class WebDocsServer {
           progressToken,
           progress: progressPercent,
           total: 100,
-          message
-        }
+          message,
+        },
       });
 
       logger.info(`[Progress] Sent notification: ${progressPercent}% - ${message}`);
@@ -145,12 +140,7 @@ class WebDocsServer {
 
     // Initialize components that need config
     const embeddings = new FastEmbeddings();
-    this.store = new DocumentStore(
-      this.config.dbPath,
-      this.config.vectorDbPath,
-      embeddings,
-      this.config.cacheSize
-    );
+    this.store = new DocumentStore(this.config.dbPath, this.config.vectorDbPath, embeddings, this.config.cacheSize);
     this.processor = new WebDocumentProcessor(embeddings, this.config.maxChunkSize);
 
     // Initialize auth manager for handling authenticated crawls
@@ -173,15 +163,16 @@ class WebDocsServer {
             properties: {
               url: {
                 type: 'string',
-                description: 'URL of the documentation site'
+                description: 'URL of the documentation site',
               },
               title: {
                 type: 'string',
-                description: 'Optional title for the documentation'
+                description: 'Optional title for the documentation',
               },
               id: {
                 type: 'string',
-                description: 'Optional custom ID for the documentation (used for storage and identification). If not provided, an ID is auto-generated from the URL.'
+                description:
+                  'Optional custom ID for the documentation (used for storage and identification). If not provided, an ID is auto-generated from the URL.',
               },
               auth: {
                 type: 'object',
@@ -189,61 +180,62 @@ class WebDocsServer {
                 properties: {
                   requiresAuth: {
                     type: 'boolean',
-                    description: 'Set to true to open a browser for interactive login before crawling'
+                    description: 'Set to true to open a browser for interactive login before crawling',
                   },
                   browser: {
                     type: 'string',
                     enum: ['chromium', 'chrome', 'firefox', 'webkit', 'edge'],
-                    description: 'Browser to use for authentication (default: chromium)'
+                    description: 'Browser to use for authentication (default: chromium)',
                   },
                   loginUrl: {
                     type: 'string',
-                    description: 'Login page URL if different from main URL'
+                    description: 'Login page URL if different from main URL',
                   },
                   loginSuccessPattern: {
                     type: 'string',
-                    description: 'URL regex pattern that indicates successful login'
+                    description: 'URL regex pattern that indicates successful login',
                   },
                   loginSuccessSelector: {
                     type: 'string',
-                    description: 'CSS selector that appears after successful login'
+                    description: 'CSS selector that appears after successful login',
                   },
                   loginTimeoutSecs: {
                     type: 'number',
-                    description: 'Timeout for login in seconds (default: 300)'
-                  }
-                }
-              }
+                    description: 'Timeout for login in seconds (default: 300)',
+                  },
+                },
+              },
             },
-            required: ['url']
-          }
+            required: ['url'],
+          },
         },
         {
           name: 'authenticate',
-          description: 'Open a browser window for interactive login to a protected site. The session will be saved and reused for future crawls. Use this before add_documentation for sites that require login.',
+          description:
+            'Open a browser window for interactive login to a protected site. The session will be saved and reused for future crawls. Use this before add_documentation for sites that require login.',
           inputSchema: {
             type: 'object',
             properties: {
               url: {
                 type: 'string',
-                description: 'URL of the site to authenticate to'
+                description: 'URL of the site to authenticate to',
               },
               browser: {
                 type: 'string',
                 enum: ['chromium', 'chrome', 'firefox', 'webkit', 'edge'],
-                description: 'Browser to use (default: chromium). Use "chrome" or "edge" to use your installed browser.'
+                description: 'Browser to use (default: chromium). Use "chrome" or "edge" to use your installed browser.',
               },
               loginUrl: {
                 type: 'string',
-                description: 'Login page URL if different from main URL'
+                description: 'Login page URL if different from main URL',
               },
               loginTimeoutSecs: {
                 type: 'number',
-                description: 'Timeout for login in seconds (default: 300 = 5 minutes)'
-              }
+                description: 'Timeout for login in seconds (default: 300 = 5 minutes)',
+              },
             },
-            required: ['url']
-          }
+            required: ['url'],
+          },
         },
         {
           name: 'clear_auth',
@@ -253,19 +245,19 @@ class WebDocsServer {
             properties: {
               url: {
                 type: 'string',
-                description: 'URL of the site to clear authentication for'
-              }
+                description: 'URL of the site to clear authentication for',
+              },
             },
-            required: ['url']
-          }
+            required: ['url'],
+          },
         },
         {
           name: 'list_documentation',
           description: 'List all indexed documentation sites',
           inputSchema: {
             type: 'object',
-            properties: {}
-          }
+            properties: {},
+          },
         },
         {
           name: 'search_documentation',
@@ -300,19 +292,21 @@ class WebDocsServer {
             properties: {
               query: {
                 type: 'string',
-                description: 'Search query - be specific and include unique terms. Use quotes for exact phrases. Example: "Card component props headline status" or "REST API authentication Bearer token"'
+                description:
+                  'Search query - be specific and include unique terms. Use quotes for exact phrases. Example: "Card component props headline status" or "REST API authentication Bearer token"',
               },
               url: {
                 type: 'string',
-                description: 'Optional: Filter results to a specific documentation site by its URL. If not provided, searches all indexed docs.'
+                description:
+                  'Optional: Filter results to a specific documentation site by its URL. If not provided, searches all indexed docs.',
               },
               limit: {
                 type: 'number',
-                description: 'Maximum number of results (default: 10)'
-              }
+                description: 'Maximum number of results (default: 10)',
+              },
             },
-            required: ['query']
-          }
+            required: ['query'],
+          },
         },
         {
           name: 'reindex_documentation',
@@ -322,39 +316,40 @@ class WebDocsServer {
             properties: {
               url: {
                 type: 'string',
-                description: 'URL of the documentation to re-index'
-              }
+                description: 'URL of the documentation to re-index',
+              },
             },
-            required: ['url']
-          }
+            required: ['url'],
+          },
         },
         {
           name: 'get_indexing_status',
           description: 'Get current indexing status',
           inputSchema: {
             type: 'object',
-            properties: {}
-          }
+            properties: {},
+          },
         },
         {
           name: 'delete_documentation',
-          description: 'Delete an indexed documentation site and all its data (vectors, metadata, cached crawl data, and optionally auth session)',
+          description:
+            'Delete an indexed documentation site and all its data (vectors, metadata, cached crawl data, and optionally auth session)',
           inputSchema: {
             type: 'object',
             properties: {
               url: {
                 type: 'string',
-                description: 'URL of the documentation site to delete'
+                description: 'URL of the documentation site to delete',
               },
               clearAuth: {
                 type: 'boolean',
-                description: 'Also clear saved authentication session for this domain (default: false)'
-              }
+                description: 'Also clear saved authentication session for this domain (default: false)',
+              },
             },
-            required: ['url']
-          }
-        }
-      ]
+            required: ['url'],
+          },
+        },
+      ],
     }));
 
     // Handle tool calls
@@ -388,7 +383,7 @@ class WebDocsServer {
   }
 
   private async handleAddDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
-    const { url, title, id, auth } = args ?? {} as Record<string, unknown>;
+    const { url, title, id, auth } = args ?? ({} as Record<string, unknown>);
     if (!isValidUrl(url as string)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
     }
@@ -399,7 +394,16 @@ class WebDocsServer {
     const docId = (id as string) || generateDocId(normalizedUrl, docTitle);
 
     // Handle inline authentication if requested
-    const authOptions = auth as { requiresAuth?: boolean; browser?: BrowserType; loginUrl?: string; loginSuccessPattern?: string; loginSuccessSelector?: string; loginTimeoutSecs?: number } | undefined;
+    const authOptions = auth as
+      | {
+          requiresAuth?: boolean;
+          browser?: BrowserType;
+          loginUrl?: string;
+          loginSuccessPattern?: string;
+          loginSuccessSelector?: string;
+          loginTimeoutSecs?: number;
+        }
+      | undefined;
     if (authOptions?.requiresAuth) {
       const hasExistingSession = await this.authManager.hasSession(normalizedUrl);
       if (!hasExistingSession) {
@@ -410,7 +414,7 @@ class WebDocsServer {
             loginUrl: authOptions.loginUrl,
             loginSuccessPattern: authOptions.loginSuccessPattern,
             loginSuccessSelector: authOptions.loginSuccessSelector,
-            loginTimeoutSecs: authOptions.loginTimeoutSecs
+            loginTimeoutSecs: authOptions.loginTimeoutSecs,
           });
           logger.info(`[WebDocsServer] Authentication successful for ${normalizedUrl}`);
         } catch (error) {
@@ -455,14 +459,19 @@ class WebDocsServer {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({
-            status: 'started',
-            message: `Started indexing ${normalizedUrl}`,
-            docId,
-            instruction: 'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.'
-          }, null, 2)
-        }
-      ]
+          text: JSON.stringify(
+            {
+              status: 'started',
+              message: `Started indexing ${normalizedUrl}`,
+              docId,
+              instruction:
+                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.',
+            },
+            null,
+            2
+          ),
+        },
+      ],
     };
   }
 
@@ -472,14 +481,14 @@ class WebDocsServer {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(docs, null, 2)
-        }
-      ]
+          text: JSON.stringify(docs, null, 2),
+        },
+      ],
     };
   }
 
   private async handleSearchDocumentation(args: Record<string, unknown> | undefined) {
-    const { query, url, limit = 10 } = args ?? {} as Record<string, unknown>;
+    const { query, url, limit = 10 } = args ?? ({} as Record<string, unknown>);
 
     // Normalize URL if provided for filtering
     const filterUrl = url ? normalizeUrl(url as string) : undefined;
@@ -489,14 +498,14 @@ class WebDocsServer {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(results, null, 2)
-        }
-      ]
+          text: JSON.stringify(results, null, 2),
+        },
+      ],
     };
   }
 
   private async handleReindexDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
-    const { url } = args ?? {} as Record<string, unknown>;
+    const { url } = args ?? ({} as Record<string, unknown>);
     if (!isValidUrl(url as string)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
     }
@@ -539,16 +548,21 @@ class WebDocsServer {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({
-            status: 'started',
-            message: wasCancelled
-              ? `Started re-indexing ${normalizedUrl}. Previous operation was cancelled.`
-              : `Started re-indexing ${normalizedUrl}`,
-            docId,
-            instruction: 'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.'
-          }, null, 2)
-        }
-      ]
+          text: JSON.stringify(
+            {
+              status: 'started',
+              message: wasCancelled
+                ? `Started re-indexing ${normalizedUrl}. Previous operation was cancelled.`
+                : `Started re-indexing ${normalizedUrl}`,
+              docId,
+              instruction:
+                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.',
+            },
+            null,
+            2
+          ),
+        },
+      ],
     };
   }
 
@@ -556,23 +570,23 @@ class WebDocsServer {
     const statuses = this.statusTracker.getAllStatuses();
 
     // Check if any operations are still in progress
-    const hasActiveOperations = statuses.some(s => s.status === 'indexing');
+    const hasActiveOperations = statuses.some((s) => s.status === 'indexing');
 
     // Add instruction for agent
     const response = {
       statuses,
       instruction: hasActiveOperations
         ? 'Operations still in progress. Call get_indexing_status again in a few seconds to check progress.'
-        : 'All operations complete. No need to poll again.'
+        : 'All operations complete. No need to poll again.',
     };
 
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(response, null, 2)
-        }
-      ]
+          text: JSON.stringify(response, null, 2),
+        },
+      ],
     };
   }
 
@@ -581,7 +595,7 @@ class WebDocsServer {
    * Opens a visible browser for the user to login manually.
    */
   private async handleAuthenticate(args: Record<string, unknown> | undefined) {
-    const { url, browser, loginUrl, loginTimeoutSecs = 300 } = args ?? {} as Record<string, unknown>;
+    const { url, browser, loginUrl, loginTimeoutSecs = 300 } = args ?? ({} as Record<string, unknown>);
     // Note: browser is undefined if not provided, which triggers auto-detection in performInteractiveLogin
 
     if (!isValidUrl(url as string)) {
@@ -598,13 +612,17 @@ class WebDocsServer {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              status: 'existing_session',
-              message: `Already have a saved session for ${domain}. Use clear_auth first if you need to re-authenticate.`,
-              domain
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                status: 'existing_session',
+                message: `Already have a saved session for ${domain}. Use clear_auth first if you need to re-authenticate.`,
+                domain,
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
     }
 
@@ -615,21 +633,25 @@ class WebDocsServer {
       await this.authManager.performInteractiveLogin(normalizedUrl, {
         browser: browser as BrowserType | undefined,
         loginUrl: loginUrl as string | undefined,
-        loginTimeoutSecs: loginTimeoutSecs as number
+        loginTimeoutSecs: loginTimeoutSecs as number,
       });
 
       return {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              status: 'success',
-              message: `Successfully authenticated to ${domain}. Session saved for future crawls.`,
-              domain,
-              instruction: 'You can now use add_documentation to crawl this site. The saved session will be used automatically.'
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Successfully authenticated to ${domain}. Session saved for future crawls.`,
+                domain,
+                instruction: 'You can now use add_documentation to crawl this site. The saved session will be used automatically.',
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -639,13 +661,17 @@ class WebDocsServer {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              status: 'failed',
-              message: `Authentication failed: ${errorMessage}`,
-              domain
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                status: 'failed',
+                message: `Authentication failed: ${errorMessage}`,
+                domain,
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
     }
   }
@@ -654,7 +680,7 @@ class WebDocsServer {
    * Handle clearing saved authentication for a domain
    */
   private async handleClearAuth(args: Record<string, unknown> | undefined) {
-    const { url } = args ?? {} as Record<string, unknown>;
+    const { url } = args ?? ({} as Record<string, unknown>);
 
     if (!isValidUrl(url as string)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
@@ -669,13 +695,17 @@ class WebDocsServer {
       content: [
         {
           type: 'text',
-          text: JSON.stringify({
-            status: 'success',
-            message: `Cleared saved authentication for ${domain}`,
-            domain
-          }, null, 2)
-        }
-      ]
+          text: JSON.stringify(
+            {
+              status: 'success',
+              message: `Cleared saved authentication for ${domain}`,
+              domain,
+            },
+            null,
+            2
+          ),
+        },
+      ],
     };
   }
 
@@ -683,7 +713,7 @@ class WebDocsServer {
    * Handle deleting an indexed documentation site and all its data
    */
   private async handleDeleteDocumentation(args: Record<string, unknown> | undefined) {
-    const { url, clearAuth = false } = args ?? {} as Record<string, unknown>;
+    const { url, clearAuth = false } = args ?? ({} as Record<string, unknown>);
 
     if (!isValidUrl(url as string)) {
       throw new McpError(ErrorCode.InvalidParams, 'Invalid URL provided');
@@ -699,13 +729,17 @@ class WebDocsServer {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              status: 'not_found',
-              message: `No indexed documentation found for ${normalizedUrl}`,
-              url: normalizedUrl
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                status: 'not_found',
+                message: `No indexed documentation found for ${normalizedUrl}`,
+                url: normalizedUrl,
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
     }
 
@@ -740,15 +774,19 @@ class WebDocsServer {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              status: 'success',
-              message: `Successfully deleted documentation for ${normalizedUrl}`,
-              url: normalizedUrl,
-              title: doc.title,
-              deletedItems
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Successfully deleted documentation for ${normalizedUrl}`,
+                url: normalizedUrl,
+                title: doc.title,
+                deletedItems,
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -758,25 +796,23 @@ class WebDocsServer {
         content: [
           {
             type: 'text',
-            text: JSON.stringify({
-              status: 'error',
-              message: `Failed to delete documentation: ${errorMessage}`,
-              url: normalizedUrl,
-              deletedItems
-            }, null, 2)
-          }
-        ]
+            text: JSON.stringify(
+              {
+                status: 'error',
+                message: `Failed to delete documentation: ${errorMessage}`,
+                url: normalizedUrl,
+                deletedItems,
+              },
+              null,
+              2
+            ),
+          },
+        ],
       };
     }
   }
 
-  private async indexAndAdd(
-    id: string,
-    url: string,
-    title: string,
-    reIndex: boolean = false,
-    signal?: AbortSignal
-  ) {
+  private async indexAndAdd(id: string, url: string, title: string, reIndex: boolean = false, signal?: AbortSignal) {
     // Helper to check if operation was cancelled
     const checkCancelled = () => {
       if (signal?.aborted) {
@@ -813,11 +849,7 @@ class WebDocsServer {
       // Start crawling
       logger.info(`[WebDocsServer] Starting crawl with depth=${this.config.maxDepth}, maxRequests=${this.config.maxRequestsPerCrawl}`);
       this.statusTracker.updateProgress(id, 0, 'Finding subpages');
-      const crawler = new DocsCrawler(
-        this.config.maxDepth,
-        this.config.maxRequestsPerCrawl,
-        this.config.githubToken
-      );
+      const crawler = new DocsCrawler(this.config.maxDepth, this.config.maxRequestsPerCrawl, this.config.githubToken);
 
       // Load saved authentication session if available
       const savedSession = await this.authManager.loadSession(url);
@@ -861,7 +893,7 @@ class WebDocsServer {
         pages.push(page);
 
         // Small delay to allow other operations
-        await new Promise(resolve => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 50));
       }
 
       if (pages.length === 0) {
@@ -885,29 +917,25 @@ class WebDocsServer {
         const page = pages[i];
         logger.debug(`[WebDocsServer] Processing page ${i + 1}/${pages.length}: ${page.path}`);
 
-        this.statusTracker.updateProgress(
-          id,
-          0.5 + 0.3 * (i / pages.length),
-          `Creating embeddings (${i + 1}/${pages.length})`
-        );
+        this.statusTracker.updateProgress(id, 0.5 + 0.3 * (i / pages.length), `Creating embeddings (${i + 1}/${pages.length})`);
 
         try {
           const processed = await this.processor.process(page);
           logger.debug(`[WebDocsServer] Created ${processed.chunks.length} chunks for ${page.path}`);
 
           chunks.push(...processed.chunks);
-          embeddings.push(...processed.chunks.map(chunk => chunk.vector));
+          embeddings.push(...processed.chunks.map((chunk) => chunk.vector));
 
           this.statusTracker.updateStats(id, {
             pagesProcessed: i + 1,
-            chunksCreated: chunks.length
+            chunksCreated: chunks.length,
           });
         } catch (error) {
           logger.error(`[WebDocsServer] Error processing page ${page.path}:`, error);
         }
 
         // Small delay
-        await new Promise(resolve => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 20));
       }
 
       logger.info(`[WebDocsServer] Total chunks created: ${chunks.length}`);
@@ -940,12 +968,12 @@ class WebDocsServer {
           url,
           title,
           favicon: favicon ?? undefined,
-          lastIndexed: new Date()
+          lastIndexed: new Date(),
         },
         chunks: chunks.map((chunk, i) => ({
           ...chunk,
-          vector: embeddings[i]
-        }))
+          vector: embeddings[i],
+        })),
       });
 
       logger.info(`[WebDocsServer] Successfully indexed ${url}`);
@@ -983,7 +1011,7 @@ class WebDocsServer {
         const isConflict = error instanceof Error && error.message?.includes('Commit conflict');
         if (isConflict && attempt < maxRetries) {
           logger.warn(`[WebDocsServer] Database conflict, retrying (${attempt}/${maxRetries})...`);
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+          await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
           continue;
         }
         throw error;

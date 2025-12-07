@@ -25,7 +25,7 @@ const DEFAULT_CONFIG: DocsConfig = {
   cacheSize: 1000,
   dataDir: DATA_DIR,
   dbPath: join(DATA_DIR, 'docs.db'),
-  vectorDbPath: join(DATA_DIR, 'vectors')
+  vectorDbPath: join(DATA_DIR, 'vectors'),
 };
 
 export async function loadConfig(): Promise<DocsConfig> {
@@ -53,12 +53,12 @@ export async function loadConfig(): Promise<DocsConfig> {
 
   const config: DocsConfig = {
     ...DEFAULT_CONFIG,
-    githubToken
+    githubToken,
   };
 
   logger.debug('[Config] Configuration loaded:', {
     ...config,
-    githubToken: githubToken ? '***' : undefined
+    githubToken: githubToken ? '***' : undefined,
   });
 
   return config;
@@ -92,33 +92,33 @@ export const IGNORED_PATHS = [
   'examples/',
   'build/',
   'dist/',
-  '.git/'
+  '.git/',
 ];
 
 // Rate limiting constants
 export const RATE_LIMIT = {
   maxRequests: 60, // Increased for better throughput
   timeWindow: 60 * 1000, // 1 minute
-  minDelay: 250 // Reduced delay between requests
+  minDelay: 250, // Reduced delay between requests
 };
 
 // Queue configuration
 export const QUEUE_OPTIONS = {
   maxRequestRetries: 2,
   retryDelay: 1000,
-  maxRequestsPerCrawl: 2000 // Increased from default 1000
+  maxRequestsPerCrawl: 2000, // Increased from default 1000
 };
 
 // GitHub API rate limits
 export const GITHUB_RATE_LIMIT = {
   unauthenticated: {
     maxRequests: 60,
-    timeWindow: 60 * 60 * 1000 // 1 hour
+    timeWindow: 60 * 60 * 1000, // 1 hour
   },
   authenticated: {
     maxRequests: 5000,
-    timeWindow: 60 * 60 * 1000 // 1 hour
-  }
+    timeWindow: 60 * 60 * 1000, // 1 hour
+  },
 };
 
 // Utility function to validate URLs
@@ -155,7 +155,5 @@ export function isGitHubUrl(urlString: string): boolean {
 // Utility function to check if a path is markdown
 export function isMarkdownPath(path: string): boolean {
   const lowercasePath = path.toLowerCase();
-  return lowercasePath.endsWith('.md') ||
-         lowercasePath.endsWith('.mdx') ||
-         lowercasePath.endsWith('.markdown');
+  return lowercasePath.endsWith('.md') || lowercasePath.endsWith('.mdx') || lowercasePath.endsWith('.markdown');
 }

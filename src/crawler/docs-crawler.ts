@@ -37,12 +37,7 @@ export class DocsCrawler implements WebCrawler {
     // Handle GitHub repositories
     if (startUrl.host === this.GITHUB_HOST) {
       logger.debug('[DocsCrawler] Detected GitHub repository');
-      const githubCrawler = new GitHubCrawler(
-        this.maxDepth,
-        this.maxRequestsPerCrawl,
-        this.githubToken,
-        this.onProgress
-      );
+      const githubCrawler = new GitHubCrawler(this.maxDepth, this.maxRequestsPerCrawl, this.githubToken, this.onProgress);
 
       try {
         for await (const page of githubCrawler.crawl(url)) {

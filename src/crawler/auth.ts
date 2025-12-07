@@ -153,7 +153,7 @@ export class AuthManager {
       domain,
       storageState,
       createdAt: new Date().toISOString(),
-      browser
+      browser,
     };
 
     await writeFile(sessionPath, JSON.stringify(session, null, 2));
@@ -225,22 +225,21 @@ export class AuthManager {
    * 1. Firefox locks profiles when already open
    * 2. Playwright uses its own bundled browsers, not system browsers
    */
-  async performInteractiveLogin(
-    url: string,
-    options: AuthOptions = {}
-  ): Promise<string> {
+  async performInteractiveLogin(url: string, options: AuthOptions = {}): Promise<string> {
     const {
       browser: initialBrowserType,
       loginSuccessPattern,
       loginSuccessSelector,
       loginUrl,
-      loginTimeoutSecs = 300 // 5 minutes default
+      loginTimeoutSecs = 300, // 5 minutes default
     } = options;
     let browserType = initialBrowserType;
 
     logger.info(`[AuthManager] === Starting Interactive Login ===`);
     logger.info(`[AuthManager] Target URL: ${url}`);
-    logger.info(`[AuthManager] Options: browser=${browserType || 'auto-detect'}, loginUrl=${loginUrl || 'same as target'}, timeout=${loginTimeoutSecs}s`);
+    logger.info(
+      `[AuthManager] Options: browser=${browserType || 'auto-detect'}, loginUrl=${loginUrl || 'same as target'}, timeout=${loginTimeoutSecs}s`
+    );
 
     // Auto-detect default browser type if not specified (for UI preference)
     if (!browserType) {
@@ -260,7 +259,7 @@ export class AuthManager {
     return this.loginWithFreshBrowser(url, targetUrl, browserType, {
       loginSuccessPattern,
       loginSuccessSelector,
-      loginTimeoutSecs
+      loginTimeoutSecs,
     });
   }
 
@@ -289,12 +288,12 @@ export class AuthManager {
       // Launch visible browser
       this.activeBrowser = await launcher.launch({
         headless: false, // VISIBLE browser for user interaction
-        ...launchOptions
+        ...launchOptions,
       });
       logger.info(`[AuthManager] ✓ Browser launched successfully`);
 
       this.activeContext = await this.activeBrowser.newContext({
-        viewport: { width: 1280, height: 800 }
+        viewport: { width: 1280, height: 800 },
       });
       logger.debug(`[AuthManager] ✓ Browser context created`);
 
@@ -311,7 +310,7 @@ export class AuthManager {
       const loginSuccess = await this.waitForLogin(page, {
         successPattern: loginSuccessPattern,
         successSelector: loginSuccessSelector,
-        timeoutSecs: loginTimeoutSecs
+        timeoutSecs: loginTimeoutSecs,
       });
 
       if (!loginSuccess) {
@@ -356,11 +355,15 @@ export class AuthManager {
     const startTime = Date.now();
     const timeoutMs = timeoutSecs * 1000;
 
-    logger.debug(`[AuthManager] Login detection method: ${
-      successPattern ? `URL pattern: ${successPattern}` :
-      successSelector ? `CSS selector: ${successSelector}` :
-      'auto-detect (looking for logout button, user menu, or URL change)'
-    }`);
+    logger.debug(
+      `[AuthManager] Login detection method: ${
+        successPattern
+          ? `URL pattern: ${successPattern}`
+          : successSelector
+            ? `CSS selector: ${successSelector}`
+            : 'auto-detect (looking for logout button, user menu, or URL change)'
+      }`
+    );
 
     // If we have specific success criteria, wait for them
     if (successPattern) {
@@ -426,8 +429,8 @@ export class AuthManager {
         }
 
         // Check for common logged-in indicators
-        const hasLogoutButton = await page.locator('text=/log\\s*out|sign\\s*out/i').count() > 0;
-        const hasUserMenu = await page.locator('[class*="user"], [class*="avatar"], [class*="profile"]').count() > 0;
+        const hasLogoutButton = (await page.locator('text=/log\\s*out|sign\\s*out/i').count()) > 0;
+        const hasUserMenu = (await page.locator('[class*="user"], [class*="avatar"], [class*="profile"]').count()) > 0;
 
         // Only consider login successful if:
         // 1. We're not on a login page, AND
@@ -441,7 +444,7 @@ export class AuthManager {
         // For GitHub Pages: only consider successful if we were on login page and came back
         if (currentUrl.includes('github.io') && wasOnLoginPage && !isLoginPage) {
           // We were redirected to login and now we're back on the github.io page
-          const bodyText = await page.locator('body').textContent() || '';
+          const bodyText = (await page.locator('body').textContent()) || '';
           // Make sure it's not an error page
           if (bodyText.length > 100 && !bodyText.includes('404') && !bodyText.includes('not found')) {
             logger.info(`[AuthManager] ✓ Returned to GitHub Pages after login`);
@@ -481,7 +484,7 @@ export class AuthManager {
 
     const browser = await launcher.launch({
       headless: true,
-      ...launchOptions
+      ...launchOptions,
     });
 
     const storageState = JSON.parse(storageStateJson);
@@ -504,4 +507,3 @@ export class AuthManager {
     }
   }
 }
-

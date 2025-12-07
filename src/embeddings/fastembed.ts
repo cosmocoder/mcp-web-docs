@@ -72,7 +72,7 @@ export class FastEmbeddings implements EmbeddingsProvider {
           }
 
           // Wait before retrying (exponential backoff)
-          await new Promise(resolve => setTimeout(resolve, retries * 2000));
+          await new Promise((resolve) => setTimeout(resolve, retries * 2000));
         }
       }
 
@@ -119,9 +119,7 @@ export class FastEmbeddings implements EmbeddingsProvider {
       }
 
       if (!embedding || embedding.length !== this.dimensions) {
-        throw new Error(
-          `Invalid embedding: got ${embedding?.length} dimensions, expected ${this.dimensions}`
-        );
+        throw new Error(`Invalid embedding: got ${embedding?.length} dimensions, expected ${this.dimensions}`);
       }
 
       // Cache the result
@@ -169,9 +167,7 @@ export class FastEmbeddings implements EmbeddingsProvider {
       const embeddingArray = await model.queryEmbed(cleanText);
 
       if (!embeddingArray || embeddingArray.length !== this.dimensions) {
-        throw new Error(
-          `Invalid query embedding: got ${embeddingArray?.length} dimensions, expected ${this.dimensions}`
-        );
+        throw new Error(`Invalid query embedding: got ${embeddingArray?.length} dimensions, expected ${this.dimensions}`);
       }
 
       const embedding = Array.from(embeddingArray);
@@ -194,7 +190,7 @@ export class FastEmbeddings implements EmbeddingsProvider {
       return [];
     }
 
-    const validTexts = texts.filter(t => typeof t === 'string' && t.trim().length > 0);
+    const validTexts = texts.filter((t) => typeof t === 'string' && t.trim().length > 0);
     if (validTexts.length === 0) {
       return texts.map(() => []);
     }
@@ -221,4 +217,3 @@ export class FastEmbeddings implements EmbeddingsProvider {
     }
   }
 }
-

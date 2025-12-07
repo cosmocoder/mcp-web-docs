@@ -16,8 +16,9 @@ export async function fetchFavicon(url: URL): Promise<string | undefined> {
     const html = await pageResponse.text();
 
     // Look for favicon in meta tags
-    const iconMatch = html.match(/<link[^>]*?rel=["'](?:shortcut )?icon["'][^>]*?href=["']([^"']+)["'][^>]*>/i)
-      || html.match(/<link[^>]*?href=["']([^"']+)["'][^>]*?rel=["'](?:shortcut )?icon["'][^>]*>/i);
+    const iconMatch =
+      html.match(/<link[^>]*?rel=["'](?:shortcut )?icon["'][^>]*?href=["']([^"']+)["'][^>]*>/i) ||
+      html.match(/<link[^>]*?href=["']([^"']+)["'][^>]*?rel=["'](?:shortcut )?icon["'][^>]*>/i);
 
     if (iconMatch) {
       const iconUrl = new URL(iconMatch[1], url.origin);

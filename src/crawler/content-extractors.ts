@@ -7,5 +7,5 @@ export { ContentExtractor, ExtractedContent } from './content-extractor-types.js
 export const contentExtractors = {
   storybook: new StorybookExtractor(),
   github: new GitHubPagesExtractor(),
-  default: new DefaultExtractor()
+  default: new DefaultExtractor(),
 } as const;

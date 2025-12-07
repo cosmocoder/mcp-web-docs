@@ -10,6 +10,8 @@
     "dev": "tsc -w",
     "lint": "eslint . --ext .js,.ts",
     "test:types": "tsc --noEmit",
+    "prettier": "prettier --write src/",
+    "prettier:ci": "prettier --check src/",
     "clean": "rm -rf build",
     "postinstall": "npx playwright install"
   },
@@ -49,6 +51,7 @@
     "eslint": "^9.39.1",
     "globals": "^16.5.0",
     "jiti": "^2.6.1",
+    "prettier": "^3.7.4",
     "typescript-eslint": "^8.48.1"
   },
   "engine-strict": true,

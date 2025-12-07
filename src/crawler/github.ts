@@ -14,16 +14,7 @@ export class GitHubCrawler extends BaseCrawler {
   private readonly API_BASE = 'https://api.github.com';
   private readonly RAW_CONTENT_BASE = 'https://raw.githubusercontent.com';
   private readonly MARKDOWN_EXTENSIONS = ['.md', '.mdx', '.markdown'];
-  private readonly DOCUMENTATION_PATHS = [
-    'docs',
-    'doc',
-    'documentation',
-    'wiki',
-    'guide',
-    'guides',
-    'tutorial',
-    'tutorials'
-  ];
+  private readonly DOCUMENTATION_PATHS = ['docs', 'doc', 'documentation', 'wiki', 'guide', 'guides', 'tutorial', 'tutorials'];
 
   constructor(
     maxDepth: number = 4,
@@ -81,7 +72,7 @@ export class GitHubCrawler extends BaseCrawler {
       return {
         owner,
         repo: cleanRepo,
-        branch: 'main' // Default to main, could be determined dynamically
+        branch: 'main', // Default to main, could be determined dynamically
       };
     } catch {
       return null;
@@ -95,12 +86,7 @@ export class GitHubCrawler extends BaseCrawler {
       const contents = await this.fetchRepoContents(repoInfo, '');
 
       for (const item of contents) {
-        if (
-          item.type === 'dir' &&
-          this.DOCUMENTATION_PATHS.some(path =>
-            item.path.toLowerCase() === path.toLowerCase()
-          )
-        ) {
+        if (item.type === 'dir' && this.DOCUMENTATION_PATHS.some((path) => item.path.toLowerCase() === path.toLowerCase())) {
           dirs.push(item.path);
         }
       }
@@ -111,10 +97,7 @@ export class GitHubCrawler extends BaseCrawler {
     return dirs;
   }
 
-  private async *processDirectory(
-    repoInfo: { owner: string; repo: string; branch: string },
-    path: string
-  ): AsyncGenerator<CrawlResult> {
+  private async *processDirectory(repoInfo: { owner: string; repo: string; branch: string }, path: string): AsyncGenerator<CrawlResult> {
     try {
       const contents = await this.fetchRepoContents(repoInfo, path);
 
@@ -128,7 +111,7 @@ export class GitHubCrawler extends BaseCrawler {
               url: this.constructGitHubUrl(repoInfo, item.path),
               path: item.path,
               content,
-              title: this.extractTitleFromPath(item.path)
+              title: this.extractTitleFromPath(item.path),
             };
           }
         } else if (item.type === 'dir' && this.shouldProcessDirectory(item.path)) {
@@ -140,15 +123,12 @@ export class GitHubCrawler extends BaseCrawler {
     }
   }
 
-  private async fetchRepoContents(
-    repoInfo: { owner: string; repo: string; branch: string },
-    path: string
-  ): Promise<GitHubFile[]> {
+  private async fetchRepoContents(repoInfo: { owner: string; repo: string; branch: string }, path: string): Promise<GitHubFile[]> {
     await this.rateLimit();
 
     const url = `${this.API_BASE}/repos/${repoInfo.owner}/${repoInfo.repo}/contents/${path}`;
     const headers: HeadersInit = {
-      'Accept': 'application/vnd.github.v3+json'
+      Accept: 'application/vnd.github.v3+json',
     };
 
     if (this.githubToken) {
@@ -172,16 +152,11 @@ export class GitHubCrawler extends BaseCrawler {
     }
   }
 
-  private async fetchFileContent(
-    repoInfo: { owner: string; repo: string; branch: string },
-    path: string
-  ): Promise<string | null> {
+  private async fetchFileContent(repoInfo: { owner: string; repo: string; branch: string }, path: string): Promise<string | null> {
     await this.rateLimit();
 
     const url = `${this.RAW_CONTENT_BASE}/${repoInfo.owner}/${repoInfo.repo}/${repoInfo.branch}/${path}`;
-    const headers: HeadersInit = this.githubToken
-      ? { 'Authorization': `token ${this.githubToken}` }
-      : {};
+    const headers: HeadersInit = this.githubToken ? { Authorization: `token ${this.githubToken}` } : {};
 
     try {
       const response = await fetch(url, { headers });
@@ -199,18 +174,20 @@ export class GitHubCrawler extends BaseCrawler {
 
   private isMarkdownFile(path: string): boolean {
     const lowercasePath = path.toLowerCase();
-    return this.MARKDOWN_EXTENSIONS.some(ext => lowercasePath.endsWith(ext));
+    return this.MARKDOWN_EXTENSIONS.some((ext) => lowercasePath.endsWith(ext));
   }
 
   private shouldProcessDirectory(path: string): boolean {
     const lowercasePath = path.toLowerCase();
     // Skip common non-documentation directories
-    return !lowercasePath.includes('node_modules') &&
-           !lowercasePath.includes('vendor') &&
-           !lowercasePath.includes('test') &&
-           !lowercasePath.includes('example') &&
-           !lowercasePath.includes('build') &&
-           !lowercasePath.includes('dist');
+    return (
+      !lowercasePath.includes('node_modules') &&
+      !lowercasePath.includes('vendor') &&
+      !lowercasePath.includes('test') &&
+      !lowercasePath.includes('example') &&
+      !lowercasePath.includes('build') &&
+      !lowercasePath.includes('dist')
+    );
   }
 
   private constructGitHubUrl(repoInfo: { owner: string; repo: string; branch: string }, path: string): string {
@@ -223,7 +200,7 @@ export class GitHubCrawler extends BaseCrawler {
     const nameWithoutExt = basename.replace(/\.[^/.]+$/, '');
     return nameWithoutExt
       .split(/[-_]/)
-      .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
       .join(' ');
   }
 }

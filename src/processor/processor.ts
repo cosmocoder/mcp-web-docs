@@ -37,8 +37,8 @@ function createChunkWithMetadata(
     metadata: {
       type: parsed.contentType,
       props: parsed.props.length > 0 ? parsed.props : undefined,
-      codeBlocks: parsed.codeBlocks.length > 0 ? parsed.codeBlocks : undefined
-    }
+      codeBlocks: parsed.codeBlocks.length > 0 ? parsed.codeBlocks : undefined,
+    },
   };
 }
 
@@ -168,8 +168,7 @@ export class WebDocumentProcessor implements DocumentProcessor {
       let processedContent;
 
       // Check if content was extracted by a formatter that outputs markdown
-      const isFormattedContent = crawlResult.extractorUsed &&
-        FORMATTED_CONTENT_EXTRACTORS.includes(crawlResult.extractorUsed);
+      const isFormattedContent = crawlResult.extractorUsed && FORMATTED_CONTENT_EXTRACTORS.includes(crawlResult.extractorUsed);
 
       if (isFormattedContent) {
         // Content is already formatted markdown from a custom extractor
@@ -200,7 +199,7 @@ export class WebDocumentProcessor implements DocumentProcessor {
       const metadata = {
         url: processedContent.article.url,
         title: processedContent.article.title,
-        path: processedContent.article.path
+        path: processedContent.article.path,
       };
 
       // Process each component separately
@@ -229,9 +228,9 @@ export class WebDocumentProcessor implements DocumentProcessor {
         metadata: {
           url: crawlResult.url,
           title: processedContent.article.title,
-          lastIndexed: new Date()
+          lastIndexed: new Date(),
         },
-        chunks
+        chunks,
       };
     } catch (error) {
       logger.error(`[WebDocumentProcessor] Error processing ${crawlResult.url}:`, error);

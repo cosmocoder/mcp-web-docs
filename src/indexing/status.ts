@@ -12,7 +12,7 @@ export class IndexingStatusTracker {
       format: '{title} [{bar}] {percentage}% | {value}/{total} | {status}',
       hideCursor: true,
       clearOnComplete: false,
-      stopOnComplete: true
+      stopOnComplete: true,
     });
     this.bars = new Map();
     this.statuses = new Map();
@@ -24,7 +24,7 @@ export class IndexingStatusTracker {
   }
 
   private notifyListeners(status: IndexingStatus) {
-    this.statusListeners.forEach(listener => listener(status));
+    this.statusListeners.forEach((listener) => listener(status));
   }
 
   startIndexing(id: string, url: string, title: string): void {
@@ -38,12 +38,12 @@ export class IndexingStatusTracker {
       startedAt: new Date(),
       pagesFound: 0,
       pagesProcessed: 0,
-      chunksCreated: 0
+      chunksCreated: 0,
     };
 
     const bar = this.multibar.create(100, 0, {
       title: title.slice(0, 30).padEnd(30),
-      status: 'Starting...'
+      status: 'Starting...',
     });
 
     this.bars.set(id, bar);
@@ -59,7 +59,7 @@ export class IndexingStatusTracker {
       ...currentStatus,
       pagesFound: stats.pagesFound ?? currentStatus.pagesFound,
       pagesProcessed: stats.pagesProcessed ?? currentStatus.pagesProcessed,
-      chunksCreated: stats.chunksCreated ?? currentStatus.chunksCreated
+      chunksCreated: stats.chunksCreated ?? currentStatus.chunksCreated,
     };
 
     this.statuses.set(id, status);
@@ -76,14 +76,14 @@ export class IndexingStatusTracker {
 
     const progressValue = Math.min(Math.round(progress * 100), 100);
     bar.update(progressValue, {
-      status: description
+      status: description,
     });
 
     const status: IndexingStatus = {
       ...currentStatus,
       progress,
       description,
-      status: currentStatus.status === 'complete' ? 'complete' : 'indexing'
+      status: currentStatus.status === 'complete' ? 'complete' : 'indexing',
     };
 
     this.statuses.set(id, status);
@@ -99,7 +99,7 @@ export class IndexingStatusTracker {
     }
 
     bar.update(100, {
-      status: `Failed: ${error}`
+      status: `Failed: ${error}`,
     });
 
     const status: IndexingStatus = {
@@ -107,7 +107,7 @@ export class IndexingStatusTracker {
       status: 'failed',
       progress: 1,
       description: error,
-      error
+      error,
     };
 
     this.statuses.set(id, status);
@@ -123,14 +123,14 @@ export class IndexingStatusTracker {
     }
 
     bar.update(100, {
-      status: 'Complete'
+      status: 'Complete',
     });
 
     const status: IndexingStatus = {
       ...currentStatus,
       status: 'complete',
       progress: 1,
-      description: 'Indexing complete'
+      description: 'Indexing complete',
     };
 
     this.statuses.set(id, status);
@@ -146,14 +146,14 @@ export class IndexingStatusTracker {
     }
 
     bar.update(100, {
-      status: 'Aborted'
+      status: 'Aborted',
     });
 
     const status: IndexingStatus = {
       ...currentStatus,
       status: 'aborted',
       progress: 1,
-      description: 'Indexing aborted'
+      description: 'Indexing aborted',
     };
 
     this.statuses.set(id, status);
@@ -169,13 +169,13 @@ export class IndexingStatusTracker {
     }
 
     bar.update(currentStatus.progress * 100, {
-      status: 'Cancelled (new operation started)'
+      status: 'Cancelled (new operation started)',
     });
 
     const status: IndexingStatus = {
       ...currentStatus,
       status: 'cancelled',
-      description: 'Cancelled - replaced by new indexing operation'
+      description: 'Cancelled - replaced by new indexing operation',
     };
 
     this.statuses.set(id, status);

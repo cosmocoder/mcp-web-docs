@@ -42,30 +42,35 @@ export class CrawleeCrawler extends BaseCrawler {
 
   private async findContentFrame(page: Page): Promise<Frame | null> {
     const frames = await page.frames();
-    const contentFrames = await Promise.all(frames.map(async (frame) => {
-      try {
-        const hasContent = await frame.evaluate(() => {
-          return document.querySelector('.sbdocs-content, #docs-root, .docs-story, [class*="story-"]') !== null;
-        }).catch(() => false);
+    const contentFrames = await Promise.all(
+      frames.map(async (frame) => {
+        try {
+          const hasContent = await frame
+            .evaluate(() => {
+              return document.querySelector('.sbdocs-content, #docs-root, .docs-story, [class*="story-"]') !== null;
+            })
+            .catch(() => false);
 
-        if (hasContent) {
-          await Promise.all([
-            frame.waitForLoadState('domcontentloaded'),
-            frame.waitForLoadState('networkidle', { timeout: 5000 })
-              .catch(() => logger.debug('Frame network idle timeout - continuing anyway'))
-          ]);
-          return frame;
+          if (hasContent) {
+            await Promise.all([
+              frame.waitForLoadState('domcontentloaded'),
+              frame
+                .waitForLoadState('networkidle', { timeout: 5000 })
+                .catch(() => logger.debug('Frame network idle timeout - continuing anyway')),
+            ]);
+            return frame;
+          }
+        } catch (error) {
+          logger.debug('Error checking frame', { error: String(error) });
         }
-      } catch (error) {
-        logger.debug('Error checking frame', { error: String(error) });
-      }
-      return null;
-    }));
+        return null;
+      })
+    );
 
-    const frame = contentFrames.find(f => f !== null) || null;
+    const frame = contentFrames.find((f) => f !== null) || null;
     if (frame) {
       logger.debug('Found content in iframe');
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     return frame;
   }
@@ -80,7 +85,11 @@ export class CrawleeCrawler extends BaseCrawler {
     }, extractorCode);
   }
 
-  private async extractContent(page: Page, siteType: string, extractor: ContentExtractor): Promise<{ content: string; extractorUsed: string }> {
+  private async extractContent(
+    page: Page,
+    siteType: string,
+    extractor: ContentExtractor
+  ): Promise<{ content: string; extractorUsed: string }> {
     let content = '';
     let extractorUsed = extractor.constructor.name;
 
@@ -121,7 +130,7 @@ export class CrawleeCrawler extends BaseCrawler {
         ...crawlerOptions.launchContext,
         launchOptions: {
           ...crawlerOptions.launchContext?.launchOptions,
-        }
+        },
       };
       crawlerOptions.browserPoolOptions = {
         ...crawlerOptions.browserPoolOptions,
@@ -129,8 +138,8 @@ export class CrawleeCrawler extends BaseCrawler {
           async (pageId) => {
             // Storage state will be set in preNavigationHooks instead
             logger.debug(`[CrawleeCrawler] Browser launching for page ${pageId}`);
-          }
-        ]
+          },
+        ],
       };
       // Add cookies via preNavigationHooks
       const existingHooks = crawlerOptions.preNavigationHooks || [];
@@ -141,7 +150,7 @@ export class CrawleeCrawler extends BaseCrawler {
             logger.debug(`[CrawleeCrawler] Setting ${this.storageState.cookies.length} cookies before navigation`);
             await page.context().addCookies(this.storageState.cookies);
           }
-        }
+        },
       ];
     }
 
@@ -157,8 +166,7 @@ export class CrawleeCrawler extends BaseCrawler {
           // Wait for initial page load
           await Promise.all([
             page.waitForLoadState('domcontentloaded'),
-            page.waitForLoadState('networkidle', { timeout: 5000 })
-              .catch(() => log.debug('Network idle timeout - continuing anyway'))
+            page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway')),
           ]);
 
           // Detect site type and get extractor
@@ -178,7 +186,7 @@ export class CrawleeCrawler extends BaseCrawler {
                 path: new URL(request.url).pathname + new URL(request.url).search,
                 content: cleanContent(content),
                 title,
-                extractorUsed
+                extractorUsed,
               };
 
               this.queueManager.addResult(result);
@@ -190,7 +198,7 @@ export class CrawleeCrawler extends BaseCrawler {
           const errorMessage = error instanceof Error ? error.message : String(error);
           log.error(`Error processing ${request.url}: ${errorMessage}`);
         }
-      }
+      },
     });
 
     try {
@@ -203,10 +211,7 @@ export class CrawleeCrawler extends BaseCrawler {
           }
         }
 
-        if (await Promise.race([
-          crawlerPromise.then(() => true),
-          new Promise(resolve => setTimeout(() => resolve(false), 100))
-        ])) break;
+        if (await Promise.race([crawlerPromise.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 100))])) break;
       }
 
       await crawlerPromise;

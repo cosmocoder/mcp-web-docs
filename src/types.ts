@@ -53,7 +53,7 @@ export interface CrawlResult {
   path: string;
   content: string;
   title: string;
-  extractorUsed?: string;  // Optional field to track which extractor was used
+  extractorUsed?: string; // Optional field to track which extractor was used
 }
 
 export interface ProcessedDocument {
@@ -67,7 +67,7 @@ export interface SearchResult {
   url: string;
   title: string;
   score: number;
-  vector?: number[];  // Make vector optional
+  vector?: number[]; // Make vector optional
   metadata: {
     type: 'overview' | 'api' | 'example' | 'usage';
     path: string;

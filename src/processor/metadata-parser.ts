@@ -34,9 +34,7 @@ function splitTableRow(line: string): string[] {
   const escaped = line.replace(/\\ \||\\\|/g, placeholder);
 
   // Split by unescaped pipe
-  const cells = escaped.split('|').map(cell =>
-    cell.trim().replace(new RegExp(placeholder, 'g'), '|')
-  );
+  const cells = escaped.split('|').map((cell) => cell.trim().replace(new RegExp(placeholder, 'g'), '|'));
 
   // Remove empty first/last cells from | at start/end
   if (cells[0] === '') cells.shift();
@@ -60,19 +58,17 @@ function parseMarkdownTable(tableLines: string[]): Record<string, string>[] {
   if (tableLines.length < 2) return [];
 
   // Find header row (first non-empty row with pipes)
-  const headerIndex = tableLines.findIndex(l => l.includes('|') && !isTableSeparator(l));
+  const headerIndex = tableLines.findIndex((l) => l.includes('|') && !isTableSeparator(l));
   if (headerIndex === -1) return [];
 
-  const headers = splitTableRow(tableLines[headerIndex]).map(h => h.toLowerCase().trim());
+  const headers = splitTableRow(tableLines[headerIndex]).map((h) => h.toLowerCase().trim());
   if (headers.length === 0) return [];
 
   // Find separator (skip it)
   const separatorIndex = tableLines.findIndex((l, i) => i > headerIndex && isTableSeparator(l));
 
   // Get data rows (everything after separator that contains pipes)
-  const dataLines = tableLines
-    .slice(separatorIndex + 1)
-    .filter(l => l.includes('|') && !isTableSeparator(l));
+  const dataLines = tableLines.slice(separatorIndex + 1).filter((l) => l.includes('|') && !isTableSeparator(l));
 
   const results: Record<string, string>[] = [];
 
@@ -149,7 +145,7 @@ export function extractProps(content: string): ParsedProp[] {
                 type,
                 required: name.includes('*') || type.includes('required'),
                 defaultValue: defaultVal && defaultVal !== '-' ? defaultVal.replace(/[`"]/g, '') : undefined,
-                description: description.trim()
+                description: description.trim(),
               });
             }
           }
@@ -182,7 +178,7 @@ export function extractProps(content: string): ParsedProp[] {
           type,
           required: name.includes('*') || type.includes('required'),
           defaultValue: defaultVal && defaultVal !== '-' ? defaultVal.replace(/[`"]/g, '') : undefined,
-          description: description.trim()
+          description: description.trim(),
         });
       }
     }
@@ -203,7 +199,7 @@ export function extractProps(content: string): ParsedProp[] {
           name,
           type,
           required: false,
-          description
+          description,
         });
       }
     }
@@ -231,7 +227,10 @@ export function extractCodeBlocks(content: string): ParsedCodeBlock[] {
 
     // Get context: text before the code block (last heading or paragraph)
     const textBefore = content.slice(Math.max(0, prevIndex), match.index);
-    const lines = textBefore.trim().split('\n').filter(l => l.trim());
+    const lines = textBefore
+      .trim()
+      .split('\n')
+      .filter((l) => l.trim());
     let context = '';
 
     // Find the closest heading or meaningful text
@@ -250,7 +249,7 @@ export function extractCodeBlocks(content: string): ParsedCodeBlock[] {
       codeBlocks.push({
         code,
         language,
-        context
+        context,
       });
     }
 
@@ -280,20 +279,12 @@ export function determineContentType(content: string): 'overview' | 'api' | 'exa
   }
 
   // Check for example patterns
-  if (
-    lowerContent.includes('example') ||
-    lowerContent.includes('usage example') ||
-    (content.match(/```/g)?.length || 0) > 2
-  ) {
+  if (lowerContent.includes('example') || lowerContent.includes('usage example') || (content.match(/```/g)?.length || 0) > 2) {
     return 'example';
   }
 
   // Check for usage patterns
-  if (
-    lowerContent.includes('how to use') ||
-    lowerContent.includes('getting started') ||
-    lowerContent.includes('installation')
-  ) {
+  if (lowerContent.includes('how to use') || lowerContent.includes('getting started') || lowerContent.includes('installation')) {
     return 'usage';
   }
 
@@ -307,7 +298,6 @@ export function parseMetadata(content: string): ParsedMetadata {
   return {
     props: extractProps(content),
     codeBlocks: extractCodeBlocks(content),
-    contentType: determineContentType(content)
+    contentType: determineContentType(content),
   };
 }
-

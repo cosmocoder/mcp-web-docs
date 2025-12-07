@@ -14,18 +14,16 @@ export class StorybookExtractor implements ContentExtractor {
 
   private isElementVisible(element: Element): boolean {
     const style = window.getComputedStyle(element);
-    return style.display !== 'none' &&
-           style.visibility !== 'hidden' &&
-           style.opacity !== '0';
+    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
   }
 
   private formatCodeBlock(code: string, language: string): string {
     // Clean up the code
     const cleanCode = code
-      .replace(/^\s+|\s+$/g, '')  // Trim whitespace
-      .replace(/\t/g, '  ')       // Convert tabs to spaces
+      .replace(/^\s+|\s+$/g, '') // Trim whitespace
+      .replace(/\t/g, '  ') // Convert tabs to spaces
       .replace(/\n{3,}/g, '\n\n') // Reduce multiple blank lines
-      .replace(/\u00A0/g, ' ');   // Replace non-breaking spaces
+      .replace(/\u00A0/g, ' '); // Replace non-breaking spaces
 
     return `\`\`\`${language}\n${cleanCode}\n\`\`\``;
   }
@@ -35,7 +33,7 @@ export class StorybookExtractor implements ContentExtractor {
 
     // Handle links
     const links = element.querySelectorAll('a');
-    links.forEach(link => {
+    links.forEach((link) => {
       const text = link.textContent?.trim();
       const href = link.getAttribute('href');
       if (text && href) {
@@ -46,7 +44,7 @@ export class StorybookExtractor implements ContentExtractor {
 
     // Handle inline code elements
     const codeElements = element.querySelectorAll('code, [class*="code"], [class*="inline-code"], [class*="monospace"]');
-    codeElements.forEach(code => {
+    codeElements.forEach((code) => {
       const text = code.textContent?.trim();
       if (text) {
         const codeHtml = code.outerHTML;
@@ -61,8 +59,7 @@ export class StorybookExtractor implements ContentExtractor {
 
   private async processSection(section: Element, sections: string[], addedSections: Set<string>): Promise<void> {
     try {
-      const heading = section.querySelector('h2, h3, h4') ||
-                     section.closest('section')?.querySelector('h2, h3, h4');
+      const heading = section.querySelector('h2, h3, h4') || section.closest('section')?.querySelector('h2, h3, h4');
 
       if (heading) {
         const title = heading.textContent?.trim();
@@ -78,8 +75,8 @@ export class StorybookExtractor implements ContentExtractor {
         }
       }
 
-      const remainingContent = Array.from(section.children).filter(el =>
-        !el.matches('h2, h3, h4') && (!heading || !heading.contains(el))
+      const remainingContent = Array.from(section.children).filter(
+        (el) => !el.matches('h2, h3, h4') && (!heading || !heading.contains(el))
       );
 
       for (const content of remainingContent) {
@@ -96,7 +93,9 @@ export class StorybookExtractor implements ContentExtractor {
     try {
       if (!this.isElementVisible(element)) return;
 
-      if (element.matches('p, div[class*="description"], [class*="markdown"], [class*="text"], [class*="content"], [class*="docblock-text"]')) {
+      if (
+        element.matches('p, div[class*="description"], [class*="markdown"], [class*="text"], [class*="content"], [class*="docblock-text"]')
+      ) {
         const text = this.extractLinks(element);
         if (text) {
           this.addContentToSections(text, sections, addedSections);
@@ -133,24 +132,23 @@ export class StorybookExtractor implements ContentExtractor {
       if (button?.textContent?.trim() === 'Expand') {
         try {
           (button as HTMLButtonElement).click();
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise((resolve) => setTimeout(resolve, 500));
         } catch (error) {
           console.error('Error clicking expand button:', error);
         }
       }
 
-      const codeButtons = Array.from(element.querySelectorAll('button'))
-        .filter(button => {
-          const text = button.textContent?.toLowerCase() || '';
-          return text.includes('show code');
-        });
+      const codeButtons = Array.from(element.querySelectorAll('button')).filter((button) => {
+        const text = button.textContent?.toLowerCase() || '';
+        return text.includes('show code');
+      });
 
       for (const button of codeButtons) {
         try {
           if (!this.isElementVisible(button)) continue;
 
           (button as HTMLButtonElement).click();
-          await new Promise(resolve => setTimeout(resolve, 500));
+          await new Promise((resolve) => setTimeout(resolve, 500));
 
           const codeBlocks = element.querySelectorAll('pre.prismjs');
           for (const block of codeBlocks) {
@@ -170,7 +168,7 @@ export class StorybookExtractor implements ContentExtractor {
         }
       }
 
-      const children = Array.from(element.children).filter(el => {
+      const children = Array.from(element.children).filter((el) => {
         if (el.matches('h1, h2, h3, h4')) return false;
         if (el.matches('script, style, iframe')) return false;
         if (element.matches('pre, code') && el.matches('pre, code')) return false;
@@ -262,11 +260,7 @@ export class StorybookExtractor implements ContentExtractor {
       const formattedName = required ? `${name}*` : name;
 
       if (name && name !== 'Name') {
-        this.addContentToSections(
-          `| ${formattedName} | ${type || '-'} | ${formattedDefault} |`,
-          sections,
-          addedSections
-        );
+        this.addContentToSections(`| ${formattedName} | ${type || '-'} | ${formattedDefault} |`, sections, addedSections);
       }
     }
     this.addContentToSections('', sections, addedSections);
@@ -330,14 +324,14 @@ export class StorybookExtractor implements ContentExtractor {
         if (text.includes('show') && (text.includes('more') || /\d+/.test(text))) {
           try {
             (button as HTMLButtonElement).click();
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise((resolve) => setTimeout(resolve, 100));
           } catch {
             // Ignore click errors
           }
         }
       }
       // Wait for expansion to complete
-      await new Promise(resolve => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 200));
     } catch (error) {
       console.error('[StorybookExtractor] Error expanding type values:', error);
     }
@@ -356,18 +350,20 @@ export class StorybookExtractor implements ContentExtractor {
       const cleaned = val
         .trim()
         .replace(/^["']|["']$/g, '') // Remove surrounding quotes
-        .replace(/^\||\|$/g, '')     // Remove leading/trailing pipes
+        .replace(/^\||\|$/g, '') // Remove leading/trailing pipes
         .trim();
 
       // Skip invalid values
-      if (!cleaned ||
-          cleaned.length < 1 ||
-          cleaned === '-' ||
-          /^show/i.test(cleaned) ||
-          /more\.\.\.?$/i.test(cleaned) ||
-          /^less\.\.\.?$/i.test(cleaned) ||
-          /^deprecated/i.test(cleaned) ||
-          seenValues.has(cleaned.toLowerCase())) {
+      if (
+        !cleaned ||
+        cleaned.length < 1 ||
+        cleaned === '-' ||
+        /^show/i.test(cleaned) ||
+        /more\.\.\.?$/i.test(cleaned) ||
+        /^less\.\.\.?$/i.test(cleaned) ||
+        /^deprecated/i.test(cleaned) ||
+        seenValues.has(cleaned.toLowerCase())
+      ) {
         return;
       }
 
@@ -379,10 +375,10 @@ export class StorybookExtractor implements ContentExtractor {
     // These are usually spans/divs with specific classes containing individual values
     const typeContainers = cell.querySelectorAll(
       '[class*="argType"] span, ' +
-      '[class*="type-"] span, ' +
-      '[class*="union"] > span, ' +
-      '.css-in3yi3, ' +  // Common Storybook class for type values
-      'span[title]'      // Spans with title attributes often contain type info
+        '[class*="type-"] span, ' +
+        '[class*="union"] > span, ' +
+        '.css-in3yi3, ' + // Common Storybook class for type values
+        'span[title]' // Spans with title attributes often contain type info
     );
 
     if (typeContainers.length > 0) {
@@ -412,9 +408,14 @@ export class StorybookExtractor implements ContentExtractor {
       if (span.children.length === 0) {
         const text = span.textContent?.trim();
         // Check if it looks like a type value (quoted, or specific format)
-        if (text && (text.startsWith('"') || text.startsWith("'") ||
+        if (
+          text &&
+          (text.startsWith('"') ||
+            text.startsWith("'") ||
             /^[a-z]+$/i.test(text) || // Simple word like "boolean", "string"
-            /^[A-Z][a-zA-Z<>[\]]+$/.test(text))) { // Type like "Ref<HTMLElement>"
+            /^[A-Z][a-zA-Z<>[\]]+$/.test(text))
+        ) {
+          // Type like "Ref<HTMLElement>"
           addValue(text);
         }
       }
@@ -474,10 +475,10 @@ export class StorybookExtractor implements ContentExtractor {
       const sidebar = document.querySelector('[class*="sidebar"]');
       if (sidebar) {
         // Wait for sidebar content to load
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 500));
         return;
       }
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
 
@@ -495,12 +496,12 @@ export class StorybookExtractor implements ContentExtractor {
         if (this.isElementVisible(button)) {
           (button as HTMLButtonElement).click();
           // Wait for content to update
-          await new Promise(resolve => setTimeout(resolve, 250));
+          await new Promise((resolve) => setTimeout(resolve, 250));
         }
       }
 
       // Wait for any new buttons that might appear
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 500));
 
       // Second pass: Click any new buttons that appeared
       const newButtons = document.querySelectorAll('button.sidebar-subheading-action');
@@ -510,12 +511,12 @@ export class StorybookExtractor implements ContentExtractor {
         if (this.isElementVisible(button)) {
           (button as HTMLButtonElement).click();
           // Wait for content to update
-          await new Promise(resolve => setTimeout(resolve, 250));
+          await new Promise((resolve) => setTimeout(resolve, 250));
         }
       }
 
       // Final wait to ensure all sections have expanded
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     } catch (error) {
       console.error('[StorybookExtractor] Error expanding sidebar sections:', error);
     }
@@ -529,20 +530,20 @@ export class StorybookExtractor implements ContentExtractor {
     await this.expandSidebarSections(document);
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await new Promise((resolve) => setTimeout(resolve, delay));
 
       const mainArea = document.querySelector('.sbdocs-content, #docs-root');
       if (!mainArea) continue;
 
-      const hasContent = mainArea.querySelector('h1') && (
-        mainArea.querySelector('p') ||
-        mainArea.querySelector('table') ||
-        mainArea.querySelector('ul, ol') ||
-        mainArea.querySelector('[class*="docblock"]')
-      );
+      const hasContent =
+        mainArea.querySelector('h1') &&
+        (mainArea.querySelector('p') ||
+          mainArea.querySelector('table') ||
+          mainArea.querySelector('ul, ol') ||
+          mainArea.querySelector('[class*="docblock"]'));
 
       if (hasContent) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise((resolve) => setTimeout(resolve, 500));
         return mainArea;
       }
 
@@ -557,7 +558,7 @@ export class StorybookExtractor implements ContentExtractor {
 
   private async processTableContent(table: Element, sections: string[], addedSections: Set<string>): Promise<void> {
     try {
-      const headers = Array.from(table.querySelectorAll('th')).map(th => th.textContent?.trim() || '');
+      const headers = Array.from(table.querySelectorAll('th')).map((th) => th.textContent?.trim() || '');
       if (headers.length === 0) return;
 
       this.addContentToSections(`| ${headers.join(' | ')} |`, sections, addedSections);
@@ -565,7 +566,7 @@ export class StorybookExtractor implements ContentExtractor {
 
       const rows = table.querySelectorAll('tr');
       for (const row of rows) {
-        const cells = Array.from(row.querySelectorAll('td')).map(td => {
+        const cells = Array.from(row.querySelectorAll('td')).map((td) => {
           const text = this.extractLinks(td);
           return text.replace(/\|/g, '\\|');
         });
@@ -658,7 +659,9 @@ export class StorybookExtractor implements ContentExtractor {
               this.addContentToSections('## Discovered Prop Values', sections, addedSections);
               hasAddedHeader = true;
             }
-            const valueList = Array.from(values).map(v => `"${v}"`).join(' | ');
+            const valueList = Array.from(values)
+              .map((v) => `"${v}"`)
+              .join(' | ');
             this.addContentToSections(`- **${propName}**: ${valueList}`, sections, addedSections);
           }
         }
@@ -672,7 +675,7 @@ export class StorybookExtractor implements ContentExtractor {
   }
 
   private async waitForStorybookAPI(): Promise<void> {
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
       const win = window as unknown as { __STORYBOOK_CLIENT_API__?: { storyStore?: { ready?: boolean } } };
       if (typeof win.__STORYBOOK_CLIENT_API__ !== 'undefined') {
         const checkReady = () => {
@@ -687,10 +690,12 @@ export class StorybookExtractor implements ContentExtractor {
         return;
       }
 
-      if (document.querySelector('#storybook-root, .sbdocs, [data-nodetype="root"]') !== null ||
-          document.querySelector('meta[name="storybook-version"]') !== null ||
-          document.baseURI?.includes('path=/docs/') ||
-          document.baseURI?.includes('path=/story/')) {
+      if (
+        document.querySelector('#storybook-root, .sbdocs, [data-nodetype="root"]') !== null ||
+        document.querySelector('meta[name="storybook-version"]') !== null ||
+        document.baseURI?.includes('path=/docs/') ||
+        document.baseURI?.includes('path=/story/')
+      ) {
         resolve();
         return;
       }
@@ -702,7 +707,7 @@ export class StorybookExtractor implements ContentExtractor {
   async extractContent(document: Document): Promise<ExtractedContent> {
     const emptyResult = {
       content: '',
-      metadata: { type: 'overview' as const }
+      metadata: { type: 'overview' as const },
     };
 
     try {
@@ -765,15 +770,15 @@ export class StorybookExtractor implements ContentExtractor {
 
       // Find props/args table with multiple selectors for different Storybook versions
       const propsTableSelectors = [
-        '.docblock-argstable',           // Storybook 6.x
-        '.docblock-argtable',            // Alternative naming
-        'table.docblock-table',          // Storybook 7.x
-        '[class*="ArgTable"]',           // React-based ArgTable
-        '[class*="argtable"]',           // Case variations
-        'table[class*="props"]',         // Generic props table
-        '.sb-argstable',                 // Another Storybook variant
-        '[data-testid="args-table"]',    // Test ID selector
-        '.docs-story + table',           // Table after story
+        '.docblock-argstable', // Storybook 6.x
+        '.docblock-argtable', // Alternative naming
+        'table.docblock-table', // Storybook 7.x
+        '[class*="ArgTable"]', // React-based ArgTable
+        '[class*="argtable"]', // Case variations
+        'table[class*="props"]', // Generic props table
+        '.sb-argstable', // Another Storybook variant
+        '[data-testid="args-table"]', // Test ID selector
+        '.docs-story + table', // Table after story
         'section:has(h2:contains("Props")) table', // Section with Props heading
       ];
 
@@ -841,9 +846,9 @@ export class StorybookExtractor implements ContentExtractor {
             type: 'component',
             description: mainDescription,
             usageContexts: [],
-            relatedPatterns: []
-          }
-        }
+            relatedPatterns: [],
+          },
+        },
       };
     } catch (error) {
       console.error('Error extracting Storybook content:', error);

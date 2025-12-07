@@ -33,9 +33,7 @@ export class IndexingQueueManager {
       try {
         await Promise.race([
           existing.promise,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error('Cancellation timeout')), 5000)
-          )
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Cancellation timeout')), 5000)),
         ]);
       } catch (e) {
         // Expected - operation was cancelled or timed out
@@ -57,7 +55,7 @@ export class IndexingQueueManager {
       controller,
       promise,
       url,
-      startedAt: new Date()
+      startedAt: new Date(),
     });
     logger.debug(`[IndexingQueue] Registered operation for ${url}`);
   }
@@ -77,7 +75,7 @@ export class IndexingQueueManager {
   async cancelAll(): Promise<void> {
     logger.debug(`[IndexingQueue] Cancelling all ${this.activeOperations.size} operations`);
 
-    const cancellations = Array.from(this.activeOperations.values()).map(op => {
+    const cancellations = Array.from(this.activeOperations.values()).map((op) => {
       op.controller.abort();
       return op.promise.catch(() => {});
     });
@@ -97,10 +95,9 @@ export class IndexingQueueManager {
    * Get information about active operations
    */
   getActiveOperations(): Array<{ url: string; startedAt: Date }> {
-    return Array.from(this.activeOperations.values()).map(op => ({
+    return Array.from(this.activeOperations.values()).map((op) => ({
       url: op.url,
-      startedAt: op.startedAt
+      startedAt: op.startedAt,
     }));
   }
 }
-

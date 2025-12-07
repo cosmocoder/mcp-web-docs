@@ -34,7 +34,7 @@ function extractFrontMatter(content: string): {
     const frontMatter: Record<string, unknown> = {};
 
     // Parse YAML-like front matter
-    frontMatterStr.split('\n').forEach(line => {
+    frontMatterStr.split('\n').forEach((line) => {
       const [key, ...valueParts] = line.split(':');
       if (key && valueParts.length > 0) {
         const value = valueParts.join(':').trim();
@@ -46,7 +46,7 @@ function extractFrontMatter(content: string): {
     return {
       frontMatter,
       content: content.slice(match[0].length),
-      endLine: match[0].split('\n').length - 1
+      endLine: match[0].split('\n').length - 1,
     };
   } catch (e) {
     logger.debug('[MarkdownProcessor] Error parsing front matter:', e);
@@ -90,11 +90,14 @@ function isLikelyHeader(line: string, prevLine: string, nextLine: string): { isH
   // - Previous line is empty or doesn't exist
   // - Next line is not empty (has content following)
   // - Line contains mostly letters/spaces (not code)
-  if (cleanLine.length < 50 &&
-      cleanLine.length > 2 &&
-      (!prevLine || prevLine.trim() === '') &&
-      nextLine && nextLine.trim() !== '' &&
-      /^[A-Z][A-Za-z0-9\s\-_()]+$/.test(cleanLine)) {
+  if (
+    cleanLine.length < 50 &&
+    cleanLine.length > 2 &&
+    (!prevLine || prevLine.trim() === '') &&
+    nextLine &&
+    nextLine.trim() !== '' &&
+    /^[A-Z][A-Za-z0-9\s\-_()]+$/.test(cleanLine)
+  ) {
     return { isHeader: true, level: 2, title: cleanLine };
   }
 
@@ -126,7 +129,7 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
         title: headerInfo.title,
         content: '',
         startLine: startLine + i,
-        endLine: startLine + i
+        endLine: startLine + i,
       };
     } else if (currentSection) {
       // Add line to current section
@@ -142,7 +145,7 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
           title: 'Content',
           content: line,
           startLine,
-          endLine: startLine
+          endLine: startLine,
         };
       }
     }
@@ -169,9 +172,7 @@ function processCodeBlocks(content: string): string {
   processedContent = cleanText(processedContent);
 
   // Restore code blocks
-  processedContent = processedContent.replace(/CODE_BLOCK_(\d+)/g, (_, index) =>
-    codeBlocks[parseInt(index)]
-  );
+  processedContent = processedContent.replace(/CODE_BLOCK_(\d+)/g, (_, index) => codeBlocks[parseInt(index)]);
 
   return processedContent;
 }
@@ -187,13 +188,13 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
     const sections = parseMarkdownSections(mainContent, endLine);
 
     // Process sections into components
-    const components: ArticleComponent[] = sections.map(section => ({
+    const components: ArticleComponent[] = sections.map((section) => ({
       title: section.title,
-      body: processCodeBlocks(section.content)
+      body: processCodeBlocks(section.content),
     }));
 
     // Filter out empty components
-    const validComponents = components.filter(comp => comp.body.length > 0);
+    const validComponents = components.filter((comp) => comp.body.length > 0);
 
     if (validComponents.length === 0) {
       logger.debug(`[MarkdownProcessor] No valid content sections found in ${page.url}`);
@@ -204,15 +205,15 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
       url: page.url,
       path: page.path,
       title: (frontMatter.title as string) || page.title || validComponents[0].title,
-      components: validComponents
+      components: validComponents,
     };
 
     return {
       article,
       content: validComponents
-        .map(comp => `${comp.title}\n\n${comp.body}`)
+        .map((comp) => `${comp.title}\n\n${comp.body}`)
         .join('\n\n')
-        .trim()
+        .trim(),
     };
   } catch (error) {
     logger.debug('[MarkdownProcessor] Error processing markdown content:', error);
@@ -246,15 +247,15 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
     logger.debug(`[ExtractedContentProcessor] Found ${sections.length} sections`);
 
     // Convert sections to components, preserving the markdown content as-is
-    const components: ArticleComponent[] = sections.map(section => ({
+    const components: ArticleComponent[] = sections.map((section) => ({
       title: section.title,
       // Don't over-process - just trim and normalize whitespace
-      body: section.content.trim()
+      body: section.content.trim(),
     }));
 
     // Filter out empty components but keep sections with minimal content
     // (some sections like "## Props" header might have content in the next section)
-    const validComponents = components.filter(comp => comp.body.length > 0 || comp.title.length > 0);
+    const validComponents = components.filter((comp) => comp.body.length > 0 || comp.title.length > 0);
 
     if (validComponents.length === 0) {
       // If no sections found, treat entire content as one component
@@ -263,21 +264,23 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
         url: page.url,
         path: page.path,
         title: page.title || 'Content',
-        components: [{
-          title: page.title || 'Content',
-          body: content.trim()
-        }]
+        components: [
+          {
+            title: page.title || 'Content',
+            body: content.trim(),
+          },
+        ],
       };
 
       return {
         article,
-        content: content.trim()
+        content: content.trim(),
       };
     }
 
     // Extract title from first H1 if present, otherwise use page title
     let title = page.title;
-    const firstH1Section = sections.find(s => s.level === 1);
+    const firstH1Section = sections.find((s) => s.level === 1);
     if (firstH1Section) {
       title = firstH1Section.title;
     }
@@ -286,7 +289,7 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
       url: page.url,
       path: page.path,
       title: title || validComponents[0].title,
-      components: validComponents
+      components: validComponents,
     };
 
     logger.debug(`[ExtractedContentProcessor] Created article with ${validComponents.length} components`);
@@ -295,9 +298,9 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
     return {
       article,
       content: validComponents
-        .map(comp => comp.title ? `${comp.title}\n\n${comp.body}` : comp.body)
+        .map((comp) => (comp.title ? `${comp.title}\n\n${comp.body}` : comp.body))
         .join('\n\n')
-        .trim()
+        .trim(),
     };
   } catch (error) {
     logger.debug('[ExtractedContentProcessor] Error processing extracted content:', error);

@@ -30,13 +30,17 @@ export class QueueManager {
     await dataset.drop();
   }
 
-  async handleQueueAndLinks(enqueueLinks: (options: EnqueueLinksOptions) => Promise<{ processedRequests: { uniqueKey: string }[] }>, log: Log, rule: SiteDetectionRule): Promise<void> {
+  async handleQueueAndLinks(
+    enqueueLinks: (options: EnqueueLinksOptions) => Promise<{ processedRequests: { uniqueKey: string }[] }>,
+    log: Log,
+    rule: SiteDetectionRule
+  ): Promise<void> {
     const queueInfo = await this.requestQueue!.getInfo();
     if (queueInfo) {
       log.info('Queue status:', {
         pendingCount: queueInfo.pendingRequestCount || 0,
         handledCount: queueInfo.handledRequestCount || 0,
-        totalCount: queueInfo.totalRequestCount || 0
+        totalCount: queueInfo.totalRequestCount || 0,
       });
     }
 
@@ -46,9 +50,9 @@ export class QueueManager {
         const url = new URL(req.url);
         return {
           ...req,
-          uniqueKey: url.pathname + url.search
+          uniqueKey: url.pathname + url.search,
         };
-      }
+      },
     };
 
     // Add site-specific link selectors if provided
@@ -60,7 +64,7 @@ export class QueueManager {
 
     log.info('Enqueued links:', {
       processedCount: enqueueResult.processedRequests.length,
-      urls: enqueueResult.processedRequests.map((r: { uniqueKey: string }) => r.uniqueKey)
+      urls: enqueueResult.processedRequests.map((r: { uniqueKey: string }) => r.uniqueKey),
     });
   }
 

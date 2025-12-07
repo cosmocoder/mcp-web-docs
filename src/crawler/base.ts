@@ -72,7 +72,7 @@ export abstract class BaseCrawler {
 
       // Skip ignored paths only if they match exactly
       const path = url.pathname.toLowerCase();
-      const isIgnored = IGNORED_PATHS.some(ignored => {
+      const isIgnored = IGNORED_PATHS.some((ignored) => {
         // If ignored path ends with /, treat it as a directory
         if (ignored.endsWith('/')) {
           return path.startsWith(ignored);
@@ -131,7 +131,7 @@ export abstract class BaseCrawler {
     // If we've hit the rate limit, wait until the next window
     if (this.requestCount > RATE_LIMIT.maxRequests) {
       const waitTime = RATE_LIMIT.timeWindow - (now - this.lastRequestTime);
-      await new Promise(resolve => setTimeout(resolve, waitTime));
+      await new Promise((resolve) => setTimeout(resolve, waitTime));
       this.requestCount = 1;
       this.lastRequestTime = Date.now();
       return;
@@ -140,17 +140,13 @@ export abstract class BaseCrawler {
     // Ensure minimum delay between requests
     const timeSinceLastRequest = now - this.lastRequestTime;
     if (timeSinceLastRequest < RATE_LIMIT.minDelay) {
-      await new Promise(resolve => setTimeout(resolve, RATE_LIMIT.minDelay - timeSinceLastRequest));
+      await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT.minDelay - timeSinceLastRequest));
     }
 
     this.lastRequestTime = Date.now();
   }
 
-  protected async retryWithBackoff<T>(
-    operation: () => Promise<T>,
-    maxRetries: number = 3,
-    baseDelay: number = 1000
-  ): Promise<T> {
+  protected async retryWithBackoff<T>(operation: () => Promise<T>, maxRetries: number = 3, baseDelay: number = 1000): Promise<T> {
     let lastError: Error | undefined;
 
     for (let i = 0; i < maxRetries; i++) {
@@ -162,7 +158,7 @@ export abstract class BaseCrawler {
 
         // Exponential backoff
         const delay = baseDelay * Math.pow(2, i);
-        await new Promise(resolve => setTimeout(resolve, delay));
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
 

@@ -52,7 +52,7 @@ function preprocessQuery(query: string): ProcessedQuery {
   const result: ProcessedQuery = {
     phrases: [],
     cleanedQuery: query,
-    original: query
+    original: query,
   };
 
   // Extract quoted phrases for exact matching
@@ -85,7 +85,7 @@ export class DocumentStore implements StorageProvider {
     logger.debug(`[DocumentStore] Initializing with paths:`, {
       dbPath,
       vectorDbPath,
-      maxCacheSize
+      maxCacheSize,
     });
     this.searchCache = new QuickLRU({ maxSize: maxCacheSize });
   }
@@ -93,7 +93,7 @@ export class DocumentStore implements StorageProvider {
   async initialize(): Promise<void> {
     logger.debug(`[DocumentStore] Starting initialization with paths:`, {
       dbPath: this.dbPath,
-      vectorDbPath: this.vectorDbPath
+      vectorDbPath: this.vectorDbPath,
     });
 
     try {
@@ -113,7 +113,7 @@ export class DocumentStore implements StorageProvider {
         logger.debug(`[DocumentStore] Opening SQLite database at ${this.dbPath}`);
         this.sqliteDb = await open({
           filename: this.dbPath,
-          driver: sqlite3.Database
+          driver: sqlite3.Database,
         });
 
         logger.debug(`[DocumentStore] Configuring SQLite database`);
@@ -149,10 +149,7 @@ export class DocumentStore implements StorageProvider {
           logger.debug(`[DocumentStore] Creating chunks table with dimensions: ${this.embeddings.dimensions}`);
 
           // Define schema using Apache Arrow
-          const vectorType = new FixedSizeList(
-            this.embeddings.dimensions,
-            new Field('item', new Float32(), true)
-          );
+          const vectorType = new FixedSizeList(this.embeddings.dimensions, new Field('item', new Float32(), true));
 
           const schema = new Schema([
             new Field('url', new Utf8(), false),
@@ -205,7 +202,7 @@ export class DocumentStore implements StorageProvider {
     logger.debug(`[DocumentStore] Starting addDocument for:`, {
       url: doc.metadata.url,
       title: doc.metadata.title,
-      chunks: doc.chunks.length
+      chunks: doc.chunks.length,
     });
 
     // Add diagnostic logging for vector dimensions
@@ -235,10 +232,12 @@ export class DocumentStore implements StorageProvider {
       await this.sqliteDb.run('BEGIN TRANSACTION');
 
       // Add metadata to SQLite
-      await this.sqliteDb.run(
-        'INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed) VALUES (?, ?, ?, ?)',
-        [doc.metadata.url, doc.metadata.title, doc.metadata.favicon, doc.metadata.lastIndexed.toISOString()]
-      );
+      await this.sqliteDb.run('INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed) VALUES (?, ?, ?, ?)', [
+        doc.metadata.url,
+        doc.metadata.title,
+        doc.metadata.favicon,
+        doc.metadata.lastIndexed.toISOString(),
+      ]);
       logger.debug(`[DocumentStore] Added metadata to SQLite`);
 
       // Delete existing chunks for this document
@@ -246,7 +245,7 @@ export class DocumentStore implements StorageProvider {
       logger.debug(`[DocumentStore] Deleted existing chunks`);
 
       // Add new chunks to LanceDB
-      const rows = doc.chunks.map(chunk => ({
+      const rows = doc.chunks.map((chunk) => ({
         url: doc.metadata.url,
         title: doc.metadata.title,
         content: chunk.content,
@@ -261,7 +260,7 @@ export class DocumentStore implements StorageProvider {
         language: '',
         // Serialize code blocks and props as JSON strings
         codeBlocks: JSON.stringify(chunk.metadata.codeBlocks || []),
-        props: JSON.stringify(chunk.metadata.props || [])
+        props: JSON.stringify(chunk.metadata.props || []),
       })) as LanceDbRow[];
 
       logger.debug(`[DocumentStore] Adding ${rows.length} chunks to LanceDB`);
@@ -299,7 +298,7 @@ export class DocumentStore implements StorageProvider {
       limit,
       includeVectors,
       filterByType,
-      hasTextQuery: !!textQuery
+      hasTextQuery: !!textQuery,
     });
 
     // Add validation for query vector
@@ -313,7 +312,7 @@ export class DocumentStore implements StorageProvider {
       vectorDimensions: queryVector.length,
       expectedDimensions: this.embeddings.dimensions,
       limit,
-      filterType: filterByType
+      filterType: filterByType,
     });
 
     // Ensure vector dimensions match if provided
@@ -361,55 +360,55 @@ export class DocumentStore implements StorageProvider {
           score: results[0].score,
           hasVector: 'vector' in results[0],
           vectorType: typeof results[0].vector,
-          vectorLength: Array.isArray(results[0].vector) ? results[0].vector.length : 'not an array'
+          vectorLength: Array.isArray(results[0].vector) ? results[0].vector.length : 'not an array',
         });
       }
 
-        const searchResults = results.map((result: LanceDbRow & { id?: string; score?: number; _distance?: number }) => {
-          // Log the raw result for debugging
-          logger.debug(`[DocumentStore] Raw search result:`, {
-            id: result.id,
-            url: result.url,
-            hasVector: !!result.vector,
-            vectorType: result.vector ? typeof result.vector : 'undefined',
-            vectorLength: result.vector ? (Array.isArray(result.vector) ? result.vector.length : 'not an array') : 0
-          });
-
-          // Parse JSON fields
-          let codeBlocks;
-          let props;
-          try {
-            codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined;
-          } catch {
-            codeBlocks = undefined;
-          }
-          try {
-            props = result.props ? JSON.parse(result.props) : undefined;
-          } catch {
-            props = undefined;
-          }
-
-          return {
-            id: String(result.id || result.url),
-            content: String(result.content),
-            url: String(result.url),
-            title: String(result.title),
-            score: result._distance != null ? 1 - result._distance : (result.score ?? 0),
-            ...(includeVectors && { vector: result.vector as number[] }),
-            metadata: {
-              type: (result.type || 'overview') as 'overview' | 'api' | 'example' | 'usage',
-              path: String(result.path),
-              lastUpdated: new Date(result.lastUpdated ? String(result.lastUpdated) : Date.now()),
-              version: result.version as string | undefined,
-              framework: result.framework as string | undefined,
-              language: result.language as string | undefined,
-              codeBlocks,
-              props
-            }
-          };
+      const searchResults = results.map((result: LanceDbRow & { id?: string; score?: number; _distance?: number }) => {
+        // Log the raw result for debugging
+        logger.debug(`[DocumentStore] Raw search result:`, {
+          id: result.id,
+          url: result.url,
+          hasVector: !!result.vector,
+          vectorType: result.vector ? typeof result.vector : 'undefined',
+          vectorLength: result.vector ? (Array.isArray(result.vector) ? result.vector.length : 'not an array') : 0,
         });
 
-        return searchResults;
+        // Parse JSON fields
+        let codeBlocks;
+        let props;
+        try {
+          codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined;
+        } catch {
+          codeBlocks = undefined;
+        }
+        try {
+          props = result.props ? JSON.parse(result.props) : undefined;
+        } catch {
+          props = undefined;
+        }
+
+        return {
+          id: String(result.id || result.url),
+          content: String(result.content),
+          url: String(result.url),
+          title: String(result.title),
+          score: result._distance != null ? 1 - result._distance : (result.score ?? 0),
+          ...(includeVectors && { vector: result.vector as number[] }),
+          metadata: {
+            type: (result.type || 'overview') as 'overview' | 'api' | 'example' | 'usage',
+            path: String(result.path),
+            lastUpdated: new Date(result.lastUpdated ? String(result.lastUpdated) : Date.now()),
+            version: result.version as string | undefined,
+            framework: result.framework as string | undefined,
+            language: result.language as string | undefined,
+            codeBlocks,
+            props,
+          },
+        };
+      });
+
+      return searchResults;
     } catch (error) {
       logger.error('[DocumentStore] Error searching documents:', error);
       throw error;
@@ -427,7 +426,7 @@ export class DocumentStore implements StorageProvider {
     try {
       logger.debug('[DocumentStore] Creating FTS index on content field...');
       await this.lanceTable.createIndex('content', {
-        config: lancedb.Index.fts()
+        config: lancedb.Index.fts(),
       });
       this.ftsIndexCreated = true;
       logger.debug('[DocumentStore] FTS index created successfully');
@@ -589,7 +588,11 @@ export class DocumentStore implements StorageProvider {
   /**
    * Merge FTS and vector results using Reciprocal Rank Fusion (RRF)
    */
-  private mergeAndRankResults(ftsResults: LanceDbRow[], vectorResults: LanceDbRow[], limit: number): (LanceDbRow & { _rrfScore: number })[] {
+  private mergeAndRankResults(
+    ftsResults: LanceDbRow[],
+    vectorResults: LanceDbRow[],
+    limit: number
+  ): (LanceDbRow & { _rrfScore: number })[] {
     const k = 60; // RRF constant
     const scores = new Map<string, { result: LanceDbRow; score: number }>();
 
@@ -618,7 +621,7 @@ export class DocumentStore implements StorageProvider {
     return Array.from(scores.values())
       .sort((a, b) => b.score - a.score)
       .slice(0, limit)
-      .map(item => ({ ...item.result, _rrfScore: item.score }));
+      .map((item) => ({ ...item.result, _rrfScore: item.score }));
   }
 
   /**
@@ -627,8 +630,16 @@ export class DocumentStore implements StorageProvider {
   private formatSearchResults(results: (LanceDbRow & { _rrfScore?: number; _distance?: number; _score?: number })[]): SearchResult[] {
     return results.map((result) => {
       let codeBlocks, props;
-      try { codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined; } catch { codeBlocks = undefined; }
-      try { props = result.props ? JSON.parse(result.props) : undefined; } catch { props = undefined; }
+      try {
+        codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined;
+      } catch {
+        codeBlocks = undefined;
+      }
+      try {
+        props = result.props ? JSON.parse(result.props) : undefined;
+      } catch {
+        props = undefined;
+      }
 
       return {
         id: String(result.url),
@@ -644,8 +655,8 @@ export class DocumentStore implements StorageProvider {
           framework: result.framework as string | undefined,
           language: result.language as string | undefined,
           codeBlocks,
-          props
-        }
+          props,
+        },
       };
     });
   }
@@ -658,20 +669,22 @@ export class DocumentStore implements StorageProvider {
     logger.debug(`[DocumentStore] Listing documents`);
 
     try {
-      const rows = await this.sqliteDb.all<Array<{
-        url: string;
-        title: string;
-        favicon: string | null;
-        last_indexed: string;
-      }>>('SELECT url, title, favicon, last_indexed FROM documents ORDER BY last_indexed DESC');
+      const rows = await this.sqliteDb.all<
+        Array<{
+          url: string;
+          title: string;
+          favicon: string | null;
+          last_indexed: string;
+        }>
+      >('SELECT url, title, favicon, last_indexed FROM documents ORDER BY last_indexed DESC');
 
       logger.debug(`[DocumentStore] Found ${rows.length} documents`);
 
-      return rows.map(row => ({
+      return rows.map((row) => ({
         url: row.url,
         title: row.title,
         favicon: row.favicon ?? undefined,
-        lastIndexed: new Date(row.last_indexed)
+        lastIndexed: new Date(row.last_indexed),
       }));
     } catch (error) {
       logger.error('[DocumentStore] Error listing documents:', error);
@@ -747,7 +760,7 @@ export class DocumentStore implements StorageProvider {
         url: row.url,
         title: row.title,
         favicon: row.favicon ?? undefined,
-        lastIndexed: new Date(row.last_indexed)
+        lastIndexed: new Date(row.last_indexed),
       };
     } catch (error) {
       logger.error('[DocumentStore] Error getting document:', error);
@@ -759,7 +772,7 @@ export class DocumentStore implements StorageProvider {
     // Clear all cache entries that might contain results for this URL
     for (const key of this.searchCache.keys()) {
       const results = this.searchCache.get(key);
-      if (results?.some(result => result.url === url)) {
+      if (results?.some((result) => result.url === url)) {
         this.searchCache.delete(key);
       }
     }
@@ -798,7 +811,7 @@ export class DocumentStore implements StorageProvider {
         vectorType: typeof sample[0].vector,
         isArray: Array.isArray(sample[0].vector),
         length: Array.isArray(sample[0].vector) ? sample[0].vector.length : 'N/A',
-        sample: Array.isArray(sample[0].vector) ? sample[0].vector.slice(0, 5) : sample[0].vector
+        sample: Array.isArray(sample[0].vector) ? sample[0].vector.slice(0, 5) : sample[0].vector,
       });
 
       // Try a simple vector search with a random vector
@@ -812,7 +825,7 @@ export class DocumentStore implements StorageProvider {
         logger.debug('[DocumentStore] Vector search test result:', {
           score: searchResults[0].score,
           hasVector: 'vector' in searchResults[0],
-          vectorLength: Array.isArray(searchResults[0].vector) ? searchResults[0].vector.length : 'N/A'
+          vectorLength: Array.isArray(searchResults[0].vector) ? searchResults[0].vector.length : 'N/A',
         });
       }
 
