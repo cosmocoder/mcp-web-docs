@@ -1,11 +1,16 @@
 import { SingleBar, MultiBar } from 'cli-progress';
 import { IndexingStatus } from '../types.js';
 
+/** How long to keep completed/failed statuses before auto-cleanup (2 minutes) */
+const COMPLETED_STATUS_TTL_MS = 2 * 60 * 1000;
+
 export class IndexingStatusTracker {
   private multibar: MultiBar;
   private bars: Map<string, SingleBar>;
   private statuses: Map<string, IndexingStatus>;
   private statusListeners: Array<(status: IndexingStatus) => void>;
+  /** Tracks when statuses completed for auto-cleanup */
+  private completedAt: Map<string, Date>;
 
   constructor() {
     this.multibar = new MultiBar({
@@ -17,6 +22,7 @@ export class IndexingStatusTracker {
     this.bars = new Map();
     this.statuses = new Map();
     this.statusListeners = [];
+    this.completedAt = new Map();
   }
 
   addStatusListener(listener: (status: IndexingStatus) => void) {
@@ -111,6 +117,7 @@ export class IndexingStatusTracker {
     };
 
     this.statuses.set(id, status);
+    this.completedAt.set(id, new Date());
     this.notifyListeners(status);
   }
 
@@ -134,6 +141,7 @@ export class IndexingStatusTracker {
     };
 
     this.statuses.set(id, status);
+    this.completedAt.set(id, new Date());
     this.notifyListeners(status);
   }
 
@@ -157,6 +165,7 @@ export class IndexingStatusTracker {
     };
 
     this.statuses.set(id, status);
+    this.completedAt.set(id, new Date());
     this.notifyListeners(status);
   }
 
@@ -179,6 +188,7 @@ export class IndexingStatusTracker {
     };
 
     this.statuses.set(id, status);
+    this.completedAt.set(id, new Date());
     this.notifyListeners(status);
   }
 
@@ -186,8 +196,53 @@ export class IndexingStatusTracker {
     return this.statuses.get(id);
   }
 
+  /**
+   * Get all statuses (for debugging/internal use)
+   */
   getAllStatuses(): IndexingStatus[] {
     return Array.from(this.statuses.values());
+  }
+
+  /**
+   * Get only active indexing operations and recently completed ones.
+   * Completed statuses are automatically cleaned up after TTL expires.
+   * This is the primary method for the get_indexing_status tool.
+   */
+  getActiveStatuses(): IndexingStatus[] {
+    this.cleanupOldStatuses();
+
+    const now = new Date();
+    return Array.from(this.statuses.values()).filter((status) => {
+      // Always include active indexing operations
+      if (status.status === 'indexing') {
+        return true;
+      }
+
+      // Include completed/failed/aborted/cancelled if within TTL
+      const completedTime = this.completedAt.get(status.id);
+      if (completedTime) {
+        const age = now.getTime() - completedTime.getTime();
+        return age < COMPLETED_STATUS_TTL_MS;
+      }
+
+      return false;
+    });
+  }
+
+  /**
+   * Remove statuses that completed more than TTL ago
+   */
+  private cleanupOldStatuses(): void {
+    const now = new Date();
+
+    for (const [id, completedTime] of this.completedAt.entries()) {
+      const age = now.getTime() - completedTime.getTime();
+      if (age >= COMPLETED_STATUS_TTL_MS) {
+        this.statuses.delete(id);
+        this.completedAt.delete(id);
+        this.bars.delete(id);
+      }
+    }
   }
 
   stop(): void {

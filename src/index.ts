@@ -598,7 +598,8 @@ class WebDocsServer {
   }
 
   private handleGetIndexingStatus() {
-    const statuses = this.statusTracker.getAllStatuses();
+    // Get only active operations and recently completed ones (auto-cleans old statuses)
+    const statuses = this.statusTracker.getActiveStatuses();
 
     // Check if any operations are still in progress
     const hasActiveOperations = statuses.some((s) => s.status === 'indexing');
