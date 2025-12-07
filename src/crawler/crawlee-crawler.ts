@@ -8,6 +8,7 @@ import { QueueManager } from './queue-manager.js';
 import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
+import { detectLoginPage, isLoginPageUrl, SessionExpiredError } from '../util/security.js';
 
 /** Storage state for authentication (cookies and localStorage) */
 export interface StorageState {
@@ -31,6 +32,9 @@ export class CrawleeCrawler extends BaseCrawler {
   private crawler: PlaywrightCrawler | null = null;
   private queueManager: QueueManager = new QueueManager();
   private storageState?: StorageState;
+  private isFirstPage: boolean = true;
+  private sessionExpiredError: SessionExpiredError | null = null;
+  private expectedUrl: string = '';
 
   /**
    * Set authentication cookies/localStorage to use when crawling
@@ -38,6 +42,51 @@ export class CrawleeCrawler extends BaseCrawler {
   setStorageState(state: StorageState): void {
     this.storageState = state;
     logger.info(`[CrawleeCrawler] Set storage state with ${state.cookies?.length || 0} cookies`);
+  }
+
+  /**
+   * Check if a page appears to be a login/authentication page.
+   * This is used to detect expired sessions during crawling.
+   */
+  private async checkForLoginPage(page: Page, currentUrl: string): Promise<boolean> {
+    // Only check the first page with high scrutiny
+    // (subsequent pages being login pages might be intentional navigation)
+    if (!this.isFirstPage) {
+      return false;
+    }
+
+    // Check URL pattern first (fast)
+    if (isLoginPageUrl(currentUrl)) {
+      logger.warn(`[CrawleeCrawler] First page URL matches login pattern: ${currentUrl}`);
+      return true;
+    }
+
+    // Check page content
+    try {
+      const bodyText = await page.evaluate(() => document.body?.textContent || '');
+      const pageHtml = await page.content();
+      const detection = detectLoginPage(bodyText + pageHtml, currentUrl);
+
+      if (detection.isLoginPage && detection.confidence >= 0.5) {
+        logger.warn(
+          `[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`
+        );
+        logger.debug(`[CrawleeCrawler] Detection reasons: ${detection.reasons.join(', ')}`);
+
+        // Store the error for throwing later (can't throw from request handler)
+        this.sessionExpiredError = new SessionExpiredError(
+          `Authentication session has expired - crawled page is a login page`,
+          this.expectedUrl,
+          currentUrl,
+          detection
+        );
+        return true;
+      }
+    } catch (error) {
+      logger.debug(`[CrawleeCrawler] Error checking for login page:`, error);
+    }
+
+    return false;
   }
 
   private async findContentFrame(page: Page): Promise<Frame | null> {
@@ -118,6 +167,12 @@ export class CrawleeCrawler extends BaseCrawler {
 
   async *crawl(url: string): AsyncGenerator<CrawlResult, void, unknown> {
     logger.debug(`[${this.constructor.name}] Starting crawl of: ${url}`);
+
+    // Reset state for this crawl
+    this.isFirstPage = true;
+    this.sessionExpiredError = null;
+    this.expectedUrl = url;
+
     await this.queueManager.initialize(url);
 
     // Build crawler options with optional authentication
@@ -169,6 +224,19 @@ export class CrawleeCrawler extends BaseCrawler {
             page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway')),
           ]);
 
+          // Check for login page on first page (detects expired sessions)
+          if (this.isFirstPage && this.storageState) {
+            const isLoginPage = await this.checkForLoginPage(page, request.url);
+            if (isLoginPage) {
+              log.error('Session appears expired - first page is a login page. Aborting crawl.');
+              this.abort();
+              return;
+            }
+            this.isFirstPage = false;
+          } else if (this.isFirstPage) {
+            this.isFirstPage = false;
+          }
+
           // Detect site type and get extractor
           for (const rule of siteRules) {
             if (await rule.detect(page)) {
@@ -217,10 +285,19 @@ export class CrawleeCrawler extends BaseCrawler {
       await crawlerPromise;
       logger.debug('Crawler finished');
 
+      // Check if we detected an expired session during crawling
+      if (this.sessionExpiredError) {
+        throw this.sessionExpiredError;
+      }
+
       for (const result of await this.queueManager.processBatch()) {
         yield result;
       }
     } catch (error) {
+      // Re-throw session expired errors as-is
+      if (error instanceof SessionExpiredError) {
+        throw error;
+      }
       logger.debug('Crawler error:', error);
       throw error;
     } finally {

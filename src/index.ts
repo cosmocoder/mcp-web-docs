@@ -37,6 +37,7 @@ import {
   detectPromptInjection,
   wrapExternalContent,
   addInjectionWarnings,
+  SessionExpiredError,
   AddDocumentationArgsSchema,
   AuthenticateArgsSchema,
   ClearAuthArgsSchema,
@@ -441,7 +442,19 @@ class WebDocsServer {
           );
         }
       } else {
-        logger.info(`[WebDocsServer] Using existing saved session for ${normalizedUrl}`);
+        // Validate that the existing session is still valid before crawling
+        logger.info(`[WebDocsServer] Validating existing session for ${normalizedUrl}...`);
+        const validation = await this.authManager.validateSession(normalizedUrl);
+        if (!validation.isValid) {
+          logger.warn(`[WebDocsServer] Session expired for ${normalizedUrl}: ${validation.reason}`);
+          // Clear the expired session
+          await this.authManager.clearSession(normalizedUrl);
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `Authentication session has expired (${validation.reason}). Please use the 'authenticate' tool to log in again.`
+          );
+        }
+        logger.info(`[WebDocsServer] ✓ Session validated for ${normalizedUrl}`);
       }
     }
 
@@ -1082,6 +1095,21 @@ class WebDocsServer {
       // Don't log AbortError as a real error
       if (error instanceof Error && error.name === 'AbortError') {
         logger.info(`[WebDocsServer] Indexing cancelled for ${url}`);
+        return;
+      }
+
+      // Handle expired session errors specially
+      if (error instanceof SessionExpiredError) {
+        logger.warn(`[WebDocsServer] Session expired during crawl of ${url}: ${error.message}`);
+        logger.warn(`[WebDocsServer] Expected URL: ${error.expectedUrl}, Detected URL: ${error.detectedUrl}`);
+
+        // Clear the expired session
+        await this.authManager.clearSession(url);
+        logger.info(`[WebDocsServer] Cleared expired session for ${url}`);
+
+        // Report user-friendly error
+        const userMessage = `Authentication session has expired. The crawler was redirected to a login page. Please use the 'authenticate' tool to log in again before re-indexing.`;
+        this.statusTracker.failIndexing(id, userMessage);
         return;
       }
 

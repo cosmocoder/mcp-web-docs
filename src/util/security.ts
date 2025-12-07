@@ -670,3 +670,168 @@ export function addInjectionWarnings(content: string, detectionResult: PromptInj
   return warning + content;
 }
 
+// ============ Login Page Detection ============
+
+/**
+ * Common URL patterns that indicate a login/authentication page.
+ * These are used to detect when a session has expired and we've been redirected to login.
+ */
+const LOGIN_URL_PATTERNS = [
+  /\/login\b/i,
+  /\/signin\b/i,
+  /\/sign-in\b/i,
+  /\/sign_in\b/i,
+  /\/auth\b/i,
+  /\/authenticate\b/i,
+  /\/authentication\b/i,
+  /\/sso\b/i,
+  /\/oauth\b/i,
+  /\/session\/new\b/i,
+  /\/users\/sign_in\b/i,
+  /\/account\/login\b/i,
+  /\/accounts\/login\b/i,
+  /\/idp\//i, // Identity provider paths
+  /\/saml\//i, // SAML authentication
+  /github\.com\/login/i,
+  /github\.com\/session/i,
+  /login\.microsoftonline\.com/i,
+  /accounts\.google\.com/i,
+  /okta\./i,
+  /auth0\./i,
+];
+
+/**
+ * Common page content indicators that suggest a login page.
+ * These are checked against the page's text content.
+ */
+const LOGIN_CONTENT_INDICATORS = [
+  // Form labels and buttons
+  /sign\s*in/i,
+  /log\s*in/i,
+  /username/i,
+  /password/i,
+  /email address/i,
+  /forgot password/i,
+  /reset password/i,
+  /remember me/i,
+  /keep me signed in/i,
+  /don't have an account/i,
+  /create an account/i,
+  /register now/i,
+  // OAuth/SSO buttons
+  /sign in with/i,
+  /continue with/i,
+  /login with/i,
+  // Authentication errors
+  /invalid credentials/i,
+  /incorrect password/i,
+  /session expired/i,
+  /please log in/i,
+  /authentication required/i,
+  /access denied/i,
+  /unauthorized/i,
+];
+
+/**
+ * Result of login page detection
+ */
+export interface LoginPageDetectionResult {
+  /** Whether this appears to be a login page */
+  isLoginPage: boolean;
+  /** Confidence level (0-1) based on number of indicators matched */
+  confidence: number;
+  /** Detected reasons (for logging/debugging) */
+  reasons: string[];
+}
+
+/**
+ * Detect if a URL looks like a login/authentication page.
+ * @param url - The URL to check
+ * @returns Whether the URL pattern suggests a login page
+ */
+export function isLoginPageUrl(url: string): boolean {
+  try {
+    const urlObj = new URL(url);
+    const fullUrl = urlObj.href;
+    const pathname = urlObj.pathname;
+
+    // Check against known login URL patterns
+    return LOGIN_URL_PATTERNS.some((pattern) => pattern.test(fullUrl) || pattern.test(pathname));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect if page content suggests a login page.
+ * This is a heuristic check - it counts how many login-related
+ * indicators are present in the content.
+ *
+ * @param content - The page's text content
+ * @param url - The page URL (for additional URL-based detection)
+ * @returns Detection result with confidence score
+ */
+export function detectLoginPage(content: string, url: string): LoginPageDetectionResult {
+  const reasons: string[] = [];
+  let indicatorCount = 0;
+
+  // Check URL patterns
+  if (isLoginPageUrl(url)) {
+    reasons.push('URL matches login page pattern');
+    indicatorCount += 3; // URL match is a strong signal
+  }
+
+  // Check content indicators
+  const normalizedContent = content.toLowerCase();
+
+  for (const pattern of LOGIN_CONTENT_INDICATORS) {
+    if (pattern.test(normalizedContent)) {
+      indicatorCount++;
+      // Only record first few matches to avoid verbose logs
+      if (reasons.length < 5) {
+        const match = normalizedContent.match(pattern);
+        if (match) {
+          reasons.push(`Found "${match[0]}" in content`);
+        }
+      }
+    }
+  }
+
+  // Check for presence of password input (strong indicator)
+  if (/type\s*=\s*["']password["']/i.test(content) || /input.*password/i.test(content)) {
+    indicatorCount += 2;
+    reasons.push('Password input field detected');
+  }
+
+  // Calculate confidence based on indicator count
+  // 0-1 indicators: low confidence (might be false positive)
+  // 2-3 indicators: medium confidence
+  // 4+ indicators: high confidence
+  const confidence = Math.min(indicatorCount / 6, 1);
+  const isLoginPage = indicatorCount >= 2; // Require at least 2 indicators
+
+  return {
+    isLoginPage,
+    confidence,
+    reasons,
+  };
+}
+
+/**
+ * Error thrown when authentication session has expired.
+ * This allows callers to handle session expiration gracefully.
+ */
+export class SessionExpiredError extends Error {
+  readonly detectedUrl: string;
+  readonly expectedUrl: string;
+  readonly detectionResult: LoginPageDetectionResult;
+
+  constructor(message: string, expectedUrl: string, detectedUrl: string, detectionResult: LoginPageDetectionResult) {
+    super(message);
+    this.name = 'SessionExpiredError';
+    this.expectedUrl = expectedUrl;
+    this.detectedUrl = detectedUrl;
+    this.detectionResult = detectionResult;
+  }
+}
+

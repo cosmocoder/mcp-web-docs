@@ -11,7 +11,11 @@ import {
   StorageStateSchema,
   StoredSessionSchema,
   safeJsonParse,
+  detectLoginPage,
+  isLoginPageUrl,
+  SessionExpiredError,
   type ValidatedStoredSession,
+  type LoginPageDetectionResult,
 } from '../util/security.js';
 
 /** Supported browser types */
@@ -217,6 +221,142 @@ export class AuthManager {
       logger.info(`[AuthManager] Cleared session for ${domain}`);
     } catch {
       // Session didn't exist
+    }
+  }
+
+  /**
+   * Validate that a stored session is still valid by making a test request.
+   * This detects expired sessions by checking for:
+   * 1. Redirects to login/auth pages
+   * 2. Login page content in the response
+   *
+   * @param url - The protected URL to validate against
+   * @param browserType - Browser type to use for validation
+   * @returns Validation result indicating if session is still valid
+   */
+  async validateSession(
+    url: string,
+    browserType: BrowserType = 'chromium'
+  ): Promise<{ isValid: boolean; reason?: string; loginDetection?: LoginPageDetectionResult; finalUrl?: string }> {
+    const domain = new URL(url).hostname;
+    logger.info(`[AuthManager] Validating session for ${domain}...`);
+
+    const storageStateJson = await this.loadSession(url);
+    if (!storageStateJson) {
+      logger.info(`[AuthManager] No stored session found for ${domain}`);
+      return { isValid: false, reason: 'No stored session found' };
+    }
+
+    let browser: Browser | null = null;
+    let context: BrowserContext | null = null;
+
+    try {
+      const launcher = this.getBrowserLauncher(browserType);
+      const launchOptions = this.getLaunchOptions(browserType);
+
+      // Launch headless browser for validation
+      browser = await launcher.launch({
+        headless: true,
+        ...launchOptions,
+      });
+
+      const storageState = JSON.parse(storageStateJson);
+      context = await browser.newContext({ storageState });
+
+      const page = await context.newPage();
+
+      // Navigate to the protected URL and check the result
+      logger.debug(`[AuthManager] Navigating to ${url} to validate session...`);
+      const response = await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000,
+      });
+
+      const finalUrl = page.url();
+      logger.debug(`[AuthManager] Final URL after navigation: ${finalUrl}`);
+
+      // Check 1: Were we redirected to a login page?
+      if (isLoginPageUrl(finalUrl) && finalUrl !== url) {
+        logger.warn(`[AuthManager] Session appears expired - redirected to login page: ${finalUrl}`);
+        return {
+          isValid: false,
+          reason: 'Redirected to login page - session has expired',
+          finalUrl,
+          loginDetection: { isLoginPage: true, confidence: 1.0, reasons: ['Redirected to login URL'] },
+        };
+      }
+
+      // Check 2: Did we get an auth-related HTTP status?
+      const status = response?.status();
+      if (status === 401 || status === 403) {
+        logger.warn(`[AuthManager] Session appears expired - received HTTP ${status}`);
+        return {
+          isValid: false,
+          reason: `Authentication failed with HTTP ${status}`,
+          finalUrl,
+        };
+      }
+
+      // Check 3: Does the page content look like a login page?
+      // Wait for content to load
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+      const pageContent = await page.content();
+      const bodyText = await page.evaluate(() => document.body?.textContent || '');
+      const loginDetection = detectLoginPage(bodyText + pageContent, finalUrl);
+
+      if (loginDetection.isLoginPage && loginDetection.confidence >= 0.5) {
+        logger.warn(
+          `[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`
+        );
+        logger.debug(`[AuthManager] Login detection reasons: ${loginDetection.reasons.join(', ')}`);
+        return {
+          isValid: false,
+          reason: `Login page detected (confidence: ${Math.round(loginDetection.confidence * 100)}%)`,
+          finalUrl,
+          loginDetection,
+        };
+      }
+
+      // Session appears valid
+      logger.info(`[AuthManager] ✓ Session for ${domain} is valid`);
+      return { isValid: true, finalUrl };
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : String(error);
+      logger.error(`[AuthManager] Error validating session: ${errorMsg}`);
+      // On error, we can't confirm validity - treat as potentially invalid
+      return {
+        isValid: false,
+        reason: `Validation failed: ${errorMsg}`,
+      };
+    } finally {
+      if (context) await context.close().catch(() => {});
+      if (browser) await browser.close().catch(() => {});
+    }
+  }
+
+  /**
+   * Validate session and throw SessionExpiredError if expired.
+   * This is a convenience method for use in crawling workflows.
+   *
+   * @param url - The protected URL to validate against
+   * @param browserType - Browser type to use for validation
+   * @throws SessionExpiredError if the session has expired
+   */
+  async validateSessionOrThrow(url: string, browserType: BrowserType = 'chromium'): Promise<void> {
+    const result = await this.validateSession(url, browserType);
+
+    if (!result.isValid) {
+      // Clear the expired session
+      await this.clearSession(url);
+      logger.info(`[AuthManager] Cleared expired session for ${new URL(url).hostname}`);
+
+      throw new SessionExpiredError(
+        `Authentication session has expired: ${result.reason}`,
+        url,
+        result.finalUrl || url,
+        result.loginDetection || { isLoginPage: true, confidence: 0.5, reasons: [result.reason || 'Unknown'] }
+      );
     }
   }
 
