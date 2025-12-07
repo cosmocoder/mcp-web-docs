@@ -198,7 +198,8 @@ class WebDocsServer {
                   browser: {
                     type: 'string',
                     enum: ['chromium', 'chrome', 'firefox', 'webkit', 'edge'],
-                    description: 'Browser to use for authentication (default: chromium)',
+                    description:
+                      "Optional. If omitted, the user's default browser is automatically detected from OS settings. Only specify to override.",
                   },
                   loginUrl: {
                     type: 'string',
@@ -225,7 +226,7 @@ class WebDocsServer {
         {
           name: 'authenticate',
           description:
-            'Open a browser window for interactive login to a protected site. The session will be saved and reused for future crawls. Use this before add_documentation for sites that require login.',
+            "Open a browser window for interactive login to a protected site. The session will be saved and reused for future crawls. Use this before add_documentation for sites that require login. The user's default browser is automatically detected from OS settings - do NOT specify a browser unless the user explicitly requests a specific one.",
           inputSchema: {
             type: 'object',
             properties: {
@@ -236,7 +237,8 @@ class WebDocsServer {
               browser: {
                 type: 'string',
                 enum: ['chromium', 'chrome', 'firefox', 'webkit', 'edge'],
-                description: 'Browser to use (default: chromium). Use "chrome" or "edge" to use your installed browser.',
+                description:
+                  "Optional. If omitted, the user's default browser is automatically detected from OS settings. Only specify this to override auto-detection with a specific browser.",
               },
               loginUrl: {
                 type: 'string',

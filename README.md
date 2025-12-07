@@ -32,7 +32,7 @@ AI assistants struggle with documentation:
 
 - **🌐 Universal Crawler** - Works with any documentation site, not just GitHub
 - **🔍 Hybrid Search** - Combines full-text search (FTS) with semantic vector search
-- **🔐 Authentication Support** - Crawl private/protected docs with interactive browser login
+- **🔐 Authentication Support** - Crawl private/protected docs with interactive browser login (auto-detects your default browser)
 - **📊 Smart Extraction** - Automatically extracts code blocks, props tables, and structured content
 - **⚡ Local Embeddings** - Uses FastEmbed for fast, private embedding generation (no API keys)
 - **🗄️ Persistent Storage** - LanceDB for vectors, SQLite for metadata
@@ -198,7 +198,7 @@ add_documentation({
   id: "example-docs",           // Optional custom ID
   auth: {                       // Optional authentication
     requiresAuth: true,
-    browser: "firefox",         // chromium, chrome, firefox, webkit, edge
+    // browser auto-detected from OS settings if omitted
     loginTimeoutSecs: 300
   }
 })
@@ -218,12 +218,12 @@ search_documentation({
 
 ### `authenticate`
 
-Open a browser window for interactive login to protected sites.
+Open a browser window for interactive login to protected sites. Your default browser is automatically detected from OS settings.
 
 ```typescript
 authenticate({
   url: "https://private-docs.example.com/",
-  browser: "chrome",            // Optional: chromium, chrome, firefox, webkit, edge
+  // browser auto-detected from OS settings - only specify to override
   loginTimeoutSecs: 300         // Optional: timeout in seconds
 })
 ```
@@ -314,7 +314,7 @@ The content extractor couldn't process the page. Try:
 - Make sure you call `authenticate` before `add_documentation`
 - The browser window needs to stay open until login is detected
 - For OAuth sites, complete the full flow manually
-- Try a different browser if your default has issues
+- Your default browser is auto-detected; specify a different one with `browser: "firefox"`, for example, if needed
 
 </details>
 
