@@ -13,9 +13,9 @@
     "sourceMap": true,
     "resolveJsonModule": true,
     "lib": ["ES2022", "DOM"],
-    "types": ["node"],
+    "types": ["node", "vite/client", "vitest/globals"],
     "noUnusedLocals": true,
-    "noUnusedParameters": true
+    "noUnusedParameters": true,
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "build"]
