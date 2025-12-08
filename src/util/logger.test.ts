@@ -2,38 +2,14 @@ import { logger } from './logger.js';
 
 describe('Logger', () => {
   describe('API surface', () => {
-    it('should have debug method', () => {
-      expect(typeof logger.debug).toBe('function');
-    });
-
-    it('should have info method', () => {
-      expect(typeof logger.info).toBe('function');
-    });
-
-    it('should have warn method', () => {
-      expect(typeof logger.warn).toBe('function');
-    });
-
-    it('should have error method', () => {
-      expect(typeof logger.error).toBe('function');
+    it.each(['debug', 'info', 'warn', 'error'] as const)('should have %s method', (method) => {
+      expect(typeof logger[method]).toBe('function');
     });
   });
 
   describe('methods do not throw', () => {
-    it('should not throw when calling debug with string', () => {
-      expect(() => logger.debug('Debug message')).not.toThrow();
-    });
-
-    it('should not throw when calling info with string', () => {
-      expect(() => logger.info('Info message')).not.toThrow();
-    });
-
-    it('should not throw when calling warn with string', () => {
-      expect(() => logger.warn('Warn message')).not.toThrow();
-    });
-
-    it('should not throw when calling error with string', () => {
-      expect(() => logger.error('Error message')).not.toThrow();
+    it.each(['debug', 'info', 'warn', 'error'] as const)('should not throw when calling %s with string', (method) => {
+      expect(() => logger[method]('Test message')).not.toThrow();
     });
 
     it('should not throw when calling with multiple arguments', () => {
