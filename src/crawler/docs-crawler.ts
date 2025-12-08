@@ -9,6 +9,7 @@ export class DocsCrawler implements WebCrawler {
   private readonly MIN_PAGES = 2; // Require at least 2 pages for component libraries
   private isAborting = false;
   private storageState?: StorageState;
+  private pathPrefix?: string;
 
   constructor(
     private readonly maxDepth: number = 4,
@@ -16,6 +17,16 @@ export class DocsCrawler implements WebCrawler {
     private readonly githubToken?: string,
     private readonly onProgress?: (progress: number, description: string) => void
   ) {}
+
+  /**
+   * Set an optional path prefix to restrict crawling to URLs under this path.
+   * Only pages whose path starts with this prefix will be crawled.
+   * Example: '/oss/javascript/langchain' would only crawl pages under that path.
+   */
+  setPathPrefix(prefix: string): void {
+    this.pathPrefix = prefix;
+    logger.info(`[DocsCrawler] Path prefix restriction set: ${prefix}`);
+  }
 
   /**
    * Set authentication storage state (cookies) to use when crawling
@@ -59,6 +70,11 @@ export class DocsCrawler implements WebCrawler {
     // Pass authentication if available
     if (this.storageState) {
       crawleeCrawler.setStorageState(this.storageState);
+    }
+
+    // Pass path prefix restriction if configured
+    if (this.pathPrefix) {
+      crawleeCrawler.setPathPrefix(this.pathPrefix);
     }
 
     let pageCount = 0;

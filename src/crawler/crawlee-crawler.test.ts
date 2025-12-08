@@ -121,7 +121,7 @@ describe('CrawleeCrawler', () => {
         results.push(result);
       }
 
-      expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://example.com/docs');
+      expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://example.com/docs', undefined);
     });
 
     it('should yield results from queue manager', async () => {
@@ -172,7 +172,7 @@ describe('CrawleeCrawler', () => {
       }
 
       // Verify through the initialize call
-      expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://docs.example.com/guide');
+      expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://docs.example.com/guide', undefined);
     });
   });
 
@@ -221,7 +221,18 @@ describe('CrawleeCrawler', () => {
         // Just consume results
       }
 
-      expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://subdomain.example.com/path');
+      expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://subdomain.example.com/path', undefined);
+    });
+
+    it('should pass path prefix to queue manager when set', async () => {
+      crawler.setPathPrefix('/docs/api');
+
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      for await (const _ of crawler.crawl('https://example.com/docs/api')) {
+        // Just consume results
+      }
+
+      expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://example.com/docs/api', '/docs/api');
     });
   });
 

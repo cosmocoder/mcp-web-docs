@@ -27,6 +27,38 @@ function cleanText(text: string): string {
     .trim();
 }
 
+/**
+ * Extract text content from HTML while preserving code blocks with markdown fences.
+ * This ensures code examples aren't lost when using Readability fallback.
+ */
+function extractTextWithCodeBlocks(html: string): string {
+  const dom = new JSDOM(html);
+  const doc = dom.window.document;
+
+  // First, wrap all code blocks with markdown fences
+  const codeElements = doc.querySelectorAll('pre, code');
+  codeElements.forEach((el) => {
+    // Skip inline <code> inside <pre> (already handled by parent)
+    if (el.tagName === 'CODE' && el.parentElement?.tagName === 'PRE') {
+      return;
+    }
+
+    const code = el.textContent?.trim();
+    if (code && code.length > 0) {
+      // Replace the element's content with fenced code
+      const isBlock = el.tagName === 'PRE' || code.includes('\n');
+      if (isBlock) {
+        el.textContent = `\n\`\`\`\n${code}\n\`\`\`\n`;
+      } else {
+        el.textContent = `\`${code}\``;
+      }
+    }
+  });
+
+  // Now get the text content which includes our fenced markers
+  return doc.body?.textContent || '';
+}
+
 function findMainContent(doc: Document): Element | null {
   const selectors = [
     // Storybook specific selectors
@@ -255,6 +287,12 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
         return undefined;
       }
 
+      // Use HTML content to preserve code blocks with markdown fences
+      // This prevents code examples from triggering false positive security detections
+      const contentWithCodeBlocks = readability.content
+        ? extractTextWithCodeBlocks(readability.content)
+        : readability.textContent || '';
+
       return {
         article: {
           url: page.url,
@@ -263,11 +301,11 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
           components: [
             {
               title: readability.title || 'Content',
-              body: cleanText(readability.textContent || ''),
+              body: cleanText(contentWithCodeBlocks),
             },
           ],
         },
-        content: cleanText(readability.textContent || ''),
+        content: cleanText(contentWithCodeBlocks),
       };
     }
 

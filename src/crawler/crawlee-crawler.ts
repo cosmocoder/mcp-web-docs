@@ -39,6 +39,8 @@ export class CrawleeCrawler extends BaseCrawler {
   private allowedHostname: string = '';
   /** Track pages skipped due to domain mismatch */
   private skippedExternalPages: number = 0;
+  /** Optional path prefix to restrict crawling */
+  private pathPrefix?: string;
 
   /**
    * Set authentication cookies/localStorage to use when crawling
@@ -201,6 +203,15 @@ export class CrawleeCrawler extends BaseCrawler {
     return { content, extractorUsed };
   }
 
+  /**
+   * Set an optional path prefix to restrict crawling to URLs under this path.
+   * Must be called before crawl().
+   */
+  setPathPrefix(prefix: string): void {
+    this.pathPrefix = prefix;
+    logger.info(`[CrawleeCrawler] Path prefix restriction set: ${prefix}`);
+  }
+
   async *crawl(url: string): AsyncGenerator<CrawlResult, void, unknown> {
     logger.debug(`[${this.constructor.name}] Starting crawl of: ${url}`);
 
@@ -218,7 +229,7 @@ export class CrawleeCrawler extends BaseCrawler {
       this.allowedHostname = '';
     }
 
-    await this.queueManager.initialize(url);
+    await this.queueManager.initialize(url, this.pathPrefix);
 
     // Build crawler options with optional authentication
     const crawlerOptions = getBrowserConfig(this.queueManager.getRequestQueue() ?? undefined);

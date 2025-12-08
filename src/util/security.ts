@@ -311,6 +311,11 @@ export const AddDocumentationArgsSchema = z.object({
     .regex(/^[a-zA-Z0-9-_]+$/, 'ID must contain only alphanumeric characters, hyphens, and underscores')
     .max(100)
     .optional(),
+  pathPrefix: z
+    .string()
+    .max(500)
+    .refine((val) => val.startsWith('/'), 'Path prefix must start with /')
+    .optional(),
   auth: z
     .object({
       requiresAuth: z.boolean().optional(),
@@ -571,6 +576,30 @@ export interface PromptInjectionResult {
 }
 
 /**
+ * Strip code blocks from content to avoid false positives in prompt injection detection.
+ * Code examples (especially in AI/LLM documentation) often contain things like
+ * "You are an expert..." which would otherwise trigger role manipulation detection.
+ *
+ * Handles:
+ * - Fenced code blocks: ```language\ncode\n``` or ~~~code~~~
+ * - Inline code: `code`
+ *
+ * @param content - The content to process
+ * @returns Content with code blocks replaced by placeholders
+ */
+function stripCodeBlocks(content: string): string {
+  // Remove fenced code blocks (``` or ~~~)
+  // Matches: ```language\ncode\n``` or ~~~code~~~
+  let result = content.replace(/```[\s\S]*?```/g, '[CODE_BLOCK]');
+  result = result.replace(/~~~[\s\S]*?~~~/g, '[CODE_BLOCK]');
+
+  // Remove inline code
+  result = result.replace(/`[^`]+`/g, '[INLINE_CODE]');
+
+  return result;
+}
+
+/**
  * Detect potential prompt injection patterns in content using vard.
  * Uses the vard package for robust, performant detection of:
  * - Instruction overrides ("ignore all previous instructions")
@@ -578,6 +607,9 @@ export interface PromptInjectionResult {
  * - Delimiter injection ([SYSTEM], <|im_start|>)
  * - System prompt leaks ("reveal your instructions")
  * - Encoding attacks (base64, homoglyphs, unicode escapes)
+ *
+ * NOTE: Code blocks are stripped before detection to avoid false positives
+ * from code examples (especially common in AI/LLM documentation).
  *
  * @param content - The content to scan
  * @returns Detection results with severity and matched patterns
@@ -589,8 +621,11 @@ export function detectPromptInjection(content: string): PromptInjectionResult {
     return { hasInjection: false, maxSeverity: 'none', detections: [] };
   }
 
+  // Strip code blocks to avoid false positives from code examples
+  const contentToScan = stripCodeBlocks(content);
+
   // Use vard's safeParse to get detailed threat information
-  const result = vardDetector.safeParse(content);
+  const result = vardDetector.safeParse(contentToScan);
 
   if (result.safe) {
     return { hasInjection: false, maxSeverity: 'none', detections: [] };

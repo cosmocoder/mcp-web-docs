@@ -175,7 +175,9 @@ class WebDocsServer {
       tools: [
         {
           name: 'add_documentation',
-          description: 'Add new documentation site for indexing. Supports authenticated sites via the auth options.',
+          description: `Add new documentation site for indexing. Supports authenticated sites via the auth options.
+
+IMPORTANT: Before calling this tool, ask the user if they want to restrict crawling to a specific path prefix. For example, if indexing https://docs.example.com/api/v2/overview, the user might want to restrict to '/api/v2' to avoid crawling unrelated sections of the site.`,
           inputSchema: {
             type: 'object',
             properties: {
@@ -191,6 +193,11 @@ class WebDocsServer {
                 type: 'string',
                 description:
                   'Optional custom ID for the documentation (used for storage and identification). If not provided, an ID is auto-generated from the URL.',
+              },
+              pathPrefix: {
+                type: 'string',
+                description:
+                  "Optional path prefix to restrict crawling. Only pages whose URL path starts with this prefix will be indexed. Must start with '/'. Example: '/api/v2' would only crawl pages under that path.",
               },
               auth: {
                 type: 'object',
@@ -414,7 +421,7 @@ class WebDocsServer {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
-    const { url, title, id, auth: authOptions } = validatedArgs;
+    const { url, title, id, pathPrefix, auth: authOptions } = validatedArgs;
 
     // Additional SSRF protection check
     if (!isValidPublicUrl(url)) {
@@ -425,6 +432,11 @@ class WebDocsServer {
     const docTitle = title || new URL(normalizedUrl).hostname;
     // Use custom ID if provided, otherwise auto-generate
     const docId = id || generateDocId(normalizedUrl, docTitle);
+
+    // Log path prefix if provided
+    if (pathPrefix) {
+      logger.info(`[WebDocsServer] Path prefix restriction: ${pathPrefix}`);
+    }
     if (authOptions?.requiresAuth) {
       const hasExistingSession = await this.authManager.hasSession(normalizedUrl);
       if (!hasExistingSession) {
@@ -474,7 +486,7 @@ class WebDocsServer {
     this.statusTracker.startIndexing(docId, normalizedUrl, docTitle);
 
     // Start indexing in the background with abort support
-    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal)
+    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal, pathPrefix)
       .catch((error) => {
         const err = error as Error;
         if (err?.name !== 'AbortError') {
@@ -535,35 +547,59 @@ class WebDocsServer {
 
     const results = await this.store.searchByText(query, { limit, filterUrl });
 
-    // Apply prompt injection detection and external content markers to results
-    const safeResults = results.map((result) => {
-      // Detect prompt injection patterns in the content
-      const injectionResult = detectPromptInjection(result.content);
+    // Apply prompt injection detection and filter/process results
+    let blockedCount = 0;
+    const safeResults = results
+      .map((result) => {
+        // Detect prompt injection patterns in the content
+        // Note: detectPromptInjection strips code blocks before scanning,
+        // so legitimate code examples won't trigger false positives
+        const injectionResult = detectPromptInjection(result.content);
 
-      // Add injection warnings if detected
-      let safeContent = addInjectionWarnings(result.content, injectionResult);
+        // SECURITY: Block results with high-severity injection patterns
+        // These could manipulate the LLM if returned
+        if (injectionResult.maxSeverity === 'high') {
+          blockedCount++;
+          logger.debug(
+            `[Security] Blocked search result from ${result.url} due to high-severity injection pattern: ${injectionResult.detections[0]?.description}`
+          );
+          return null; // Will be filtered out
+        }
 
-      // Wrap with external content markers
-      safeContent = wrapExternalContent(safeContent, result.url);
+        // For medium/low severity, add warnings but still return
+        let safeContent = addInjectionWarnings(result.content, injectionResult);
 
-      return {
-        ...result,
-        content: safeContent,
-        // Include security metadata
-        security: {
-          isExternalContent: true,
-          injectionDetected: injectionResult.hasInjection,
-          injectionSeverity: injectionResult.maxSeverity,
-          detectionCount: injectionResult.detections.length,
-        },
-      };
-    });
+        // Wrap with external content markers
+        safeContent = wrapExternalContent(safeContent, result.url);
+
+        return {
+          ...result,
+          content: safeContent,
+          // Include security metadata
+          security: {
+            isExternalContent: true,
+            injectionDetected: injectionResult.hasInjection,
+            injectionSeverity: injectionResult.maxSeverity,
+            detectionCount: injectionResult.detections.length,
+          },
+        };
+      })
+      .filter((result): result is NonNullable<typeof result> => result !== null);
+
+    // Build response with security notice if content was blocked
+    const response: { results: typeof safeResults; securityNotice?: string } = {
+      results: safeResults,
+    };
+
+    if (blockedCount > 0) {
+      response.securityNotice = `${blockedCount} result(s) were blocked due to high-severity prompt injection patterns detected in the content. This protects against potentially malicious content that could manipulate AI behavior.`;
+    }
 
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(safeResults, null, 2),
+          text: JSON.stringify(response, null, 2),
         },
       ],
     };
@@ -902,7 +938,7 @@ class WebDocsServer {
     }
   }
 
-  private async indexAndAdd(id: string, url: string, title: string, reIndex: boolean = false, signal?: AbortSignal) {
+  private async indexAndAdd(id: string, url: string, title: string, reIndex: boolean = false, signal?: AbortSignal, pathPrefix?: string) {
     // Helper to check if operation was cancelled
     const checkCancelled = () => {
       if (signal?.aborted) {
@@ -937,9 +973,14 @@ class WebDocsServer {
       checkCancelled();
 
       // Start crawling
-      logger.info(`[WebDocsServer] Starting crawl with depth=${this.config.maxDepth}, maxRequests=${this.config.maxRequestsPerCrawl}`);
+      logger.info(`[WebDocsServer] Starting crawl with depth=${this.config.maxDepth}, maxRequests=${this.config.maxRequestsPerCrawl}${pathPrefix ? `, pathPrefix=${pathPrefix}` : ''}`);
       this.statusTracker.updateProgress(id, 0, 'Finding subpages');
       const crawler = new DocsCrawler(this.config.maxDepth, this.config.maxRequestsPerCrawl, this.config.githubToken);
+
+      // Set path prefix restriction if provided
+      if (pathPrefix) {
+        crawler.setPathPrefix(pathPrefix);
+      }
 
       // Load saved authentication session if available
       const savedSession = await this.authManager.loadSession(url);
@@ -1034,20 +1075,22 @@ class WebDocsServer {
       logger.info(`[WebDocsServer] Total chunks created: ${chunks.length}`);
 
       // Scan for potential prompt injection patterns in indexed content
+      // Note: Detection is informational only. Logs are at DEBUG level to reduce noise
+      // from legitimate AI documentation (which contains prompt examples).
       let injectionWarnings = 0;
       for (const chunk of chunks) {
         const injectionResult = detectPromptInjection(chunk.content);
         if (injectionResult.hasInjection) {
           injectionWarnings++;
           if (injectionResult.maxSeverity === 'high') {
-            logger.warn(
-              `[Security] HIGH severity prompt injection pattern detected in ${chunk.path || 'unknown'}: ${injectionResult.detections[0]?.description}`
+            logger.debug(
+              `[Security] Prompt injection pattern detected in ${chunk.path || 'unknown'}: ${injectionResult.detections[0]?.description}`
             );
           }
         }
       }
       if (injectionWarnings > 0) {
-        logger.warn(
+        logger.debug(
           `[Security] Detected ${injectionWarnings} chunks with potential prompt injection patterns in ${url}. Content will be marked when returned in search results.`
         );
       }

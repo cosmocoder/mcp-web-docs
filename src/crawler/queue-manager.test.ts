@@ -172,6 +172,327 @@ describe('QueueManager', () => {
         );
       }
     });
+
+    it('should skip anchor links with hash fragments', async () => {
+      let capturedOptions: EnqueueLinksOptions | null = null;
+
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      expect(capturedOptions).not.toBeNull();
+      const transformFn = capturedOptions!.transformRequestFunction;
+      expect(transformFn).toBeDefined();
+
+      if (transformFn) {
+        // Test that anchor links are filtered out (return false)
+        const anchorResult = transformFn({
+          url: 'https://example.com/page#section',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+
+        expect(anchorResult).toBe(false);
+      }
+    });
+
+    it('should strip hash from URL when returning transformed request', async () => {
+      let capturedOptions: EnqueueLinksOptions | null = null;
+
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // URL without hash should be returned with clean URL
+        const transformed = transformFn({
+          url: 'https://example.com/page',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+
+        expect(transformed).toEqual(
+          expect.objectContaining({
+            url: 'https://example.com/page',
+            uniqueKey: '/page',
+          })
+        );
+      }
+    });
+  });
+
+  describe('path prefix filtering', () => {
+    const mockLog: Log = {
+      info: vi.fn(),
+      debug: vi.fn(),
+      warning: vi.fn(),
+      error: vi.fn(),
+    } as unknown as Log;
+
+    const mockRule: SiteDetectionRule = {
+      type: 'default',
+      extractor: { extractContent: vi.fn() },
+      detect: vi.fn().mockResolvedValue(true),
+    };
+
+    it('should initialize with path prefix', async () => {
+      await queueManager.initialize('https://example.com/docs/api', '/docs/api');
+
+      // The path prefix should be stored (we can verify through transform function behavior)
+      expect(queueManager.getFilteredByPathCount()).toBe(0);
+    });
+
+    it('should allow URLs within path prefix', async () => {
+      await queueManager.initialize('https://example.com/docs', '/docs');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // Exact match
+        const exactMatch = transformFn({
+          url: 'https://example.com/docs',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(exactMatch).not.toBe(false);
+
+        // Subpath
+        const subpath = transformFn({
+          url: 'https://example.com/docs/api/v2',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(subpath).not.toBe(false);
+      }
+    });
+
+    it('should filter URLs outside path prefix', async () => {
+      await queueManager.initialize('https://example.com/docs', '/docs');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // Different path entirely
+        const differentPath = transformFn({
+          url: 'https://example.com/blog/post',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(differentPath).toBe(false);
+      }
+    });
+
+    it('should not match paths that only start with prefix string', async () => {
+      await queueManager.initialize('https://example.com/docs', '/docs');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // /documentation starts with /docs but is NOT a subpath of /docs
+        const similarButDifferent = transformFn({
+          url: 'https://example.com/documentation',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(similarButDifferent).toBe(false);
+      }
+    });
+
+    it('should track filtered URL count', async () => {
+      await queueManager.initialize('https://example.com/docs', '/docs');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // Filter some URLs
+        transformFn({ url: 'https://example.com/blog', uniqueKey: 'a' } as Parameters<typeof transformFn>[0]);
+        transformFn({ url: 'https://example.com/about', uniqueKey: 'b' } as Parameters<typeof transformFn>[0]);
+      }
+
+      expect(queueManager.getFilteredByPathCount()).toBe(2);
+    });
+
+    it('should strip hash from initial URL', async () => {
+      await queueManager.initialize('https://example.com/docs#intro');
+
+      expect(mockRequestQueue.addRequest).toHaveBeenCalledWith({
+        url: 'https://example.com/docs',
+        uniqueKey: '/docs',
+      });
+    });
+  });
+
+  describe('hostname filtering', () => {
+    const mockLog: Log = {
+      info: vi.fn(),
+      debug: vi.fn(),
+      warning: vi.fn(),
+      error: vi.fn(),
+    } as unknown as Log;
+
+    const mockRule: SiteDetectionRule = {
+      type: 'default',
+      extractor: { extractContent: vi.fn() },
+      detect: vi.fn().mockResolvedValue(true),
+    };
+
+    it('should allow URLs with exact hostname match', async () => {
+      await queueManager.initialize('https://docs.example.com/api');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        const result = transformFn({
+          url: 'https://docs.example.com/other',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(result).not.toBe(false);
+      }
+    });
+
+    it('should allow URLs with subdomain of starting hostname', async () => {
+      await queueManager.initialize('https://docs.example.com/api');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // api.docs.example.com is a subdomain of docs.example.com - should be allowed
+        const result = transformFn({
+          url: 'https://api.docs.example.com/endpoint',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(result).not.toBe(false);
+      }
+    });
+
+    it('should filter URLs with sibling subdomain', async () => {
+      await queueManager.initialize('https://docs.example.com/api');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // python.example.com is a sibling subdomain, not a subdomain of docs.example.com
+        const result = transformFn({
+          url: 'https://python.example.com/guide',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(result).toBe(false);
+      }
+    });
+
+    it('should filter URLs with parent domain', async () => {
+      await queueManager.initialize('https://docs.example.com/api');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // example.com is the parent domain of docs.example.com
+        const result = transformFn({
+          url: 'https://example.com/home',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(result).toBe(false);
+      }
+    });
+
+    it('should track filtered hostname count', async () => {
+      await queueManager.initialize('https://docs.example.com/api');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // Filter some URLs with wrong hostnames
+        transformFn({ url: 'https://python.example.com/a', uniqueKey: 'a' } as Parameters<typeof transformFn>[0]);
+        transformFn({ url: 'https://other.example.com/b', uniqueKey: 'b' } as Parameters<typeof transformFn>[0]);
+      }
+
+      expect(queueManager.getFilteredByHostnameCount()).toBe(2);
+    });
+
+    it('should handle case-insensitive hostname matching', async () => {
+      await queueManager.initialize('https://Docs.Example.Com/api');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        const result = transformFn({
+          url: 'https://docs.example.com/other',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(result).not.toBe(false);
+      }
+    });
   });
 
   describe('addResult and processBatch', () => {
