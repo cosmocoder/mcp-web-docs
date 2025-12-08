@@ -2,8 +2,33 @@
   "name": "@cosmocoder/mcp-web-docs",
   "version": "0.1.0",
   "description": "MCP server for crawling and indexing web documentation - works with any website",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "documentation",
+    "indexing",
+    "search",
+    "crawler",
+    "ai",
+    "llm",
+    "cursor",
+    "claude",
+    "semantic-search",
+    "vector-search"
+  ],
+  "homepage": "https://github.com/cosmocoder/mcp-web-docs#readme",
+  "bugs": {
+    "url": "https://github.com/cosmocoder/mcp-web-docs/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cosmocoder/mcp-web-docs.git"
+  },
+  "license": "MIT",
+  "author": "cosmocoder",
   "type": "module",
   "main": "build/index.js",
+  "types": "./build/index.d.ts",
   "bin": {
     "mcp-web-docs": "build/index.js"
   },
@@ -28,30 +53,6 @@
     "clean": "rm -rf build",
     "postinstall": "npx playwright install"
   },
-  "keywords": [
-    "mcp",
-    "model-context-protocol",
-    "documentation",
-    "indexing",
-    "search",
-    "crawler",
-    "ai",
-    "llm",
-    "cursor",
-    "claude",
-    "semantic-search",
-    "vector-search"
-  ],
-  "author": "cosmocoder",
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/cosmocoder/mcp-web-docs.git"
-  },
-  "bugs": {
-    "url": "https://github.com/cosmocoder/mcp-web-docs/issues"
-  },
-  "homepage": "https://github.com/cosmocoder/mcp-web-docs#readme",
   "dependencies": {
     "@andersmyrmel/vard": "1.2.0",
     "@lancedb/lancedb": "0.22.3",
@@ -89,8 +90,8 @@
     "vitest": "4.0.15",
     "vitest-fetch-mock": "0.4.5"
   },
-  "engine-strict": true,
   "engines": {
     "node": ">=22.19.0"
-  }
+  },
+  "engine-strict": true
 }
