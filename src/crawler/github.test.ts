@@ -1,15 +1,11 @@
 import { GitHubCrawler } from './github.js';
 import type { CrawlResult } from '../types.js';
 
-// Mock global fetch
-const mockFetch = vi.fn();
-global.fetch = mockFetch;
-
 describe('GitHubCrawler', () => {
   let crawler: GitHubCrawler;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    fetchMock.resetMocks();
     crawler = new GitHubCrawler();
     // Mock rateLimit to skip delays - the method is in BaseCrawler
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -62,39 +58,29 @@ describe('GitHubCrawler', () => {
     });
 
     it('should crawl documentation directory when found', async () => {
-      // Mock the API responses
-      mockFetch
-        // First call: list root directory
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [
-            { path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' },
-            { path: 'src', type: 'dir', name: 'src', url: 'https://api.github.com/repos/owner/repo/contents/src' },
-          ],
-        })
-        // Second call: list docs directory
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [
-            {
-              path: 'docs/guide.md',
-              type: 'file',
-              name: 'guide.md',
-              url: 'https://api.github.com/repos/owner/repo/contents/docs/guide.md',
-            },
-            { path: 'docs/api.md', type: 'file', name: 'api.md', url: 'https://api.github.com/repos/owner/repo/contents/docs/api.md' },
-          ],
-        })
-        // Third call: fetch guide.md content
-        .mockResolvedValueOnce({
-          ok: true,
-          text: async () => '# Guide\n\nThis is the guide content.',
-        })
-        // Fourth call: fetch api.md content
-        .mockResolvedValueOnce({
-          ok: true,
-          text: async () => '# API Reference\n\nAPI documentation.',
-        });
+      // First call: list root directory
+      fetchMock.mockResponseOnce(
+        JSON.stringify([
+          { path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' },
+          { path: 'src', type: 'dir', name: 'src', url: 'https://api.github.com/repos/owner/repo/contents/src' },
+        ])
+      );
+      // Second call: list docs directory
+      fetchMock.mockResponseOnce(
+        JSON.stringify([
+          {
+            path: 'docs/guide.md',
+            type: 'file',
+            name: 'guide.md',
+            url: 'https://api.github.com/repos/owner/repo/contents/docs/guide.md',
+          },
+          { path: 'docs/api.md', type: 'file', name: 'api.md', url: 'https://api.github.com/repos/owner/repo/contents/docs/api.md' },
+        ])
+      );
+      // Third call: fetch guide.md content
+      fetchMock.mockResponseOnce('# Guide\n\nThis is the guide content.');
+      // Fourth call: fetch api.md content
+      fetchMock.mockResponseOnce('# API Reference\n\nAPI documentation.');
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -108,26 +94,15 @@ describe('GitHubCrawler', () => {
     });
 
     it('should handle .git extension in repo URL', async () => {
-      // No doc directories, so need two mocks for root: one for findDocumentationDirs, one for processDirectory
       const rootFiles = [
         { path: 'README.md', type: 'file', name: 'README.md', url: 'https://api.github.com/repos/owner/repo/contents/README.md' },
       ];
-      mockFetch
-        // First call: findDocumentationDirs checks root
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // Second call: processDirectory fetches root again (no doc dirs found)
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // Third call: fetch README.md content
-        .mockResolvedValueOnce({
-          ok: true,
-          text: async () => '# README\n\nProject readme.',
-        });
+      // First call: findDocumentationDirs checks root
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // Second call: processDirectory fetches root again (no doc dirs found)
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // Third call: fetch README.md content
+      fetchMock.mockResponseOnce('# README\n\nProject readme.');
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo.git')) {
@@ -139,28 +114,17 @@ describe('GitHubCrawler', () => {
     });
 
     it('should skip non-markdown files', async () => {
-      // No doc directories, so need two mocks for root
       const rootFiles = [
         { path: 'index.js', type: 'file', name: 'index.js', url: 'https://api.github.com/repos/owner/repo/contents/index.js' },
         { path: 'style.css', type: 'file', name: 'style.css', url: 'https://api.github.com/repos/owner/repo/contents/style.css' },
         { path: 'README.md', type: 'file', name: 'README.md', url: 'https://api.github.com/repos/owner/repo/contents/README.md' },
       ];
-      mockFetch
-        // First call: findDocumentationDirs checks root
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // Second call: processDirectory fetches root again (no doc dirs found)
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // Third call: fetch README.md content
-        .mockResolvedValueOnce({
-          ok: true,
-          text: async () => '# README',
-        });
+      // First call: findDocumentationDirs checks root
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // Second call: processDirectory fetches root again (no doc dirs found)
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // Third call: fetch README.md content
+      fetchMock.mockResponseOnce('# README');
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -172,7 +136,6 @@ describe('GitHubCrawler', () => {
     });
 
     it('should handle various markdown extensions', async () => {
-      // No doc directories, so need two mocks for root
       const rootFiles = [
         { path: 'doc.md', type: 'file', name: 'doc.md', url: 'https://api.github.com/repos/owner/repo/contents/doc.md' },
         { path: 'page.mdx', type: 'file', name: 'page.mdx', url: 'https://api.github.com/repos/owner/repo/contents/page.mdx' },
@@ -183,21 +146,14 @@ describe('GitHubCrawler', () => {
           url: 'https://api.github.com/repos/owner/repo/contents/guide.markdown',
         },
       ];
-      mockFetch
-        // First call: findDocumentationDirs checks root
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // Second call: processDirectory fetches root again (no doc dirs found)
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // File content fetches
-        .mockResolvedValueOnce({ ok: true, text: async () => '# Doc' })
-        .mockResolvedValueOnce({ ok: true, text: async () => '# Page' })
-        .mockResolvedValueOnce({ ok: true, text: async () => '# Guide' });
+      // First call: findDocumentationDirs checks root
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // Second call: processDirectory fetches root again (no doc dirs found)
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // File content fetches
+      fetchMock.mockResponseOnce('# Doc');
+      fetchMock.mockResponseOnce('# Page');
+      fetchMock.mockResponseOnce('# Guide');
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -208,33 +164,30 @@ describe('GitHubCrawler', () => {
     });
 
     it('should skip directories like node_modules, vendor, test, etc.', async () => {
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [
-            {
-              path: 'node_modules',
-              type: 'dir',
-              name: 'node_modules',
-              url: 'https://api.github.com/repos/owner/repo/contents/node_modules',
-            },
-            { path: 'vendor', type: 'dir', name: 'vendor', url: 'https://api.github.com/repos/owner/repo/contents/vendor' },
-            { path: 'test', type: 'dir', name: 'test', url: 'https://api.github.com/repos/owner/repo/contents/test' },
-            { path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' },
-          ],
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [
-            {
-              path: 'docs/guide.md',
-              type: 'file',
-              name: 'guide.md',
-              url: 'https://api.github.com/repos/owner/repo/contents/docs/guide.md',
-            },
-          ],
-        })
-        .mockResolvedValueOnce({ ok: true, text: async () => '# Guide' });
+      fetchMock.mockResponseOnce(
+        JSON.stringify([
+          {
+            path: 'node_modules',
+            type: 'dir',
+            name: 'node_modules',
+            url: 'https://api.github.com/repos/owner/repo/contents/node_modules',
+          },
+          { path: 'vendor', type: 'dir', name: 'vendor', url: 'https://api.github.com/repos/owner/repo/contents/vendor' },
+          { path: 'test', type: 'dir', name: 'test', url: 'https://api.github.com/repos/owner/repo/contents/test' },
+          { path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' },
+        ])
+      );
+      fetchMock.mockResponseOnce(
+        JSON.stringify([
+          {
+            path: 'docs/guide.md',
+            type: 'file',
+            name: 'guide.md',
+            url: 'https://api.github.com/repos/owner/repo/contents/docs/guide.md',
+          },
+        ])
+      );
+      fetchMock.mockResponseOnce('# Guide');
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -247,10 +200,7 @@ describe('GitHubCrawler', () => {
     });
 
     it('should handle GitHub API rate limit error', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 403,
-      });
+      fetchMock.mockResponseOnce('', { status: 403 });
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -262,10 +212,7 @@ describe('GitHubCrawler', () => {
     });
 
     it('should handle API errors gracefully', async () => {
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 404,
-      });
+      fetchMock.mockResponseOnce('', { status: 404 });
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -281,17 +228,14 @@ describe('GitHubCrawler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(tokenCrawler as any, 'rateLimit').mockResolvedValue(undefined);
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => [],
-      });
+      fetchMock.mockResponseOnce(JSON.stringify([]));
 
       const results: CrawlResult[] = [];
       for await (const result of tokenCrawler.crawl('https://github.com/owner/repo')) {
         results.push(result);
       }
 
-      expect(mockFetch).toHaveBeenCalledWith(
+      expect(fetchMock).toHaveBeenCalledWith(
         expect.any(String),
         expect.objectContaining({
           headers: expect.objectContaining({
@@ -302,7 +246,6 @@ describe('GitHubCrawler', () => {
     });
 
     it('should extract title from file path', async () => {
-      // No doc directories, so need two mocks for root
       const rootFiles = [
         {
           path: 'getting-started.md',
@@ -317,20 +260,13 @@ describe('GitHubCrawler', () => {
           url: 'https://api.github.com/repos/owner/repo/contents/api_reference.md',
         },
       ];
-      mockFetch
-        // First call: findDocumentationDirs checks root
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // Second call: processDirectory fetches root again (no doc dirs found)
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // File content fetches
-        .mockResolvedValueOnce({ ok: true, text: async () => '# Content' })
-        .mockResolvedValueOnce({ ok: true, text: async () => '# Content' });
+      // First call: findDocumentationDirs checks root
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // Second call: processDirectory fetches root again (no doc dirs found)
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // File content fetches
+      fetchMock.mockResponseOnce('# Content');
+      fetchMock.mockResponseOnce('# Content');
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -342,26 +278,23 @@ describe('GitHubCrawler', () => {
     });
 
     it('should construct correct GitHub blob URLs', async () => {
-      mockFetch
-        // First call: findDocumentationDirs checks root - find docs directory
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [{ path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' }],
-        })
-        // Second call: processDirectory fetches docs directory contents
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [
-            {
-              path: 'docs/guide.md',
-              type: 'file',
-              name: 'guide.md',
-              url: 'https://api.github.com/repos/owner/repo/contents/docs/guide.md',
-            },
-          ],
-        })
-        // Third call: fetch file content
-        .mockResolvedValueOnce({ ok: true, text: async () => '# Guide' });
+      // First call: findDocumentationDirs checks root - find docs directory
+      fetchMock.mockResponseOnce(
+        JSON.stringify([{ path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' }])
+      );
+      // Second call: processDirectory fetches docs directory contents
+      fetchMock.mockResponseOnce(
+        JSON.stringify([
+          {
+            path: 'docs/guide.md',
+            type: 'file',
+            name: 'guide.md',
+            url: 'https://api.github.com/repos/owner/repo/contents/docs/guide.md',
+          },
+        ])
+      );
+      // Third call: fetch file content
+      fetchMock.mockResponseOnce('# Guide');
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -372,14 +305,12 @@ describe('GitHubCrawler', () => {
     });
 
     it('should handle fetch errors for file content', async () => {
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [
-            { path: 'guide.md', type: 'file', name: 'guide.md', url: 'https://api.github.com/repos/owner/repo/contents/guide.md' },
-          ],
-        })
-        .mockRejectedValueOnce(new Error('Network error'));
+      fetchMock.mockResponseOnce(
+        JSON.stringify([
+          { path: 'guide.md', type: 'file', name: 'guide.md', url: 'https://api.github.com/repos/owner/repo/contents/guide.md' },
+        ])
+      );
+      fetchMock.mockRejectOnce(new Error('Network error'));
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -392,10 +323,7 @@ describe('GitHubCrawler', () => {
 
     it('should validate GitHub API response structure', async () => {
       // Mock invalid response structure
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ invalid: 'structure' }),
-      });
+      fetchMock.mockResponseOnce(JSON.stringify({ invalid: 'structure' }));
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -406,33 +334,29 @@ describe('GitHubCrawler', () => {
     });
 
     it('should find multiple documentation directories', async () => {
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [
-            { path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' },
-            { path: 'guide', type: 'dir', name: 'guide', url: 'https://api.github.com/repos/owner/repo/contents/guide' },
-          ],
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [
-            { path: 'docs/api.md', type: 'file', name: 'api.md', url: 'https://api.github.com/repos/owner/repo/contents/docs/api.md' },
-          ],
-        })
-        .mockResolvedValueOnce({ ok: true, text: async () => '# API' })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => [
-            {
-              path: 'guide/intro.md',
-              type: 'file',
-              name: 'intro.md',
-              url: 'https://api.github.com/repos/owner/repo/contents/guide/intro.md',
-            },
-          ],
-        })
-        .mockResolvedValueOnce({ ok: true, text: async () => '# Intro' });
+      fetchMock.mockResponseOnce(
+        JSON.stringify([
+          { path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' },
+          { path: 'guide', type: 'dir', name: 'guide', url: 'https://api.github.com/repos/owner/repo/contents/guide' },
+        ])
+      );
+      fetchMock.mockResponseOnce(
+        JSON.stringify([
+          { path: 'docs/api.md', type: 'file', name: 'api.md', url: 'https://api.github.com/repos/owner/repo/contents/docs/api.md' },
+        ])
+      );
+      fetchMock.mockResponseOnce('# API');
+      fetchMock.mockResponseOnce(
+        JSON.stringify([
+          {
+            path: 'guide/intro.md',
+            type: 'file',
+            name: 'intro.md',
+            url: 'https://api.github.com/repos/owner/repo/contents/guide/intro.md',
+          },
+        ])
+      );
+      fetchMock.mockResponseOnce('# Intro');
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
@@ -443,24 +367,16 @@ describe('GitHubCrawler', () => {
     });
 
     it('should stop crawling when aborted', async () => {
-      // No doc directories, so need two mocks for root
       const rootFiles = [
         { path: 'doc1.md', type: 'file', name: 'doc1.md', url: 'https://api.github.com/repos/owner/repo/contents/doc1.md' },
         { path: 'doc2.md', type: 'file', name: 'doc2.md', url: 'https://api.github.com/repos/owner/repo/contents/doc2.md' },
       ];
-      mockFetch
-        // First call: findDocumentationDirs checks root
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // Second call: processDirectory fetches root again (no doc dirs found)
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => rootFiles,
-        })
-        // Third call: fetch doc1.md content
-        .mockResolvedValueOnce({ ok: true, text: async () => '# Doc 1' });
+      // First call: findDocumentationDirs checks root
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // Second call: processDirectory fetches root again (no doc dirs found)
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      // Third call: fetch doc1.md content
+      fetchMock.mockResponseOnce('# Doc 1');
 
       const results: CrawlResult[] = [];
       const abortableCrawler = new GitHubCrawler();
