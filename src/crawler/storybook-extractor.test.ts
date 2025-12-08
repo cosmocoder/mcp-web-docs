@@ -4,12 +4,16 @@ import { StorybookExtractor } from './storybook-extractor.js';
 describe('StorybookExtractor', () => {
   let extractor: StorybookExtractor;
   let originalWindow: typeof globalThis.window;
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     extractor = new StorybookExtractor();
 
     // Store original window
     originalWindow = globalThis.window;
+
+    // Mock console.error to suppress expected warnings in tests
+    consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     // Mock the private waiting methods to skip delays (using spyOn on instance)
     // These mocks are necessary because:
@@ -32,6 +36,7 @@ describe('StorybookExtractor', () => {
   afterEach(() => {
     // Restore original window
     globalThis.window = originalWindow;
+    consoleErrorSpy.mockRestore();
     vi.restoreAllMocks();
   });
 
