@@ -340,30 +340,6 @@ npx playwright install
 
 ---
 
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        MCP Client                           │
-│                   (Cursor, Claude, etc.)                    │
-└─────────────────────────┬───────────────────────────────────┘
-                          │ JSON-RPC
-┌─────────────────────────▼───────────────────────────────────┐
-│                     MCP Web Docs Server                     │
-├─────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
-│  │   Crawler   │  │  Processor  │  │      Storage        │  │
-│  │  (Crawlee)  │  │ (Markdown,  │  │  ┌───────────────┐  │  │
-│  │             │  │  HTML, etc) │  │  │   LanceDB     │  │  │
-│  │ - Playwright│  │             │  │  │   (Vectors)   │  │  │
-│  │ - Auth      │  │ - Chunking  │  │  └───────────────┘  │  │
-│  │ - Extractors│  │ - Metadata  │  │  ┌───────────────┐  │  │
-│  │             │  │ - Embedding │  │  │    SQLite     │  │  │
-│  └─────────────┘  └─────────────┘  │  │  (Metadata)   │  │  │
-│                                    │  └───────────────┘  │  │
-└────────────────────────────────────┴─────────────────────┴──┘
-```
-
 ### Data Storage
 
 All data is stored locally in `~/.mcp-web-docs/`:
@@ -375,51 +351,6 @@ All data is stored locally in `~/.mcp-web-docs/`:
 ├── sessions/         # Saved authentication sessions
 └── crawlee/          # Crawlee datasets (cached crawl data)
 ```
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Here's how to get started:
-
-1. **Fork the repository**
-
-2. **Create a feature branch**
-   ```bash
-   git checkout -b feature/amazing-feature
-   ```
-
-3. **Make your changes** - Follow existing code style
-
-4. **Run checks**
-   ```bash
-   npm run lint
-   npm run prettier
-   npm run build
-   ```
-
-5. **Submit a Pull Request**
-
-### Adding New Documentation Extractors
-
-To add a custom extractor for a specific documentation format:
-
-1. Create a new extractor in `src/crawler/` (see `storybook-extractor.ts`)
-2. Register in `src/crawler/content-extractors.ts`
-3. Add to `FORMATTED_CONTENT_EXTRACTORS` in `src/processor/processor.ts`
-
----
-
-## 💻 Development
-
-```bash
-npm run build      # Build TypeScript
-npm run dev        # Watch mode
-npm run lint       # Run ESLint
-npm run prettier   # Format code
-npm run clean      # Remove build artifacts
-```
-
 ---
 
 ## 📄 License
