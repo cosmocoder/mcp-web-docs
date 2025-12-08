@@ -48,4 +48,3 @@ process.env.MCP_WEB_DOCS_SECRET = 'test-secret-key-for-encryption';
 afterEach(() => {
   vi.clearAllMocks();
 });
-

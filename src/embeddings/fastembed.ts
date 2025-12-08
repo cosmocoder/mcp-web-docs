@@ -1,10 +1,10 @@
 import { EmbeddingModel, FlagEmbedding } from 'fastembed';
 import { EmbeddingsProvider } from './types.js';
 import { logger } from '../util/logger.js';
-import { mkdir } from 'fs/promises';
-import { existsSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import { mkdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { homedir } from 'node:os';
 
 // FastEmbed configuration
 const EMBEDDING_MODEL = EmbeddingModel.BGESmallENV15;

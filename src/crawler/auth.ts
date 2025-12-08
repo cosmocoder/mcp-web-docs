@@ -1,6 +1,6 @@
 import { chromium, firefox, webkit, Browser, BrowserContext, Page } from 'playwright';
-import { mkdir, readFile, writeFile, access, chmod } from 'fs/promises';
-import { join, resolve } from 'path';
+import { mkdir, readFile, writeFile, access, chmod } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import defaultBrowser from 'default-browser';
 import { logger } from '../util/logger.js';
 import {

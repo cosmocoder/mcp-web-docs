@@ -52,7 +52,7 @@ export class StorybookExtractor implements ContentExtractor {
       }
     });
 
-    const div = document.createElement('div');
+    const div = element.ownerDocument.createElement('div');
     div.innerHTML = content;
     return div.textContent?.trim() || '';
   }
@@ -200,6 +200,9 @@ export class StorybookExtractor implements ContentExtractor {
         propsHeading = `## ${headingText}`;
       } else if (/^Props$/i.test(headingText) && componentName) {
         // If it's just "Props", prepend the component name
+        propsHeading = `## ${componentName} Props`;
+      } else if (componentName) {
+        // Heading doesn't contain Props pattern, use component name
         propsHeading = `## ${componentName} Props`;
       }
     } else if (componentName) {
