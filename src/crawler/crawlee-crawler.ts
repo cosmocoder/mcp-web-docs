@@ -106,9 +106,7 @@ export class CrawleeCrawler extends BaseCrawler {
       const detection = detectLoginPage(bodyText + pageHtml, currentUrl);
 
       if (detection.isLoginPage && detection.confidence >= 0.5) {
-        logger.warn(
-          `[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`
-        );
+        logger.warn(`[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`);
         logger.debug(`[CrawleeCrawler] Detection reasons: ${detection.reasons.join(', ')}`);
 
         // Store the error for throwing later (can't throw from request handler)
@@ -281,9 +279,7 @@ export class CrawleeCrawler extends BaseCrawler {
 
             if (this.isFirstPage) {
               // First page redirected outside domain - likely auth redirect (session expired)
-              logger.warn(
-                `[CrawleeCrawler] First page redirected outside allowed domain: ${requestedHostname} → ${actualHostname}`
-              );
+              logger.warn(`[CrawleeCrawler] First page redirected outside allowed domain: ${requestedHostname} → ${actualHostname}`);
 
               if (this.storageState) {
                 // We had auth but got redirected - session expired

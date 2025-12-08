@@ -306,9 +306,7 @@ export class AuthManager {
       const loginDetection = detectLoginPage(bodyText + pageContent, finalUrl);
 
       if (loginDetection.isLoginPage && loginDetection.confidence >= 0.5) {
-        logger.warn(
-          `[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`
-        );
+        logger.warn(`[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`);
         logger.debug(`[AuthManager] Login detection reasons: ${loginDetection.reasons.join(', ')}`);
         return {
           isValid: false,

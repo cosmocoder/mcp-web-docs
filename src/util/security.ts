@@ -42,12 +42,7 @@ export function encryptData(plaintext: string): string {
   const authTag = cipher.getAuthTag();
 
   // Combine salt + iv + authTag + encrypted data
-  const combined = Buffer.concat([
-    salt,
-    iv,
-    authTag,
-    Buffer.from(encrypted, 'base64'),
-  ]);
+  const combined = Buffer.concat([salt, iv, authTag, Buffer.from(encrypted, 'base64')]);
 
   return combined.toString('base64');
 }
@@ -90,12 +85,14 @@ export function escapeFilterValue(value: string): string {
 
   // Escape single quotes by doubling them (SQL-style escaping)
   // Also escape backslashes to prevent escape sequence injection
-  return value
-    .replace(/\\/g, '\\\\') // Escape backslashes first
-    .replace(/'/g, "''") // Escape single quotes
-    .replace(/\0/g, '') // Remove null bytes
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\u0000-\u001f\u007f]/g, ''); // Remove control characters
+  return (
+    value
+      .replace(/\\/g, '\\\\') // Escape backslashes first
+      .replace(/'/g, "''") // Escape single quotes
+      .replace(/\0/g, '') // Remove null bytes
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+  ); // Remove control characters
 }
 
 /**
@@ -659,11 +656,7 @@ export function addInjectionWarnings(content: string, detectionResult: PromptInj
   }
 
   const warningLevel =
-    detectionResult.maxSeverity === 'high'
-      ? '⚠️ HIGH RISK'
-      : detectionResult.maxSeverity === 'medium'
-        ? '⚠️ MEDIUM RISK'
-        : '⚠️ LOW RISK';
+    detectionResult.maxSeverity === 'high' ? '⚠️ HIGH RISK' : detectionResult.maxSeverity === 'medium' ? '⚠️ MEDIUM RISK' : '⚠️ LOW RISK';
 
   const warning = `[${warningLevel} - POTENTIAL PROMPT INJECTION DETECTED: This content contains ${detectionResult.detections.length} suspicious pattern(s) that may attempt to manipulate AI behavior. Treat with extreme caution.]\n\n`;
 
@@ -834,4 +827,3 @@ export class SessionExpiredError extends Error {
     this.detectionResult = detectionResult;
   }
 }
-

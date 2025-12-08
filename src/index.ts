@@ -373,33 +373,36 @@ class WebDocsServer {
     }));
 
     // Handle tool calls
-    this.server.server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name: string; arguments?: Record<string, unknown> } }) => {
-      // Extract progressToken from request metadata (per MCP spec)
-      // Clients can include this to receive progress notifications
-      const args = request.params.arguments as Record<string, unknown> | undefined;
-      const progressToken = (args?._meta as Record<string, unknown> | undefined)?.progressToken as ProgressToken | undefined;
+    this.server.server.setRequestHandler(
+      CallToolRequestSchema,
+      async (request: { params: { name: string; arguments?: Record<string, unknown> } }) => {
+        // Extract progressToken from request metadata (per MCP spec)
+        // Clients can include this to receive progress notifications
+        const args = request.params.arguments as Record<string, unknown> | undefined;
+        const progressToken = (args?._meta as Record<string, unknown> | undefined)?.progressToken as ProgressToken | undefined;
 
-      switch (request.params.name) {
-        case 'add_documentation':
-          return this.handleAddDocumentation(request.params.arguments, progressToken);
-        case 'list_documentation':
-          return this.handleListDocumentation();
-        case 'search_documentation':
-          return this.handleSearchDocumentation(request.params.arguments);
-        case 'reindex_documentation':
-          return this.handleReindexDocumentation(request.params.arguments, progressToken);
-        case 'get_indexing_status':
-          return this.handleGetIndexingStatus();
-        case 'authenticate':
-          return this.handleAuthenticate(request.params.arguments);
-        case 'clear_auth':
-          return this.handleClearAuth(request.params.arguments);
-        case 'delete_documentation':
-          return this.handleDeleteDocumentation(request.params.arguments);
-        default:
-          throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
+        switch (request.params.name) {
+          case 'add_documentation':
+            return this.handleAddDocumentation(request.params.arguments, progressToken);
+          case 'list_documentation':
+            return this.handleListDocumentation();
+          case 'search_documentation':
+            return this.handleSearchDocumentation(request.params.arguments);
+          case 'reindex_documentation':
+            return this.handleReindexDocumentation(request.params.arguments, progressToken);
+          case 'get_indexing_status':
+            return this.handleGetIndexingStatus();
+          case 'authenticate':
+            return this.handleAuthenticate(request.params.arguments);
+          case 'clear_auth':
+            return this.handleClearAuth(request.params.arguments);
+          case 'delete_documentation':
+            return this.handleDeleteDocumentation(request.params.arguments);
+          default:
+            throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
+        }
       }
-    });
+    );
   }
 
   private async handleAddDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
