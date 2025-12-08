@@ -14,7 +14,7 @@ log.setLevel(log.LEVELS.OFF);
 // Configure Crawlee to be silent
 Configuration.getGlobalConfig().set('logLevel', 'OFF');
 
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { DocumentStore } from './storage/storage.js';
@@ -52,7 +52,7 @@ import type { StorageState } from './crawler/crawlee-crawler.js';
 type ProgressToken = string | number;
 
 class WebDocsServer {
-  private server: Server;
+  private server: McpServer;
   private config!: DocsConfig;
   private store!: DocumentStore;
   private processor!: WebDocumentProcessor;
@@ -75,7 +75,7 @@ class WebDocsServer {
     });
 
     // Initialize MCP server
-    this.server = new Server(
+    this.server = new McpServer(
       {
         name: 'mcp-web-docs',
         version: '1.0.0',
@@ -91,7 +91,7 @@ class WebDocsServer {
     this.setupToolHandlers();
 
     // Handle errors
-    this.server.onerror = (error) => logger.error('[MCP Error]', error);
+    this.server.server.onerror = (error: Error) => logger.error('[MCP Error]', error);
   }
 
   /**
@@ -130,7 +130,7 @@ class WebDocsServer {
     try {
       // Send MCP progress notification per spec:
       // https://modelcontextprotocol.io/specification/2025-03-26/basic/utilities/progress
-      await this.server.notification({
+      await this.server.server.notification({
         method: 'notifications/progress',
         params: {
           progressToken,
@@ -171,7 +171,7 @@ class WebDocsServer {
 
   private setupToolHandlers(): void {
     // List available tools
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    this.server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
       tools: [
         {
           name: 'add_documentation',
@@ -373,7 +373,7 @@ class WebDocsServer {
     }));
 
     // Handle tool calls
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    this.server.server.setRequestHandler(CallToolRequestSchema, async (request: { params: { name: string; arguments?: Record<string, unknown> } }) => {
       // Extract progressToken from request metadata (per MCP spec)
       // Clients can include this to receive progress notifications
       const args = request.params.arguments as Record<string, unknown> | undefined;
