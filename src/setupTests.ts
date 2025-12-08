@@ -2,6 +2,12 @@
  * Global test setup for Vitest
  */
 
+import createFetchMock from 'vitest-fetch-mock';
+
+// Initialize fetch mock
+const fetchMocker = createFetchMock(vi);
+fetchMocker.enableMocks();
+
 // Mock the logger to prevent console output during tests
 vi.mock('./util/logger.js', () => ({
   logger: {
