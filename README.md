@@ -1,5 +1,11 @@
 # MCP Web Docs
 
+[![npm version](https://img.shields.io/npm/v/@cosmocoder/mcp-web-docs.svg)](https://www.npmjs.com/package/@cosmocoder/mcp-web-docs)
+[![npm downloads](https://img.shields.io/npm/dm/@cosmocoder/mcp-web-docs.svg)](https://www.npmjs.com/package/@cosmocoder/mcp-web-docs)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D22.19.0-brightgreen.svg)](https://nodejs.org/)
+[![CI](https://github.com/cosmocoder/mcp-web-docs/actions/workflows/release.yml/badge.svg)](https://github.com/cosmocoder/mcp-web-docs/actions/workflows/release.yml)
+
 **Index Any Documentation. Search Locally. Stay Private.**
 
 A self-hosted Model Context Protocol (MCP) server that crawls, indexes, and searches documentation from *any* website. Unlike remote MCP servers limited to GitHub repos or pre-indexed libraries, web-docs gives you full control over what gets indexed — including private documentation behind authentication.
@@ -46,11 +52,21 @@ AI assistants struggle with documentation:
 
 - Node.js >= 22.19.0
 
-### Setup
+### Option 1: Install from NPM (Recommended)
+
+```bash
+npm install -g @cosmocoder/mcp-web-docs
+```
+
+### Option 2: Run with npx
+
+No installation required - just configure your MCP client to use npx (see below).
+
+### Option 3: Build from Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/user/mcp-web-docs.git
+git clone https://github.com/cosmocoder/mcp-web-docs.git
 cd mcp-web-docs
 
 # Install dependencies (automatically installs Playwright browsers)
@@ -67,6 +83,30 @@ npm run build
 
 Add to your Cursor MCP settings (`~/.cursor/mcp.json`):
 
+**Using npx (no install required):**
+```json
+{
+  "mcpServers": {
+    "web-docs": {
+      "command": "npx",
+      "args": ["-y", "@cosmocoder/mcp-web-docs"]
+    }
+  }
+}
+```
+
+**Using global install:**
+```json
+{
+  "mcpServers": {
+    "web-docs": {
+      "command": "mcp-web-docs"
+    }
+  }
+}
+```
+
+**Using local build:**
 ```json
 {
   "mcpServers": {
@@ -85,12 +125,24 @@ Add to your Cursor MCP settings (`~/.cursor/mcp.json`):
 
 Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
+**Using npx:**
 ```json
 {
   "mcpServers": {
     "web-docs": {
-      "command": "node",
-      "args": ["/path/to/mcp-web-docs/build/index.js"]
+      "command": "npx",
+      "args": ["-y", "@cosmocoder/mcp-web-docs"]
+    }
+  }
+}
+```
+
+**Using global install:**
+```json
+{
+  "mcpServers": {
+    "web-docs": {
+      "command": "mcp-web-docs"
     }
   }
 }
@@ -103,12 +155,24 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 
 Add to `.vscode/mcp.json` in your workspace:
 
+**Using npx:**
 ```json
 {
   "servers": {
     "web-docs": {
-      "command": "node",
-      "args": ["/path/to/mcp-web-docs/build/index.js"]
+      "command": "npx",
+      "args": ["-y", "@cosmocoder/mcp-web-docs"]
+    }
+  }
+}
+```
+
+**Using global install:**
+```json
+{
+  "servers": {
+    "web-docs": {
+      "command": "mcp-web-docs"
     }
   }
 }
@@ -121,12 +185,24 @@ Add to `.vscode/mcp.json` in your workspace:
 
 Add to `~/.codeium/windsurf/mcp_config.json`:
 
+**Using npx:**
 ```json
 {
   "mcpServers": {
     "web-docs": {
-      "command": "node",
-      "args": ["/path/to/mcp-web-docs/build/index.js"]
+      "command": "npx",
+      "args": ["-y", "@cosmocoder/mcp-web-docs"]
+    }
+  }
+}
+```
+
+**Using global install:**
+```json
+{
+  "mcpServers": {
+    "web-docs": {
+      "command": "mcp-web-docs"
     }
   }
 }
@@ -139,14 +215,60 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 
 Add to `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`:
 
+**Using npx:**
 ```json
 {
   "mcpServers": {
     "web-docs": {
-      "command": "node",
-      "args": ["/path/to/mcp-web-docs/build/index.js"],
+      "command": "npx",
+      "args": ["-y", "@cosmocoder/mcp-web-docs"],
       "disabled": false,
       "autoApprove": []
+    }
+  }
+}
+```
+
+**Using global install:**
+```json
+{
+  "mcpServers": {
+    "web-docs": {
+      "command": "mcp-web-docs",
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
+```
+
+</details>
+
+<details>
+<summary><b>RooCode</b></summary>
+
+**Global configuration:** Open RooCode → Click MCP icon → "Edit Global MCP"
+
+**Project-level configuration:** Create `.roo/mcp.json` at your project root
+
+**Using npx:**
+```json
+{
+  "mcpServers": {
+    "web-docs": {
+      "command": "npx",
+      "args": ["-y", "@cosmocoder/mcp-web-docs"]
+    }
+  }
+}
+```
+
+**Using global install:**
+```json
+{
+  "mcpServers": {
+    "web-docs": {
+      "command": "mcp-web-docs"
     }
   }
 }
