@@ -1,0 +1,42 @@
+version: 2
+updates:
+  - package-ecosystem: 'npm'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      time: '05:30'
+      timezone: 'Europe/Berlin'
+    open-pull-requests-limit: 20
+    versioning-strategy: 'increase'
+    labels:
+      - 'dependencies'
+    commit-message:
+      prefix: 'fix'
+      prefix-development: 'chore'
+      include: 'scope'
+    cooldown:
+      default-days: 3
+
+    groups:
+      vitest:
+        patterns:
+          - 'vitest'
+          - '@vitest/coverage-v8'
+      commitlint:
+        patterns:
+          - '@commitlint/*'
+
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    schedule:
+      interval: 'weekly'
+      time: '05:30'
+      timezone: 'Europe/Berlin'
+    open-pull-requests-limit: 20
+    labels:
+      - 'dependencies'
+      - 'ci'
+    commit-message:
+      prefix: 'chore'
+      prefix-development: 'chore'
+      include: 'scope'
