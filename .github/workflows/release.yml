@@ -40,7 +40,7 @@ jobs:
 
       - name: Install Dependencies
         if: ${{ steps.cache-node-modules.outputs.cache-hit != 'true' }}
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Save node modules cache
         uses: actions/cache/save@v4
