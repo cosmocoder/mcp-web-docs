@@ -43,6 +43,7 @@
     "start": "node build/index.js",
     "dev": "tsc -w",
     "lint": "eslint . --ext .js,.ts",
+    "lint:fix": "npm run lint -- --fix",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
@@ -51,7 +52,8 @@
     "prettier": "prettier --write src/",
     "prettier:ci": "prettier --check src/",
     "clean": "rm -rf build",
-    "postinstall": "npx playwright install"
+    "postinstall": "npx playwright install",
+    "prepare": "husky"
   },
   "dependencies": {
     "@andersmyrmel/vard": "1.2.0",
@@ -86,7 +88,9 @@
     "@vitest/coverage-v8": "4.0.15",
     "eslint": "9.39.1",
     "globals": "16.5.0",
+    "husky": "9.1.7",
     "jiti": "2.6.1",
+    "lint-staged": "16.2.7",
     "prettier": "3.7.4",
     "typescript-eslint": "8.48.1",
     "vitest": "4.0.15",
@@ -95,5 +99,14 @@
   "engines": {
     "node": ">=22.19.0"
   },
-  "engine-strict": true
+  "engine-strict": true,
+  "lint-staged": {
+    "src/**/*.md": [
+      "npm run prettier"
+    ],
+    "src/**/*.{js,ts}": [
+      "npm run lint:fix",
+      "npm run prettier"
+    ]
+  }
 }
