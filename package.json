@@ -1,6 +1,6 @@
 {
   "name": "@cosmocoder/mcp-web-docs",
-  "version": "0.1.0",
+  "version": "0.0.0-development",
   "description": "MCP server for crawling and indexing web documentation - works with any website",
   "keywords": [
     "mcp",
@@ -53,7 +53,8 @@
     "prettier:ci": "prettier --check src/",
     "clean": "rm -rf build",
     "postinstall": "npx playwright install",
-    "prepare": "husky"
+    "prepare": "husky",
+    "create-release": "semantic-release"
   },
   "dependencies": {
     "@andersmyrmel/vard": "1.2.0",
@@ -81,6 +82,10 @@
     "@commitlint/cli": "20.2.0",
     "@commitlint/config-conventional": "20.2.0",
     "@eslint/js": "9.39.1",
+    "@semantic-release/commit-analyzer": "13.0.1",
+    "@semantic-release/github": "12.0.2",
+    "@semantic-release/npm": "13.1.2",
+    "@semantic-release/release-notes-generator": "14.1.0",
     "@types/cli-progress": "3.11.6",
     "@types/jsdom": "27.0.0",
     "@types/node": "22.15.29",
@@ -100,6 +105,10 @@
     "node": ">=22.19.0"
   },
   "engine-strict": true,
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "lint-staged": {
     "src/**/*.md": [
       "npm run prettier"
