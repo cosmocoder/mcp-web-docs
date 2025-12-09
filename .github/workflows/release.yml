@@ -42,6 +42,10 @@ jobs:
         if: ${{ steps.cache-node-modules.outputs.cache-hit != 'true' }}
         run: npm ci --ignore-scripts
 
+      - name: Build native modules
+        if: ${{ steps.cache-node-modules.outputs.cache-hit != 'true' }}
+        run: npm rebuild sqlite3
+
       - name: Save node modules cache
         uses: actions/cache/save@v4
         if: ${{ steps.cache-node-modules.outputs.cache-hit != 'true' }}
