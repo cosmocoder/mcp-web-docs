@@ -973,7 +973,9 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
       checkCancelled();
 
       // Start crawling
-      logger.info(`[WebDocsServer] Starting crawl with depth=${this.config.maxDepth}, maxRequests=${this.config.maxRequestsPerCrawl}${pathPrefix ? `, pathPrefix=${pathPrefix}` : ''}`);
+      logger.info(
+        `[WebDocsServer] Starting crawl with depth=${this.config.maxDepth}, maxRequests=${this.config.maxRequestsPerCrawl}${pathPrefix ? `, pathPrefix=${pathPrefix}` : ''}`
+      );
       this.statusTracker.updateProgress(id, 0, 'Finding subpages');
       const crawler = new DocsCrawler(this.config.maxDepth, this.config.maxRequestsPerCrawl, this.config.githubToken);
 

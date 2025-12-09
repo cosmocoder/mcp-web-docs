@@ -150,10 +150,7 @@ describe('Favicon Utilities', () => {
       const result = await fetchFavicon(new URL('https://example.com/page'));
 
       expect(result).toBeDefined();
-      expect(fetchMock).toHaveBeenCalledWith(
-        'https://example.com/assets/favicon.png',
-        expect.any(Object)
-      );
+      expect(fetchMock).toHaveBeenCalledWith('https://example.com/assets/favicon.png', expect.any(Object));
     });
 
     it('should return undefined when icon from meta tag fails to load', async () => {

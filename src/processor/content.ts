@@ -289,9 +289,7 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
 
       // Use HTML content to preserve code blocks with markdown fences
       // This prevents code examples from triggering false positive security detections
-      const contentWithCodeBlocks = readability.content
-        ? extractTextWithCodeBlocks(readability.content)
-        : readability.textContent || '';
+      const contentWithCodeBlocks = readability.content ? extractTextWithCodeBlocks(readability.content) : readability.textContent || '';
 
       return {
         article: {
