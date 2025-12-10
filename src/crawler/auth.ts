@@ -237,7 +237,7 @@ export class AuthManager {
     domain: string
   ): { hasExpiredCookies: boolean; expiredCount: number; totalCount: number; details: string[] } {
     try {
-      const storageState = JSON.parse(storageStateJson);
+      const storageState = safeJsonParse(storageStateJson, StorageStateSchema);
       const cookies = storageState.cookies || [];
       const now = Date.now() / 1000; // Convert to seconds (cookie expires is in seconds)
 
