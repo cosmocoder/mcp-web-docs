@@ -18,6 +18,10 @@ export interface DocumentMetadata {
   title: string;
   favicon?: string;
   lastIndexed: Date;
+  /** Whether this documentation site requires authentication to access */
+  requiresAuth?: boolean;
+  /** The domain where the auth session is stored (e.g., "github.com" for GitHub auth) */
+  authDomain?: string;
 }
 
 export interface DocumentChunk {

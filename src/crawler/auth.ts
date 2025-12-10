@@ -225,13 +225,83 @@ export class AuthManager {
   }
 
   /**
-   * Validate that a stored session is still valid by making a test request.
-   * This detects expired sessions by checking for:
-   * 1. Redirects to login/auth pages
-   * 2. Login page content in the response
+   * Check if stored cookies have expired based on their expiration timestamps.
+   * This is a fast check that doesn't require launching a browser.
+   *
+   * @param storageStateJson - The decrypted storage state JSON
+   * @param domain - The domain to check cookies for
+   * @returns Object with expiration status and details
+   */
+  private checkCookieExpiration(
+    storageStateJson: string,
+    domain: string
+  ): { hasExpiredCookies: boolean; expiredCount: number; totalCount: number; details: string[] } {
+    try {
+      const storageState = safeJsonParse(storageStateJson, StorageStateSchema);
+      const cookies = storageState.cookies || [];
+      const now = Date.now() / 1000; // Convert to seconds (cookie expires is in seconds)
+
+      // Filter cookies relevant to this domain
+      const domainLower = domain.toLowerCase();
+      const relevantCookies = cookies.filter((cookie: { domain: string }) => {
+        const cookieDomain = cookie.domain.toLowerCase().replace(/^\./, ''); // Remove leading dot
+        return domainLower === cookieDomain || domainLower.endsWith('.' + cookieDomain);
+      });
+
+      if (relevantCookies.length === 0) {
+        // No domain-specific cookies, check all cookies
+        // This handles cases where auth cookies are on a different domain (e.g., github.com for github.io)
+        logger.debug(`[AuthManager] No cookies found for ${domain}, checking all ${cookies.length} cookies`);
+      }
+
+      const cookiesToCheck = relevantCookies.length > 0 ? relevantCookies : cookies;
+
+      let expiredCount = 0;
+      const details: string[] = [];
+
+      for (const cookie of cookiesToCheck) {
+        // Skip cookies without expiration (session cookies)
+        if (cookie.expires === undefined || cookie.expires === -1 || cookie.expires === 0) {
+          continue;
+        }
+
+        if (cookie.expires < now) {
+          expiredCount++;
+          const expiredAgo = Math.round((now - cookie.expires) / 3600); // Hours ago
+          details.push(`Cookie "${cookie.name}" expired ${expiredAgo}h ago`);
+        }
+      }
+
+      // Consider session expired if ANY auth-related cookies are expired
+      // Common auth cookie names
+      const authCookiePatterns = /session|auth|token|jwt|sid|login|user|identity|sso|saml|oauth/i;
+      const expiredAuthCookies = cookiesToCheck.filter((cookie: { name: string; expires?: number }) => {
+        if (!cookie.expires || cookie.expires === -1 || cookie.expires === 0) return false;
+        return cookie.expires < now && authCookiePatterns.test(cookie.name);
+      });
+
+      return {
+        hasExpiredCookies: expiredCount > 0,
+        expiredCount,
+        totalCount: cookiesToCheck.length,
+        details:
+          expiredAuthCookies.length > 0
+            ? details.filter((d) => expiredAuthCookies.some((c: { name: string }) => d.includes(c.name)))
+            : details.slice(0, 3), // Limit details
+      };
+    } catch (error) {
+      logger.debug(`[AuthManager] Error checking cookie expiration:`, error);
+      return { hasExpiredCookies: false, expiredCount: 0, totalCount: 0, details: [] };
+    }
+  }
+
+  /**
+   * Validate that a stored session is still valid.
+   * First checks cookie expiration timestamps (fast, no network).
+   * Falls back to browser-based validation for edge cases.
    *
    * @param url - The protected URL to validate against
-   * @param browserType - Browser type to use for validation
+   * @param browserType - Browser type to use for browser-based validation (if needed)
    * @returns Validation result indicating if session is still valid
    */
   async validateSession(
@@ -246,6 +316,28 @@ export class AuthManager {
       logger.info(`[AuthManager] No stored session found for ${domain}`);
       return { isValid: false, reason: 'No stored session found' };
     }
+
+    // Fast check: Look at cookie expiration timestamps
+    const cookieCheck = this.checkCookieExpiration(storageStateJson, domain);
+    logger.debug(`[AuthManager] Cookie check: ${cookieCheck.expiredCount}/${cookieCheck.totalCount} expired`);
+
+    if (cookieCheck.hasExpiredCookies) {
+      const reason = `Session cookies have expired (${cookieCheck.expiredCount} expired). ${cookieCheck.details.join('; ')}`;
+      logger.warn(`[AuthManager] Session expired based on cookie timestamps: ${reason}`);
+      return {
+        isValid: false,
+        reason,
+        loginDetection: {
+          isLoginPage: false,
+          confidence: 1.0,
+          reasons: [`Cookie expiration check: ${cookieCheck.details.join(', ')}`],
+        },
+      };
+    }
+
+    // If no cookies have explicit expiration, or all have valid timestamps,
+    // do a quick browser-based check to be sure
+    logger.debug(`[AuthManager] Cookie timestamps look valid, performing browser-based validation...`);
 
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
@@ -272,18 +364,29 @@ export class AuthManager {
         timeout: 30000,
       });
 
+      // Wait for potential JavaScript redirects
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+      // Additional wait for JS-based auth redirects (GitHub Pages, etc.)
+      await page.waitForTimeout(2000);
+
       const finalUrl = page.url();
       logger.debug(`[AuthManager] Final URL after navigation: ${finalUrl}`);
 
-      // Check 1: Were we redirected to a login page?
-      if (isLoginPageUrl(finalUrl) && finalUrl !== url) {
-        logger.warn(`[AuthManager] Session appears expired - redirected to login page: ${finalUrl}`);
-        return {
-          isValid: false,
-          reason: 'Redirected to login page - session has expired',
-          finalUrl,
-          loginDetection: { isLoginPage: true, confidence: 1.0, reasons: ['Redirected to login URL'] },
-        };
+      // Check 1: Were we redirected to a different domain (likely auth)?
+      const finalDomain = new URL(finalUrl).hostname.toLowerCase();
+      const expectedDomain = domain.toLowerCase();
+      if (finalDomain !== expectedDomain && !finalDomain.endsWith('.' + expectedDomain)) {
+        // Redirected to a different domain - check if it's a login page
+        if (isLoginPageUrl(finalUrl)) {
+          logger.warn(`[AuthManager] Session appears expired - redirected to login page: ${finalUrl}`);
+          return {
+            isValid: false,
+            reason: `Redirected to login page on different domain (${finalDomain})`,
+            finalUrl,
+            loginDetection: { isLoginPage: true, confidence: 1.0, reasons: ['Redirected to external login URL'] },
+          };
+        }
       }
 
       // Check 2: Did we get an auth-related HTTP status?
@@ -298,9 +401,6 @@ export class AuthManager {
       }
 
       // Check 3: Does the page content look like a login page?
-      // Wait for content to load
-      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-
       const pageContent = await page.content();
       const bodyText = await page.evaluate(() => document.body?.textContent || '');
       const loginDetection = detectLoginPage(bodyText + pageContent, finalUrl);
@@ -491,6 +591,7 @@ export class AuthManager {
 
       // Wait for successful login
       const loginSuccess = await this.waitForLogin(page, {
+        targetUrl: url, // The original target URL to return to
         successPattern: loginSuccessPattern,
         successSelector: loginSuccessSelector,
         timeoutSecs: loginTimeoutSecs,
@@ -524,19 +625,31 @@ export class AuthManager {
    * Detection methods (in order of priority):
    * 1. If successPattern is provided: wait for URL to match the regex
    * 2. If successSelector is provided: wait for the CSS selector to appear
-   * 3. Default: poll for common login success indicators (logout button, user menu, URL change)
+   * 3. Default: poll for common login success indicators or return to target domain
+   *
+   * For multi-step OAuth flows (e.g., GitHub Pages → GitHub Login → Okta → back),
+   * the method tracks when the user returns to the original target domain.
    */
   private async waitForLogin(
     page: Page,
     options: {
+      targetUrl: string; // The original target URL the user wants to access
       successPattern?: string;
       successSelector?: string;
       timeoutSecs: number;
     }
   ): Promise<boolean> {
-    const { successPattern, successSelector, timeoutSecs } = options;
+    const { targetUrl, successPattern, successSelector, timeoutSecs } = options;
     const startTime = Date.now();
     const timeoutMs = timeoutSecs * 1000;
+
+    // Extract target domain for multi-step OAuth flow detection
+    let targetDomain: string;
+    try {
+      targetDomain = new URL(targetUrl).hostname.toLowerCase();
+    } catch {
+      targetDomain = '';
+    }
 
     logger.debug(
       `[AuthManager] Login detection method: ${
@@ -544,7 +657,7 @@ export class AuthManager {
           ? `URL pattern: ${successPattern}`
           : successSelector
             ? `CSS selector: ${successSelector}`
-            : 'auto-detect (looking for logout button, user menu, or URL change)'
+            : `auto-detect (target domain: ${targetDomain})`
       }`
     );
 
@@ -583,6 +696,7 @@ export class AuthManager {
     // Default: wait for navigation away from login page or for page to show logged-in state
     // Poll for changes that indicate successful login
     logger.info(`[AuthManager] Using auto-detection for login success...`);
+    logger.info(`[AuthManager] Target domain: ${targetDomain}`);
     logger.info(`[AuthManager] The browser will stay open until you login or ${timeoutSecs} seconds pass.`);
     let lastLogTime = 0;
 
@@ -590,11 +704,30 @@ export class AuthManager {
     const initialUrl = page.url();
     let hasNavigatedAway = false;
     let wasOnLoginPage = false;
+    const visitedDomains = new Set<string>();
+
+    // Enhanced login page URL pattern including common IdPs
+    const loginPagePattern =
+      /login|signin|sign-in|auth|sso|oauth|session|okta|oktapreview|auth0|onelogin|pingone|pingidentity|pingfederate|duosecurity|adfs|saml|idp/i;
 
     while (Date.now() - startTime < timeoutMs) {
       try {
         const currentUrl = page.url();
         const elapsed = Math.round((Date.now() - startTime) / 1000);
+
+        // Extract current domain
+        let currentDomain: string;
+        try {
+          currentDomain = new URL(currentUrl).hostname.toLowerCase();
+        } catch {
+          currentDomain = '';
+        }
+
+        // Track visited domains for debugging
+        if (currentDomain && !visitedDomains.has(currentDomain)) {
+          visitedDomains.add(currentDomain);
+          logger.debug(`[AuthManager] Visited new domain: ${currentDomain}`);
+        }
 
         // Log status every 10 seconds
         if (elapsed - lastLogTime >= 10) {
@@ -602,13 +735,18 @@ export class AuthManager {
           lastLogTime = elapsed;
         }
 
-        // Check if we're on a login-like page
-        const isLoginPage = /login|signin|sign-in|auth|sso|oauth|session/i.test(currentUrl);
+        // Check if we're on a login-like page (URL-based detection)
+        const isLoginPageUrl = loginPagePattern.test(currentUrl);
+
+        // Check if we're on a known identity provider domain
+        const isIdpDomain = /okta|auth0|onelogin|pingidentity|duosecurity|microsoftonline|accounts\.google/i.test(currentDomain);
+
+        const isLoginPage = isLoginPageUrl || isIdpDomain;
 
         // Track if we've been to a login page (to know when we've successfully logged in)
         if (isLoginPage) {
           wasOnLoginPage = true;
-          logger.debug(`[AuthManager] Detected login page: ${currentUrl}`);
+          logger.debug(`[AuthManager] Detected login/IdP page: ${currentUrl}`);
         }
 
         // Track navigation away from initial URL
@@ -617,28 +755,48 @@ export class AuthManager {
           logger.debug(`[AuthManager] Navigation detected: ${initialUrl} → ${currentUrl}`);
         }
 
+        // Check if we've returned to the target domain after visiting login pages
+        const isBackAtTargetDomain = targetDomain && (currentDomain === targetDomain || currentDomain.endsWith('.' + targetDomain));
+
         // Check for common logged-in indicators
         const hasLogoutButton = (await page.locator('text=/log\\s*out|sign\\s*out/i').count()) > 0;
         const hasUserMenu = (await page.locator('[class*="user"], [class*="avatar"], [class*="profile"]').count()) > 0;
 
-        // Only consider login successful if:
-        // 1. We're not on a login page, AND
-        // 2. We have logged-in indicators OR we were on a login page and navigated away
+        // Success condition 1: Found logout button or user menu (and not on login page)
         if (!isLoginPage && (hasLogoutButton || hasUserMenu)) {
           logger.info(`[AuthManager] ✓ Login indicators found (logout button or user menu)`);
           await page.waitForTimeout(1000);
           return true;
         }
 
-        // For GitHub Pages: only consider successful if we were on login page and came back
-        if (currentUrl.includes('github.io') && wasOnLoginPage && !isLoginPage) {
-          // We were redirected to login and now we're back on the github.io page
+        // Success condition 2: Returned to target domain after visiting login page(s)
+        // This handles multi-step OAuth flows (GitHub Pages → GitHub → Okta → back to GitHub Pages)
+        if (isBackAtTargetDomain && wasOnLoginPage && !isLoginPage) {
+          // We were redirected to login/IdP and now we're back on the target domain
           const bodyText = (await page.locator('body').textContent()) || '';
           // Make sure it's not an error page
           if (bodyText.length > 100 && !bodyText.includes('404') && !bodyText.includes('not found')) {
-            logger.info(`[AuthManager] ✓ Returned to GitHub Pages after login`);
-            await page.waitForTimeout(1000);
-            return true;
+            logger.info(
+              `[AuthManager] ✓ Returned to target domain (${currentDomain}) after login. Visited ${visitedDomains.size} domains during auth flow.`
+            );
+            // Wait a bit longer for any post-login redirects to settle
+            await page.waitForTimeout(2000);
+
+            // Double-check we're still on target domain after waiting
+            const finalUrl = page.url();
+            let finalDomain: string;
+            try {
+              finalDomain = new URL(finalUrl).hostname.toLowerCase();
+            } catch {
+              finalDomain = '';
+            }
+
+            if (finalDomain === targetDomain || finalDomain.endsWith('.' + targetDomain)) {
+              logger.info(`[AuthManager] ✓ Confirmed on target domain: ${finalUrl}`);
+              return true;
+            } else {
+              logger.debug(`[AuthManager] Redirected away from target domain after waiting, continuing...`);
+            }
           }
         }
 
@@ -652,6 +810,7 @@ export class AuthManager {
     }
 
     logger.warn(`[AuthManager] Login detection timed out after ${timeoutSecs} seconds`);
+    logger.debug(`[AuthManager] Visited ${visitedDomains.size} domains during auth flow`);
     return false;
   }
 

@@ -136,6 +136,7 @@ The main MCP server class handling:
   - LanceDB for vector storage and search
   - Hybrid search (FTS + semantic)
   - LRU cache for search results
+  - Database migration system for schema changes
 
 ### `src/embeddings/` - Vector Generation
 - **`fastembed.ts`**: `FastEmbeddings` provider using the `fastembed` library
@@ -416,6 +417,41 @@ export const MyToolArgsSchema = z.object({
 3. Add handler method and case in switch statement
 4. Write tests in `src/index.test.ts`
 
+### Adding a Database Migration
+
+The project uses a versioned migration system in `src/storage/storage.ts` to handle SQLite schema changes. Migrations are applied automatically when the server starts.
+
+1. Add a new migration to the `MIGRATIONS` array in `DocumentStore`:
+```typescript
+private static readonly MIGRATIONS: Array<{
+  version: number;
+  description: string;
+  sql: string;
+}> = [
+  // Existing migrations...
+  {
+    version: 2, // Increment from last version
+    description: 'Add new_column to documents table',
+    sql: `
+      ALTER TABLE documents ADD COLUMN new_column TEXT;
+    `,
+  },
+];
+```
+
+2. Update the `DocumentMetadata` interface in `src/types.ts` if adding new fields
+
+3. Update the `addDocument`, `getDocument`, and `listDocuments` methods to handle the new field
+
+4. Write tests to verify the migration and new functionality
+
+**Migration Guidelines:**
+- Use `ALTER TABLE ... ADD COLUMN` for new columns (SQLite limitation: no `IF NOT EXISTS` for columns)
+- Each migration runs in a try-catch - failures for already-applied changes are expected and ignored
+- Migrations are tracked in the `schema_migrations` table
+- Always increment the version number
+- Keep migrations idempotent where possible
+
 ---
 
 ## Key Interfaces
@@ -514,3 +550,17 @@ interface EmbeddingsProvider {
 - [ ] Types check: `npm run test:types`
 - [ ] Code formatted: `npm run prettier`
 - [ ] Documentation updated if needed
+
+---
+
+## Maintaining Agent Guidelines
+
+When making significant changes to the codebase (new features, architectural changes, new patterns, database migrations, etc.), **ask the user if they want to update the agent instruction files**. These files help AI agents understand the project:
+
+- `AGENTS.md` - Comprehensive guidelines (primary reference)
+- `CONTRIBUTING.md` - Contributor guidelines
+- `.cursorrules` - Cursor IDE rules
+- `CLAUDE.md` - Claude Code guidelines
+- `.roo/rules/01-project-rules.md` - Roo/Cline rules
+
+Keep all these files in sync when updating documentation.

@@ -1,4 +1,5 @@
 import { detectDefaultBrowser, AuthManager, type BrowserType } from './auth.js';
+import { encryptData } from '../util/security.js';
 
 const { mockDefaultBrowser, mockMkdir, mockReadFile, mockWriteFile, mockAccess, mockChmod, mockUnlink, mockChromiumLaunch } = vi.hoisted(
   () => ({
@@ -38,52 +39,112 @@ vi.mock('playwright', () => ({
   },
 }));
 
+// ============ Test Helpers ============
+
+interface Cookie {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  expires?: number;
+}
+
+interface BrowserMockOptions {
+  status?: number;
+  url?: string;
+  content?: string;
+  bodyText?: string;
+}
+
+/**
+ * Create an encrypted stored session for testing
+ */
+function createStoredSession(cookies: Cookie[], domain = 'example.com') {
+  const storageState = { cookies };
+  const encryptedStorageState = encryptData(JSON.stringify(storageState));
+
+  return {
+    domain,
+    storageState: encryptedStorageState,
+    createdAt: new Date().toISOString(),
+    browser: 'chromium',
+    version: 2,
+  };
+}
+
+/**
+ * Mock the file system to return a stored session
+ */
+function mockStoredSession(cookies: Cookie[], domain = 'example.com') {
+  const storedSession = createStoredSession(cookies, domain);
+  mockReadFile.mockResolvedValue(JSON.stringify(storedSession));
+}
+
+/**
+ * Create browser mocks for session validation tests
+ */
+function setupBrowserMock(options: BrowserMockOptions = {}) {
+  const {
+    status = 200,
+    url = 'https://example.com',
+    content = '<html><body>Welcome!</body></html>',
+    bodyText = 'Welcome to the site',
+  } = options;
+
+  const mockPage = {
+    goto: vi.fn().mockResolvedValue({ status: () => status }),
+    url: vi.fn().mockReturnValue(url),
+    waitForLoadState: vi.fn().mockResolvedValue(undefined),
+    waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    content: vi.fn().mockResolvedValue(content),
+    evaluate: vi.fn().mockResolvedValue(bodyText),
+  };
+  const mockContext = {
+    newPage: vi.fn().mockResolvedValue(mockPage),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+  const mockBrowser = {
+    newContext: vi.fn().mockResolvedValue(mockContext),
+    close: vi.fn().mockResolvedValue(undefined),
+  };
+  mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+  return { mockPage, mockContext, mockBrowser };
+}
+
+/**
+ * Create test cookie with common defaults
+ */
+function createCookie(overrides: Partial<Cookie> = {}): Cookie {
+  return {
+    name: 'session_id',
+    value: 'session-value',
+    domain: 'example.com',
+    path: '/',
+    ...overrides,
+  };
+}
+
+// ============ Tests ============
+
 describe('Auth Module', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   describe('detectDefaultBrowser', () => {
-    it('should detect Firefox', async () => {
-      mockDefaultBrowser.mockResolvedValue({ name: 'Firefox', id: 'firefox' });
-
+    it.each([
+      [{ name: 'Firefox', id: 'firefox' }, 'firefox'],
+      [{ name: 'Google Chrome', id: 'com.google.chrome' }, 'chrome'],
+      [{ name: 'Microsoft Edge', id: 'microsoft-edge' }, 'edge'],
+      [{ name: 'Safari', id: 'com.apple.safari' }, 'webkit'],
+      [{ name: 'Chromium', id: 'chromium-browser' }, 'chromium'],
+      [{ name: 'Unknown Browser', id: 'unknown' }, 'chromium'],
+      [{ name: 'FIREFOX', id: 'FIREFOX' }, 'firefox'], // case-insensitive
+    ])('should detect %o as %s', async (browserInfo, expected) => {
+      mockDefaultBrowser.mockResolvedValue(browserInfo);
       const result = await detectDefaultBrowser();
-      expect(result).toBe('firefox');
-    });
-
-    it('should detect Chrome', async () => {
-      mockDefaultBrowser.mockResolvedValue({ name: 'Google Chrome', id: 'com.google.chrome' });
-
-      const result = await detectDefaultBrowser();
-      expect(result).toBe('chrome');
-    });
-
-    it('should detect Edge', async () => {
-      mockDefaultBrowser.mockResolvedValue({ name: 'Microsoft Edge', id: 'microsoft-edge' });
-
-      const result = await detectDefaultBrowser();
-      expect(result).toBe('edge');
-    });
-
-    it('should detect Safari as webkit', async () => {
-      mockDefaultBrowser.mockResolvedValue({ name: 'Safari', id: 'com.apple.safari' });
-
-      const result = await detectDefaultBrowser();
-      expect(result).toBe('webkit');
-    });
-
-    it('should detect Chromium', async () => {
-      mockDefaultBrowser.mockResolvedValue({ name: 'Chromium', id: 'chromium-browser' });
-
-      const result = await detectDefaultBrowser();
-      expect(result).toBe('chromium');
-    });
-
-    it('should fall back to chromium for unknown browser', async () => {
-      mockDefaultBrowser.mockResolvedValue({ name: 'Unknown Browser', id: 'unknown' });
-
-      const result = await detectDefaultBrowser();
-      expect(result).toBe('chromium');
+      expect(result).toBe(expected);
     });
 
     it('should fall back to chromium on error', async () => {
@@ -91,13 +152,6 @@ describe('Auth Module', () => {
 
       const result = await detectDefaultBrowser();
       expect(result).toBe('chromium');
-    });
-
-    it('should be case-insensitive', async () => {
-      mockDefaultBrowser.mockResolvedValue({ name: 'FIREFOX', id: 'FIREFOX' });
-
-      const result = await detectDefaultBrowser();
-      expect(result).toBe('firefox');
     });
   });
 
@@ -222,6 +276,170 @@ describe('Auth Module', () => {
 
       validTypes.forEach((type) => {
         expect(typeof type).toBe('string');
+      });
+    });
+  });
+
+  describe('validateSession', () => {
+    let authManager: AuthManager;
+
+    beforeEach(() => {
+      authManager = new AuthManager('/tmp/test-data');
+      mockMkdir.mockResolvedValue(undefined);
+    });
+
+    it('should return isValid=false when no session exists', async () => {
+      mockReadFile.mockRejectedValue(new Error('ENOENT'));
+
+      const result = await authManager.validateSession('https://example.com');
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toContain('No stored session');
+    });
+
+    describe('cookie expiration detection', () => {
+      const expiredTimestamp = () => Math.floor(Date.now() / 1000) - 3600; // 1 hour ago
+      const validTimestamp = () => Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+
+      it('should detect expired cookies from stored session', async () => {
+        mockStoredSession([createCookie({ name: 'session_token', expires: expiredTimestamp() })]);
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain('expired');
+      });
+
+      it('should detect expired auth-related cookies specifically', async () => {
+        mockStoredSession([
+          createCookie({ name: 'tracking_cookie', expires: validTimestamp() }),
+          createCookie({ name: 'auth_token', expires: expiredTimestamp() }),
+        ]);
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain('expired');
+      });
+
+      it('should handle cookies on parent domain (e.g., .example.com for sub.example.com)', async () => {
+        mockStoredSession([createCookie({ name: 'auth_token', domain: '.example.com', expires: expiredTimestamp() })], 'sub.example.com');
+
+        const result = await authManager.validateSession('https://sub.example.com');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain('expired');
+      });
+
+      it('should check all cookies when no domain-specific cookies found', async () => {
+        // Auth cookies on different domain (e.g., github.com for github.io)
+        mockStoredSession([createCookie({ name: 'user_session', domain: 'github.com', expires: expiredTimestamp() })], 'user.github.io');
+
+        const result = await authManager.validateSession('https://user.github.io');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain('expired');
+      });
+    });
+
+    describe('session cookies (no expiration)', () => {
+      it.each([
+        ['no expires field', undefined],
+        ['expires=-1', -1],
+        ['expires=0', 0],
+      ])('should treat cookies with %s as valid session cookies', async (_description, expiresValue) => {
+        const cookie = createCookie();
+        if (expiresValue !== undefined) {
+          cookie.expires = expiresValue;
+        }
+        mockStoredSession([cookie]);
+        setupBrowserMock();
+
+        const result = await authManager.validateSession('https://example.com');
+
+        // Session cookies pass cookie check, browser validation determines validity
+        expect(result.isValid).toBe(true);
+      });
+    });
+
+    describe('browser-based validation', () => {
+      beforeEach(() => {
+        // All browser validation tests need a session with non-expiring cookies
+        mockStoredSession([createCookie()]);
+      });
+
+      it.each([
+        [401, 'Unauthorized'],
+        [403, 'Forbidden'],
+      ])('should detect HTTP %i response as expired session', async (statusCode, bodyText) => {
+        setupBrowserMock({
+          status: statusCode,
+          content: `<html><body>${bodyText}</body></html>`,
+          bodyText,
+        });
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain(String(statusCode));
+      });
+
+      it('should detect redirect to external login page as expired session', async () => {
+        setupBrowserMock({
+          url: 'https://company.okta.com/login',
+          content: '<html><body>Sign In</body></html>',
+          bodyText: 'Sign In to continue',
+        });
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain('login');
+        expect(result.finalUrl).toBe('https://company.okta.com/login');
+      });
+
+      it('should detect login page content in response as expired session', async () => {
+        const loginPageContent = `
+          <html>
+            <body>
+              <h1>Sign In Required</h1>
+              <form>
+                <input type="text" placeholder="Username">
+                <input type="password" placeholder="Password">
+                <button>Sign In</button>
+              </form>
+              <a href="/forgot-password">Forgot your password?</a>
+            </body>
+          </html>
+        `;
+        setupBrowserMock({
+          url: 'https://example.com/app',
+          content: loginPageContent,
+          bodyText: 'Sign In Required Username Password Sign In Forgot your password?',
+        });
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain('Login page detected');
+        expect(result.loginDetection?.isLoginPage).toBe(true);
+      });
+
+      it('should handle validation errors gracefully', async () => {
+        mockChromiumLaunch.mockRejectedValue(new Error('Browser launch failed'));
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain('Validation failed');
+      });
+
+      it('should consider session valid when page loads successfully', async () => {
+        setupBrowserMock();
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(true);
       });
     });
   });

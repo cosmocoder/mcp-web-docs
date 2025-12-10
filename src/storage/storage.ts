@@ -125,7 +125,7 @@ export class DocumentStore implements StorageProvider {
         throw new Error(`Failed to initialize SQLite: ${error instanceof Error ? error.message : String(error)}`);
       }
 
-      // Create tables if they don't exist
+      // Create base tables if they don't exist
       await this.sqliteDb.exec(`
         CREATE TABLE IF NOT EXISTS documents (
           url TEXT PRIMARY KEY,
@@ -135,6 +135,9 @@ export class DocumentStore implements StorageProvider {
         );
         CREATE INDEX IF NOT EXISTS idx_last_indexed ON documents(last_indexed);
       `);
+
+      // Run database migrations
+      await this.runMigrations();
 
       // Initialize LanceDB with error handling
       try {
@@ -199,6 +202,107 @@ export class DocumentStore implements StorageProvider {
     }
   }
 
+  /**
+   * Database migrations list.
+   * Each migration has a unique version number and SQL statements to execute.
+   * Migrations are applied in order and tracked in the schema_migrations table.
+   *
+   * To add a new migration:
+   * 1. Add a new entry with the next version number
+   * 2. Include a description for logging
+   * 3. Add the SQL statement(s) to execute
+   */
+  private static readonly MIGRATIONS: Array<{
+    version: number;
+    description: string;
+    sql: string;
+  }> = [
+    {
+      version: 1,
+      description: 'Add authentication tracking columns',
+      sql: `
+        ALTER TABLE documents ADD COLUMN requires_auth INTEGER DEFAULT 0;
+        ALTER TABLE documents ADD COLUMN auth_domain TEXT;
+      `,
+    },
+    // Future migrations go here:
+    // {
+    //   version: 2,
+    //   description: 'Add some_new_column',
+    //   sql: 'ALTER TABLE documents ADD COLUMN some_new_column TEXT;',
+    // },
+  ];
+
+  /**
+   * Run pending database migrations.
+   * Creates a schema_migrations table to track applied migrations.
+   * Only runs migrations that haven't been applied yet.
+   */
+  private async runMigrations(): Promise<void> {
+    if (!this.sqliteDb) {
+      throw new Error('SQLite not initialized');
+    }
+
+    // Create migrations tracking table
+    await this.sqliteDb.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at DATETIME NOT NULL,
+        description TEXT
+      );
+    `);
+
+    // Get list of already applied migrations
+    const applied = await this.sqliteDb.all<Array<{ version: number }>>('SELECT version FROM schema_migrations ORDER BY version');
+    const appliedVersions = new Set(applied.map((row) => row.version));
+
+    // Run pending migrations in order
+    for (const migration of DocumentStore.MIGRATIONS) {
+      if (appliedVersions.has(migration.version)) {
+        logger.debug(`[DocumentStore] Migration ${migration.version} already applied: ${migration.description}`);
+        continue;
+      }
+
+      logger.info(`[DocumentStore] Running migration ${migration.version}: ${migration.description}`);
+
+      try {
+        // Split SQL statements and execute each one
+        // (SQLite doesn't support multiple statements in exec for ALTER TABLE)
+        const statements = migration.sql
+          .split(';')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0);
+
+        for (const statement of statements) {
+          try {
+            await this.sqliteDb.exec(statement);
+          } catch (error) {
+            // Ignore "duplicate column" errors for ALTER TABLE ADD COLUMN
+            // This handles cases where the column already exists
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            if (errorMsg.includes('duplicate column name')) {
+              logger.debug(`[DocumentStore] Column already exists, skipping: ${statement}`);
+              continue;
+            }
+            throw error;
+          }
+        }
+
+        // Record successful migration
+        await this.sqliteDb.run('INSERT INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)', [
+          migration.version,
+          new Date().toISOString(),
+          migration.description,
+        ]);
+
+        logger.info(`[DocumentStore] ✓ Migration ${migration.version} completed`);
+      } catch (error) {
+        logger.error(`[DocumentStore] Migration ${migration.version} failed:`, error);
+        throw new Error(`Database migration ${migration.version} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
   async addDocument(doc: ProcessedDocument): Promise<void> {
     logger.debug(`[DocumentStore] Starting addDocument for:`, {
       url: doc.metadata.url,
@@ -233,13 +337,20 @@ export class DocumentStore implements StorageProvider {
       await this.sqliteDb.run('BEGIN TRANSACTION');
 
       // Add metadata to SQLite
-      await this.sqliteDb.run('INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed) VALUES (?, ?, ?, ?)', [
-        doc.metadata.url,
-        doc.metadata.title,
-        doc.metadata.favicon,
-        doc.metadata.lastIndexed.toISOString(),
-      ]);
-      logger.debug(`[DocumentStore] Added metadata to SQLite`);
+      await this.sqliteDb.run(
+        'INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain) VALUES (?, ?, ?, ?, ?, ?)',
+        [
+          doc.metadata.url,
+          doc.metadata.title,
+          doc.metadata.favicon,
+          doc.metadata.lastIndexed.toISOString(),
+          doc.metadata.requiresAuth ? 1 : 0,
+          doc.metadata.authDomain || null,
+        ]
+      );
+      logger.debug(
+        `[DocumentStore] Added metadata to SQLite (requiresAuth: ${doc.metadata.requiresAuth}, authDomain: ${doc.metadata.authDomain})`
+      );
 
       // Delete existing chunks for this document (using escaped value to prevent injection)
       await this.lanceTable.delete(`url = '${escapeFilterValue(doc.metadata.url)}'`);
@@ -678,8 +789,10 @@ export class DocumentStore implements StorageProvider {
           title: string;
           favicon: string | null;
           last_indexed: string;
+          requires_auth: number | null;
+          auth_domain: string | null;
         }>
-      >('SELECT url, title, favicon, last_indexed FROM documents ORDER BY last_indexed DESC');
+      >('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain FROM documents ORDER BY last_indexed DESC');
 
       logger.debug(`[DocumentStore] Found ${rows.length} documents`);
 
@@ -688,6 +801,8 @@ export class DocumentStore implements StorageProvider {
         title: row.title,
         favicon: row.favicon ?? undefined,
         lastIndexed: new Date(row.last_indexed),
+        requiresAuth: row.requires_auth === 1,
+        authDomain: row.auth_domain ?? undefined,
       }));
     } catch (error) {
       logger.error('[DocumentStore] Error listing documents:', error);
@@ -744,7 +859,9 @@ export class DocumentStore implements StorageProvider {
         title: string;
         favicon: string | null;
         last_indexed: string;
-      }>('SELECT url, title, favicon, last_indexed FROM documents WHERE url = ?', [url]);
+        requires_auth: number | null;
+        auth_domain: string | null;
+      }>('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain FROM documents WHERE url = ?', [url]);
 
       if (!row) {
         logger.debug(`[DocumentStore] Document not found in SQLite: ${url}`);
@@ -764,6 +881,8 @@ export class DocumentStore implements StorageProvider {
         title: row.title,
         favicon: row.favicon ?? undefined,
         lastIndexed: new Date(row.last_indexed),
+        requiresAuth: row.requires_auth === 1,
+        authDomain: row.auth_domain ?? undefined,
       };
     } catch (error) {
       logger.error('[DocumentStore] Error getting document:', error);

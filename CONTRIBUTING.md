@@ -206,6 +206,27 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
 
 4. Write tests in `src/index.test.ts`
 
+### Adding a Database Migration
+
+When you need to modify the SQLite schema (e.g., adding new columns), use the migration system in `src/storage/storage.ts`:
+
+1. Add a new entry to the `MIGRATIONS` array with an incremented version number:
+   ```typescript
+   {
+     version: 2, // Next version number
+     description: 'Add my_column to documents table',
+     sql: `ALTER TABLE documents ADD COLUMN my_column TEXT;`,
+   }
+   ```
+
+2. Update `DocumentMetadata` in `src/types.ts` if needed
+
+3. Update storage methods (`addDocument`, `getDocument`, `listDocuments`) to handle the new field
+
+4. Write tests to verify the migration works
+
+Migrations run automatically on server startup and are tracked in the `schema_migrations` table.
+
 ---
 
 ## Pull Request Process
@@ -244,6 +265,13 @@ npm run test:types    # Types check
 
 - **[AGENTS.md](AGENTS.md)** - Comprehensive guidelines for AI coding agents, includes detailed architecture, testing patterns, and mocking strategies
 - **[README.md](README.md)** - Project overview and user documentation
+
+---
+
+## Maintaining Agent Guidelines
+
+When making significant changes to the codebase, ask if the agent instruction files need updating:
+- `AGENTS.md`, `CONTRIBUTING.md`, `.cursorrules`, `CLAUDE.md`, `.roo/rules/01-project-rules.md`
 
 ---
 
