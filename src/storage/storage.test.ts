@@ -386,6 +386,122 @@ describe('DocumentStore', () => {
     });
   });
 
+  describe('database migrations', () => {
+    it('should create schema_migrations table on initialize', async () => {
+      // Store is already initialized in beforeEach
+      // Verify by adding a document with auth fields (which requires migration to have run)
+      const doc = createTestDocument('https://migration-test.com', 'Migration Test');
+      doc.metadata.requiresAuth = true;
+      doc.metadata.authDomain = 'migration-test.com';
+
+      // This should not throw - migrations have been applied
+      await store.addDocument(doc);
+
+      const retrieved = await store.getDocument('https://migration-test.com');
+      expect(retrieved?.requiresAuth).toBe(true);
+    });
+
+    it('should apply migrations only once', async () => {
+      // Create a second store instance pointing to the same database
+      const store2 = new DocumentStore(join(tempDir, 'docs.db'), join(tempDir, 'vectors'), mockEmbeddings, 100);
+      await store2.initialize();
+
+      // Add document with auth fields using new store
+      const doc = createTestDocument('https://second-store.com', 'Second Store Test');
+      doc.metadata.requiresAuth = true;
+      await store2.addDocument(doc);
+
+      // Should work without errors (migrations already applied, should be skipped)
+      const retrieved = await store2.getDocument('https://second-store.com');
+      expect(retrieved?.requiresAuth).toBe(true);
+    });
+
+    it('should handle auth columns added by migration', async () => {
+      // Test that the migration added the requires_auth and auth_domain columns
+      const docWithAuth = createTestDocument('https://auth-columns.com', 'Auth Columns Test');
+      docWithAuth.metadata.requiresAuth = true;
+      docWithAuth.metadata.authDomain = 'auth-columns.com';
+      await store.addDocument(docWithAuth);
+
+      const docWithoutAuth = createTestDocument('https://no-auth-columns.com', 'No Auth Test');
+      await store.addDocument(docWithoutAuth);
+
+      const withAuth = await store.getDocument('https://auth-columns.com');
+      const withoutAuth = await store.getDocument('https://no-auth-columns.com');
+
+      expect(withAuth?.requiresAuth).toBe(true);
+      expect(withAuth?.authDomain).toBe('auth-columns.com');
+      expect(withoutAuth?.requiresAuth).toBe(false);
+      expect(withoutAuth?.authDomain).toBeUndefined();
+    });
+  });
+
+  describe('authentication metadata', () => {
+    it('should store and retrieve requiresAuth flag', async () => {
+      const doc = createTestDocument('https://private.example.com/docs', 'Private Docs');
+      doc.metadata.requiresAuth = true;
+      doc.metadata.authDomain = 'private.example.com';
+
+      await store.addDocument(doc);
+
+      const retrieved = await store.getDocument('https://private.example.com/docs');
+      expect(retrieved?.requiresAuth).toBe(true);
+      expect(retrieved?.authDomain).toBe('private.example.com');
+    });
+
+    it('should default requiresAuth to false when not specified', async () => {
+      const doc = createTestDocument('https://public.example.com/docs', 'Public Docs');
+      // Don't set requiresAuth
+
+      await store.addDocument(doc);
+
+      const retrieved = await store.getDocument('https://public.example.com/docs');
+      expect(retrieved?.requiresAuth).toBe(false);
+      expect(retrieved?.authDomain).toBeUndefined();
+    });
+
+    it('should include auth fields in listDocuments', async () => {
+      const doc1 = createTestDocument('https://public.example.com', 'Public');
+      doc1.metadata.requiresAuth = false;
+
+      const doc2 = createTestDocument('https://private.example.com', 'Private');
+      doc2.metadata.requiresAuth = true;
+      doc2.metadata.authDomain = 'private.example.com';
+
+      await store.addDocument(doc1);
+      await store.addDocument(doc2);
+
+      const docs = await store.listDocuments();
+      const publicDoc = docs.find((d) => d.url === 'https://public.example.com');
+      const privateDoc = docs.find((d) => d.url === 'https://private.example.com');
+
+      expect(publicDoc?.requiresAuth).toBe(false);
+      expect(privateDoc?.requiresAuth).toBe(true);
+      expect(privateDoc?.authDomain).toBe('private.example.com');
+    });
+
+    it('should preserve auth metadata when updating document', async () => {
+      const url = 'https://auth-update.example.com';
+
+      // Add document with auth
+      const doc1 = createTestDocument(url, 'Original');
+      doc1.metadata.requiresAuth = true;
+      doc1.metadata.authDomain = 'auth-update.example.com';
+      await store.addDocument(doc1);
+
+      // Update document, preserving auth
+      const doc2 = createTestDocument(url, 'Updated');
+      doc2.metadata.requiresAuth = true;
+      doc2.metadata.authDomain = 'auth-update.example.com';
+      await store.addDocument(doc2);
+
+      const retrieved = await store.getDocument(url);
+      expect(retrieved?.title).toBe('Updated');
+      expect(retrieved?.requiresAuth).toBe(true);
+      expect(retrieved?.authDomain).toBe('auth-update.example.com');
+    });
+  });
+
   describe('SQL injection protection', () => {
     it('should safely handle URLs with special characters', async () => {
       const maliciousUrl = "https://example.com/test'; DROP TABLE documents; --";

@@ -225,13 +225,83 @@ export class AuthManager {
   }
 
   /**
-   * Validate that a stored session is still valid by making a test request.
-   * This detects expired sessions by checking for:
-   * 1. Redirects to login/auth pages
-   * 2. Login page content in the response
+   * Check if stored cookies have expired based on their expiration timestamps.
+   * This is a fast check that doesn't require launching a browser.
+   *
+   * @param storageStateJson - The decrypted storage state JSON
+   * @param domain - The domain to check cookies for
+   * @returns Object with expiration status and details
+   */
+  private checkCookieExpiration(
+    storageStateJson: string,
+    domain: string
+  ): { hasExpiredCookies: boolean; expiredCount: number; totalCount: number; details: string[] } {
+    try {
+      const storageState = JSON.parse(storageStateJson);
+      const cookies = storageState.cookies || [];
+      const now = Date.now() / 1000; // Convert to seconds (cookie expires is in seconds)
+
+      // Filter cookies relevant to this domain
+      const domainLower = domain.toLowerCase();
+      const relevantCookies = cookies.filter((cookie: { domain: string }) => {
+        const cookieDomain = cookie.domain.toLowerCase().replace(/^\./, ''); // Remove leading dot
+        return domainLower === cookieDomain || domainLower.endsWith('.' + cookieDomain);
+      });
+
+      if (relevantCookies.length === 0) {
+        // No domain-specific cookies, check all cookies
+        // This handles cases where auth cookies are on a different domain (e.g., github.com for github.io)
+        logger.debug(`[AuthManager] No cookies found for ${domain}, checking all ${cookies.length} cookies`);
+      }
+
+      const cookiesToCheck = relevantCookies.length > 0 ? relevantCookies : cookies;
+
+      let expiredCount = 0;
+      const details: string[] = [];
+
+      for (const cookie of cookiesToCheck) {
+        // Skip cookies without expiration (session cookies)
+        if (cookie.expires === undefined || cookie.expires === -1 || cookie.expires === 0) {
+          continue;
+        }
+
+        if (cookie.expires < now) {
+          expiredCount++;
+          const expiredAgo = Math.round((now - cookie.expires) / 3600); // Hours ago
+          details.push(`Cookie "${cookie.name}" expired ${expiredAgo}h ago`);
+        }
+      }
+
+      // Consider session expired if ANY auth-related cookies are expired
+      // Common auth cookie names
+      const authCookiePatterns = /session|auth|token|jwt|sid|login|user|identity|sso|saml|oauth/i;
+      const expiredAuthCookies = cookiesToCheck.filter((cookie: { name: string; expires?: number }) => {
+        if (!cookie.expires || cookie.expires === -1 || cookie.expires === 0) return false;
+        return cookie.expires < now && authCookiePatterns.test(cookie.name);
+      });
+
+      return {
+        hasExpiredCookies: expiredCount > 0,
+        expiredCount,
+        totalCount: cookiesToCheck.length,
+        details:
+          expiredAuthCookies.length > 0
+            ? details.filter((d) => expiredAuthCookies.some((c: { name: string }) => d.includes(c.name)))
+            : details.slice(0, 3), // Limit details
+      };
+    } catch (error) {
+      logger.debug(`[AuthManager] Error checking cookie expiration:`, error);
+      return { hasExpiredCookies: false, expiredCount: 0, totalCount: 0, details: [] };
+    }
+  }
+
+  /**
+   * Validate that a stored session is still valid.
+   * First checks cookie expiration timestamps (fast, no network).
+   * Falls back to browser-based validation for edge cases.
    *
    * @param url - The protected URL to validate against
-   * @param browserType - Browser type to use for validation
+   * @param browserType - Browser type to use for browser-based validation (if needed)
    * @returns Validation result indicating if session is still valid
    */
   async validateSession(
@@ -246,6 +316,28 @@ export class AuthManager {
       logger.info(`[AuthManager] No stored session found for ${domain}`);
       return { isValid: false, reason: 'No stored session found' };
     }
+
+    // Fast check: Look at cookie expiration timestamps
+    const cookieCheck = this.checkCookieExpiration(storageStateJson, domain);
+    logger.debug(`[AuthManager] Cookie check: ${cookieCheck.expiredCount}/${cookieCheck.totalCount} expired`);
+
+    if (cookieCheck.hasExpiredCookies) {
+      const reason = `Session cookies have expired (${cookieCheck.expiredCount} expired). ${cookieCheck.details.join('; ')}`;
+      logger.warn(`[AuthManager] Session expired based on cookie timestamps: ${reason}`);
+      return {
+        isValid: false,
+        reason,
+        loginDetection: {
+          isLoginPage: false,
+          confidence: 1.0,
+          reasons: [`Cookie expiration check: ${cookieCheck.details.join(', ')}`],
+        },
+      };
+    }
+
+    // If no cookies have explicit expiration, or all have valid timestamps,
+    // do a quick browser-based check to be sure
+    logger.debug(`[AuthManager] Cookie timestamps look valid, performing browser-based validation...`);
 
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
@@ -272,18 +364,29 @@ export class AuthManager {
         timeout: 30000,
       });
 
+      // Wait for potential JavaScript redirects
+      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+
+      // Additional wait for JS-based auth redirects (GitHub Pages, etc.)
+      await page.waitForTimeout(2000);
+
       const finalUrl = page.url();
       logger.debug(`[AuthManager] Final URL after navigation: ${finalUrl}`);
 
-      // Check 1: Were we redirected to a login page?
-      if (isLoginPageUrl(finalUrl) && finalUrl !== url) {
-        logger.warn(`[AuthManager] Session appears expired - redirected to login page: ${finalUrl}`);
-        return {
-          isValid: false,
-          reason: 'Redirected to login page - session has expired',
-          finalUrl,
-          loginDetection: { isLoginPage: true, confidence: 1.0, reasons: ['Redirected to login URL'] },
-        };
+      // Check 1: Were we redirected to a different domain (likely auth)?
+      const finalDomain = new URL(finalUrl).hostname.toLowerCase();
+      const expectedDomain = domain.toLowerCase();
+      if (finalDomain !== expectedDomain && !finalDomain.endsWith('.' + expectedDomain)) {
+        // Redirected to a different domain - check if it's a login page
+        if (isLoginPageUrl(finalUrl)) {
+          logger.warn(`[AuthManager] Session appears expired - redirected to login page: ${finalUrl}`);
+          return {
+            isValid: false,
+            reason: `Redirected to login page on different domain (${finalDomain})`,
+            finalUrl,
+            loginDetection: { isLoginPage: true, confidence: 1.0, reasons: ['Redirected to external login URL'] },
+          };
+        }
       }
 
       // Check 2: Did we get an auth-related HTTP status?
@@ -298,9 +401,6 @@ export class AuthManager {
       }
 
       // Check 3: Does the page content look like a login page?
-      // Wait for content to load
-      await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
-
       const pageContent = await page.content();
       const bodyText = await page.evaluate(() => document.body?.textContent || '');
       const loginDetection = detectLoginPage(bodyText + pageContent, finalUrl);

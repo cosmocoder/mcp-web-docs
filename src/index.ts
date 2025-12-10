@@ -473,6 +473,23 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
       }
     }
 
+    // Prepare auth info to store with the document
+    // If auth was explicitly requested OR if there's an existing session for this URL,
+    // mark the document as requiring auth (handles case where user called authenticate separately)
+    const hasExistingSession = await this.authManager.hasSession(normalizedUrl);
+    const requiresAuth = authOptions?.requiresAuth || hasExistingSession;
+
+    const authInfo = requiresAuth
+      ? {
+          requiresAuth: true,
+          authDomain: new URL(normalizedUrl).hostname, // Session is stored under target URL's domain
+        }
+      : undefined;
+
+    if (hasExistingSession && !authOptions?.requiresAuth) {
+      logger.info(`[WebDocsServer] Found existing auth session for ${normalizedUrl}, marking document as requiring auth`);
+    }
+
     // Store progress token if provided by client
     if (progressToken !== undefined) {
       this.progressTokens.set(docId, progressToken);
@@ -486,7 +503,7 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
     this.statusTracker.startIndexing(docId, normalizedUrl, docTitle);
 
     // Start indexing in the background with abort support
-    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal, pathPrefix)
+    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal, pathPrefix, authInfo)
       .catch((error) => {
         const err = error as Error;
         if (err?.name !== 'AbortError') {
@@ -627,6 +644,43 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
       throw new McpError(ErrorCode.InvalidParams, 'Documentation not found');
     }
 
+    // Check if this site was originally indexed with authentication
+    // If so, we MUST have a valid session to reindex
+    if (doc.requiresAuth) {
+      const authDomain = doc.authDomain || new URL(normalizedUrl).hostname;
+      logger.info(`[WebDocsServer] Site requires auth (authDomain: ${authDomain}). Validating session...`);
+
+      // Check if we have a session for this auth domain
+      const hasSession = await this.authManager.hasSession(normalizedUrl);
+      if (!hasSession) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `This documentation site requires authentication but no session was found. Please use the 'authenticate' tool to log in before re-indexing.`
+        );
+      }
+
+      // Validate the session is still valid
+      const validation = await this.authManager.validateSession(normalizedUrl);
+      if (!validation.isValid) {
+        logger.warn(`[WebDocsServer] Session expired for ${normalizedUrl}: ${validation.reason}`);
+        // Clear the expired session
+        await this.authManager.clearSession(normalizedUrl);
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Authentication session has expired (${validation.reason}). Please use the 'authenticate' tool to log in again before re-indexing.`
+        );
+      }
+      logger.info(`[WebDocsServer] ✓ Session validated for ${normalizedUrl}`);
+    }
+
+    // Prepare auth info to preserve with reindexed document
+    const authInfo = doc.requiresAuth
+      ? {
+          requiresAuth: true,
+          authDomain: doc.authDomain || new URL(normalizedUrl).hostname,
+        }
+      : undefined;
+
     // Cancel any existing operation for this URL
     const wasCancelled = this.indexingQueue.isIndexing(normalizedUrl);
     const controller = await this.indexingQueue.startOperation(normalizedUrl);
@@ -642,7 +696,7 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
     this.statusTracker.startIndexing(docId, normalizedUrl, doc.title);
 
     // Start reindexing in the background with abort support
-    const operationPromise = this.indexAndAdd(docId, normalizedUrl, doc.title, true, controller.signal)
+    const operationPromise = this.indexAndAdd(docId, normalizedUrl, doc.title, true, controller.signal, undefined, authInfo)
       .catch((error) => {
         const err = error as Error;
         if (err?.name !== 'AbortError') {
@@ -725,25 +779,36 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
     const normalizedUrl = normalizeUrl(url);
     const domain = new URL(normalizedUrl).hostname;
 
-    // Check if we already have a session
+    // Check if we already have a session and validate it
     const hasSession = await this.authManager.hasSession(normalizedUrl);
     if (hasSession) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify(
-              {
-                status: 'existing_session',
-                message: `Already have a saved session for ${domain}. Use clear_auth first if you need to re-authenticate.`,
-                domain,
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
+      // Validate that the existing session is still valid
+      logger.info(`[Auth] Validating existing session for ${domain}...`);
+      const validation = await this.authManager.validateSession(normalizedUrl);
+
+      if (validation.isValid) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  status: 'existing_session',
+                  message: `Already have a valid saved session for ${domain}. Use clear_auth first if you need to re-authenticate.`,
+                  domain,
+                  sessionValid: true,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      // Session is expired - clear it and proceed with new login
+      logger.info(`[Auth] Existing session for ${domain} has expired (${validation.reason}). Proceeding with new login.`);
+      await this.authManager.clearSession(normalizedUrl);
     }
 
     try {
@@ -938,7 +1003,15 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
     }
   }
 
-  private async indexAndAdd(id: string, url: string, title: string, reIndex: boolean = false, signal?: AbortSignal, pathPrefix?: string) {
+  private async indexAndAdd(
+    id: string,
+    url: string,
+    title: string,
+    reIndex: boolean = false,
+    signal?: AbortSignal,
+    pathPrefix?: string,
+    authInfo?: { requiresAuth: boolean; authDomain: string }
+  ) {
     // Helper to check if operation was cancelled
     const checkCancelled = () => {
       if (signal?.aborted) {
@@ -1126,6 +1199,8 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
           title,
           favicon: favicon ?? undefined,
           lastIndexed: new Date(),
+          requiresAuth: authInfo?.requiresAuth,
+          authDomain: authInfo?.authDomain,
         },
         chunks: chunks.map((chunk, i) => ({
           ...chunk,
@@ -1172,7 +1247,17 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
    * Add document with retry logic for transient database conflicts
    */
   private async addDocumentWithRetry(
-    doc: { metadata: { url: string; title: string; favicon?: string; lastIndexed: Date }; chunks: DocumentChunk[] },
+    doc: {
+      metadata: {
+        url: string;
+        title: string;
+        favicon?: string;
+        lastIndexed: Date;
+        requiresAuth?: boolean;
+        authDomain?: string;
+      };
+      chunks: DocumentChunk[];
+    },
     maxRetries = 3
   ): Promise<void> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {

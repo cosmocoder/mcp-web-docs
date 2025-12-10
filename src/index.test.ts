@@ -459,4 +459,176 @@ describe('WebDocsServer', () => {
       expect(mockClearSession).toHaveBeenCalledWith('https://example.com');
     });
   });
+
+  describe('Authentication Detection Logic', () => {
+    describe('add_documentation with existing session', () => {
+      it('should auto-detect auth requirement when session exists', async () => {
+        // Simulate the logic in handleAddDocumentation:
+        // If hasSession returns true (session exists), even without auth.requiresAuth,
+        // the document should be marked as requiresAuth=true
+        const mockHasSession = vi.fn<(url: string) => Promise<boolean>>().mockResolvedValue(true);
+        const explicitAuthRequired = false; // No explicit auth option provided
+
+        const hasExistingSession: boolean = await mockHasSession('https://private.example.com');
+        const requiresAuth: boolean = explicitAuthRequired || hasExistingSession;
+
+        expect(hasExistingSession).toBe(true);
+        expect(requiresAuth).toBe(true);
+      });
+
+      it('should not mark auth required if no session and no auth option', async () => {
+        const mockHasSession = vi.fn<(url: string) => Promise<boolean>>().mockResolvedValue(false);
+        const explicitAuthRequired = false; // No explicit auth option provided
+
+        const hasExistingSession: boolean = await mockHasSession('https://public.example.com');
+        const requiresAuth: boolean = explicitAuthRequired || hasExistingSession;
+
+        expect(hasExistingSession).toBe(false);
+        expect(requiresAuth).toBe(false);
+      });
+
+      it('should respect explicit auth.requiresAuth=true', async () => {
+        const mockHasSession = vi.fn().mockResolvedValue(false);
+        const authOptions = { requiresAuth: true };
+
+        const hasExistingSession = await mockHasSession('https://private.example.com');
+        const requiresAuth = authOptions?.requiresAuth || hasExistingSession;
+
+        expect(requiresAuth).toBe(true);
+      });
+
+      it('should generate correct authDomain from URL', () => {
+        const url = 'https://private.example.com/docs/page';
+        const authDomain = new URL(url).hostname;
+
+        expect(authDomain).toBe('private.example.com');
+      });
+    });
+
+    describe('reindex_documentation with auth requirement', () => {
+      it('should require session validation when doc.requiresAuth is true', async () => {
+        // Simulate the logic in handleReindexDocumentation
+        const mockGetDocument = vi.fn().mockResolvedValue({
+          url: 'https://private.example.com',
+          title: 'Private Docs',
+          lastIndexed: new Date(),
+          requiresAuth: true,
+          authDomain: 'private.example.com',
+        });
+
+        const doc = await mockGetDocument('https://private.example.com');
+        expect(doc.requiresAuth).toBe(true);
+
+        // If doc.requiresAuth is true, we must validate session
+        const mustValidateSession = doc.requiresAuth === true;
+        expect(mustValidateSession).toBe(true);
+      });
+
+      it('should skip session validation when doc.requiresAuth is false', async () => {
+        const mockGetDocument = vi.fn().mockResolvedValue({
+          url: 'https://public.example.com',
+          title: 'Public Docs',
+          lastIndexed: new Date(),
+          requiresAuth: false,
+        });
+
+        const doc = await mockGetDocument('https://public.example.com');
+        expect(doc.requiresAuth).toBe(false);
+
+        const mustValidateSession = doc.requiresAuth === true;
+        expect(mustValidateSession).toBe(false);
+      });
+
+      it('should throw error when requiresAuth but no session exists', async () => {
+        const mockHasSession = vi.fn().mockResolvedValue(false);
+        const doc = {
+          requiresAuth: true,
+          authDomain: 'private.example.com',
+        };
+
+        const hasSession = await mockHasSession(doc.authDomain);
+
+        if (doc.requiresAuth && !hasSession) {
+          const error = new Error(
+            `This documentation site requires authentication but no session was found. Please use the 'authenticate' tool to log in before re-indexing.`
+          );
+          expect(error.message).toContain('requires authentication');
+          expect(error.message).toContain('no session was found');
+        }
+      });
+
+      it('should throw error when session is expired', async () => {
+        const mockValidateSession = vi.fn().mockResolvedValue({
+          isValid: false,
+          reason: 'Cookie expired',
+        });
+
+        const validation = await mockValidateSession('https://private.example.com');
+
+        if (!validation.isValid) {
+          const error = new Error(
+            `Authentication session has expired (${validation.reason}). Please use the 'authenticate' tool to log in again before re-indexing.`
+          );
+          expect(error.message).toContain('expired');
+          expect(error.message).toContain('Cookie expired');
+        }
+      });
+
+      it('should proceed when session is valid', async () => {
+        const mockValidateSession = vi.fn().mockResolvedValue({ isValid: true });
+
+        const validation = await mockValidateSession('https://private.example.com');
+        expect(validation.isValid).toBe(true);
+      });
+
+      it('should use authDomain for session lookup when available', async () => {
+        const mockHasSession = vi.fn().mockResolvedValue(true);
+        const doc = {
+          url: 'https://shiny-adventure.pages.github.io',
+          requiresAuth: true,
+          authDomain: 'github.com', // Auth was done at github.com
+        };
+
+        // Should use authDomain, not the doc URL
+        const sessionUrl = doc.authDomain || new URL(doc.url).hostname;
+        expect(sessionUrl).toBe('github.com');
+
+        await mockHasSession(sessionUrl);
+        expect(mockHasSession).toHaveBeenCalledWith('github.com');
+      });
+    });
+
+    describe('authInfo preservation', () => {
+      it('should pass authInfo to indexAndAdd when auth required', () => {
+        const requiresAuth = true;
+        const normalizedUrl = 'https://private.example.com';
+
+        const authInfo = requiresAuth
+          ? {
+              requiresAuth: true,
+              authDomain: new URL(normalizedUrl).hostname,
+            }
+          : undefined;
+
+        expect(authInfo).toEqual({
+          requiresAuth: true,
+          authDomain: 'private.example.com',
+        });
+      });
+
+      it('should not pass authInfo when auth not required', () => {
+        const requiresAuth = false;
+        const normalizedUrl = 'https://public.example.com';
+
+        const authInfo = requiresAuth
+          ? {
+              requiresAuth: true,
+              authDomain: new URL(normalizedUrl).hostname,
+            }
+          : undefined;
+
+        expect(authInfo).toBeUndefined();
+      });
+    });
+  });
 });

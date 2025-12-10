@@ -1,4 +1,5 @@
 import { detectDefaultBrowser, AuthManager, type BrowserType } from './auth.js';
+import { encryptData } from '../util/security.js';
 
 const { mockDefaultBrowser, mockMkdir, mockReadFile, mockWriteFile, mockAccess, mockChmod, mockUnlink, mockChromiumLaunch } = vi.hoisted(
   () => ({
@@ -223,6 +224,152 @@ describe('Auth Module', () => {
       validTypes.forEach((type) => {
         expect(typeof type).toBe('string');
       });
+    });
+  });
+
+  describe('validateSession', () => {
+    let authManager: AuthManager;
+
+    beforeEach(() => {
+      authManager = new AuthManager('/tmp/test-data');
+      mockMkdir.mockResolvedValue(undefined);
+    });
+
+    it('should return isValid=false when no session exists', async () => {
+      mockReadFile.mockRejectedValue(new Error('ENOENT'));
+
+      const result = await authManager.validateSession('https://example.com');
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toContain('No stored session');
+    });
+
+    it('should detect expired cookies from stored session', async () => {
+      // Create a session with expired cookies
+      const expiredTimestamp = Math.floor(Date.now() / 1000) - 3600; // 1 hour ago
+      const storageState = {
+        cookies: [
+          {
+            name: 'session_token',
+            value: 'expired-token',
+            domain: 'example.com',
+            path: '/',
+            expires: expiredTimestamp,
+          },
+        ],
+      };
+
+      // Mock the encryption/decryption cycle
+      const { encryptData } = await import('../util/security.js');
+      const encryptedStorageState = encryptData(JSON.stringify(storageState));
+
+      const storedSession = {
+        domain: 'example.com',
+        storageState: encryptedStorageState,
+        createdAt: new Date().toISOString(),
+        browser: 'chromium',
+        version: 2,
+      };
+
+      mockReadFile.mockResolvedValue(JSON.stringify(storedSession));
+
+      const result = await authManager.validateSession('https://example.com');
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toContain('expired');
+    });
+
+    it('should detect expired auth-related cookies specifically', async () => {
+      // Create a session with expired auth cookies
+      const expiredTimestamp = Math.floor(Date.now() / 1000) - 3600; // 1 hour ago
+      const validTimestamp = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
+      const storageState = {
+        cookies: [
+          {
+            name: 'tracking_cookie', // Non-auth cookie - valid
+            value: 'tracking-value',
+            domain: 'example.com',
+            path: '/',
+            expires: validTimestamp,
+          },
+          {
+            name: 'auth_token', // Auth cookie - expired
+            value: 'expired-auth',
+            domain: 'example.com',
+            path: '/',
+            expires: expiredTimestamp,
+          },
+        ],
+      };
+
+      const encryptedStorageState = encryptData(JSON.stringify(storageState));
+
+      const storedSession = {
+        domain: 'example.com',
+        storageState: encryptedStorageState,
+        createdAt: new Date().toISOString(),
+        browser: 'chromium',
+        version: 2,
+      };
+
+      mockReadFile.mockResolvedValue(JSON.stringify(storedSession));
+
+      const result = await authManager.validateSession('https://example.com');
+
+      expect(result.isValid).toBe(false);
+      expect(result.reason).toContain('expired');
+    });
+
+    it('should consider session valid when cookies have no expiration (session cookies)', async () => {
+      // Create a session with session cookies (no expiration)
+      const storageState = {
+        cookies: [
+          {
+            name: 'session_id',
+            value: 'session-value',
+            domain: 'example.com',
+            path: '/',
+            // No expires field - session cookie
+          },
+        ],
+      };
+
+      const encryptedStorageState = encryptData(JSON.stringify(storageState));
+
+      const storedSession = {
+        domain: 'example.com',
+        storageState: encryptedStorageState,
+        createdAt: new Date().toISOString(),
+        browser: 'chromium',
+        version: 2,
+      };
+
+      mockReadFile.mockResolvedValue(JSON.stringify(storedSession));
+
+      // Mock browser launch for the fallback browser-based validation
+      const mockPage = {
+        goto: vi.fn().mockResolvedValue({ status: () => 200 }),
+        url: vi.fn().mockReturnValue('https://example.com'),
+        waitForLoadState: vi.fn().mockResolvedValue(undefined),
+        waitForTimeout: vi.fn().mockResolvedValue(undefined),
+        content: vi.fn().mockResolvedValue('<html><body>Welcome!</body></html>'),
+        evaluate: vi.fn().mockResolvedValue('Welcome to the site'),
+      };
+      const mockContext = {
+        newPage: vi.fn().mockResolvedValue(mockPage),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      const mockBrowser = {
+        newContext: vi.fn().mockResolvedValue(mockContext),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+      mockChromiumLaunch.mockResolvedValue(mockBrowser);
+
+      const result = await authManager.validateSession('https://example.com');
+
+      // Session cookies don't have expiration, so cookie check passes
+      // Browser validation should then run and determine validity
+      expect(typeof result.isValid).toBe('boolean');
     });
   });
 });
