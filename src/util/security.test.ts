@@ -461,6 +461,30 @@ Normal text here.`;
         expect(isLoginPageUrl('https://github.com/login')).toBe(true);
       });
 
+      it('should detect identity provider URLs (Okta, Auth0, etc.)', () => {
+        // Okta
+        expect(isLoginPageUrl('https://company.okta.com/login')).toBe(true);
+        expect(isLoginPageUrl('https://dev-12345.oktapreview.com/oauth2')).toBe(true);
+        expect(isLoginPageUrl('https://workforce.okta.com/login')).toBe(true);
+
+        // Auth0
+        expect(isLoginPageUrl('https://myapp.auth0.com/login')).toBe(true);
+
+        // OneLogin
+        expect(isLoginPageUrl('https://company.onelogin.com/trust/saml2')).toBe(true);
+
+        // Ping Identity
+        expect(isLoginPageUrl('https://login.pingone.com/sso')).toBe(true);
+        expect(isLoginPageUrl('https://sso.pingidentity.com/idp')).toBe(true);
+
+        // Microsoft
+        expect(isLoginPageUrl('https://login.microsoftonline.com/oauth2')).toBe(true);
+
+        // Federation/ADFS
+        expect(isLoginPageUrl('https://adfs.company.com/adfs/ls')).toBe(true);
+        expect(isLoginPageUrl('https://sso.company.com/federation/login')).toBe(true);
+      });
+
       it('should not flag normal URLs', () => {
         expect(isLoginPageUrl('https://example.com/docs')).toBe(false);
         expect(isLoginPageUrl('https://example.com/api')).toBe(false);

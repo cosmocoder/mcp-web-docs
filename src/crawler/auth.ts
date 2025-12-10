@@ -491,6 +491,7 @@ export class AuthManager {
 
       // Wait for successful login
       const loginSuccess = await this.waitForLogin(page, {
+        targetUrl: url, // The original target URL to return to
         successPattern: loginSuccessPattern,
         successSelector: loginSuccessSelector,
         timeoutSecs: loginTimeoutSecs,
@@ -524,19 +525,31 @@ export class AuthManager {
    * Detection methods (in order of priority):
    * 1. If successPattern is provided: wait for URL to match the regex
    * 2. If successSelector is provided: wait for the CSS selector to appear
-   * 3. Default: poll for common login success indicators (logout button, user menu, URL change)
+   * 3. Default: poll for common login success indicators or return to target domain
+   *
+   * For multi-step OAuth flows (e.g., GitHub Pages → GitHub Login → Okta → back),
+   * the method tracks when the user returns to the original target domain.
    */
   private async waitForLogin(
     page: Page,
     options: {
+      targetUrl: string; // The original target URL the user wants to access
       successPattern?: string;
       successSelector?: string;
       timeoutSecs: number;
     }
   ): Promise<boolean> {
-    const { successPattern, successSelector, timeoutSecs } = options;
+    const { targetUrl, successPattern, successSelector, timeoutSecs } = options;
     const startTime = Date.now();
     const timeoutMs = timeoutSecs * 1000;
+
+    // Extract target domain for multi-step OAuth flow detection
+    let targetDomain: string;
+    try {
+      targetDomain = new URL(targetUrl).hostname.toLowerCase();
+    } catch {
+      targetDomain = '';
+    }
 
     logger.debug(
       `[AuthManager] Login detection method: ${
@@ -544,7 +557,7 @@ export class AuthManager {
           ? `URL pattern: ${successPattern}`
           : successSelector
             ? `CSS selector: ${successSelector}`
-            : 'auto-detect (looking for logout button, user menu, or URL change)'
+            : `auto-detect (target domain: ${targetDomain})`
       }`
     );
 
@@ -583,6 +596,7 @@ export class AuthManager {
     // Default: wait for navigation away from login page or for page to show logged-in state
     // Poll for changes that indicate successful login
     logger.info(`[AuthManager] Using auto-detection for login success...`);
+    logger.info(`[AuthManager] Target domain: ${targetDomain}`);
     logger.info(`[AuthManager] The browser will stay open until you login or ${timeoutSecs} seconds pass.`);
     let lastLogTime = 0;
 
@@ -590,11 +604,30 @@ export class AuthManager {
     const initialUrl = page.url();
     let hasNavigatedAway = false;
     let wasOnLoginPage = false;
+    const visitedDomains = new Set<string>();
+
+    // Enhanced login page URL pattern including common IdPs
+    const loginPagePattern =
+      /login|signin|sign-in|auth|sso|oauth|session|okta|oktapreview|auth0|onelogin|pingone|pingidentity|pingfederate|duosecurity|adfs|saml|idp/i;
 
     while (Date.now() - startTime < timeoutMs) {
       try {
         const currentUrl = page.url();
         const elapsed = Math.round((Date.now() - startTime) / 1000);
+
+        // Extract current domain
+        let currentDomain: string;
+        try {
+          currentDomain = new URL(currentUrl).hostname.toLowerCase();
+        } catch {
+          currentDomain = '';
+        }
+
+        // Track visited domains for debugging
+        if (currentDomain && !visitedDomains.has(currentDomain)) {
+          visitedDomains.add(currentDomain);
+          logger.debug(`[AuthManager] Visited new domain: ${currentDomain}`);
+        }
 
         // Log status every 10 seconds
         if (elapsed - lastLogTime >= 10) {
@@ -602,13 +635,18 @@ export class AuthManager {
           lastLogTime = elapsed;
         }
 
-        // Check if we're on a login-like page
-        const isLoginPage = /login|signin|sign-in|auth|sso|oauth|session/i.test(currentUrl);
+        // Check if we're on a login-like page (URL-based detection)
+        const isLoginPageUrl = loginPagePattern.test(currentUrl);
+
+        // Check if we're on a known identity provider domain
+        const isIdpDomain = /okta|auth0|onelogin|pingidentity|duosecurity|microsoftonline|accounts\.google/i.test(currentDomain);
+
+        const isLoginPage = isLoginPageUrl || isIdpDomain;
 
         // Track if we've been to a login page (to know when we've successfully logged in)
         if (isLoginPage) {
           wasOnLoginPage = true;
-          logger.debug(`[AuthManager] Detected login page: ${currentUrl}`);
+          logger.debug(`[AuthManager] Detected login/IdP page: ${currentUrl}`);
         }
 
         // Track navigation away from initial URL
@@ -617,28 +655,48 @@ export class AuthManager {
           logger.debug(`[AuthManager] Navigation detected: ${initialUrl} → ${currentUrl}`);
         }
 
+        // Check if we've returned to the target domain after visiting login pages
+        const isBackAtTargetDomain = targetDomain && (currentDomain === targetDomain || currentDomain.endsWith('.' + targetDomain));
+
         // Check for common logged-in indicators
         const hasLogoutButton = (await page.locator('text=/log\\s*out|sign\\s*out/i').count()) > 0;
         const hasUserMenu = (await page.locator('[class*="user"], [class*="avatar"], [class*="profile"]').count()) > 0;
 
-        // Only consider login successful if:
-        // 1. We're not on a login page, AND
-        // 2. We have logged-in indicators OR we were on a login page and navigated away
+        // Success condition 1: Found logout button or user menu (and not on login page)
         if (!isLoginPage && (hasLogoutButton || hasUserMenu)) {
           logger.info(`[AuthManager] ✓ Login indicators found (logout button or user menu)`);
           await page.waitForTimeout(1000);
           return true;
         }
 
-        // For GitHub Pages: only consider successful if we were on login page and came back
-        if (currentUrl.includes('github.io') && wasOnLoginPage && !isLoginPage) {
-          // We were redirected to login and now we're back on the github.io page
+        // Success condition 2: Returned to target domain after visiting login page(s)
+        // This handles multi-step OAuth flows (GitHub Pages → GitHub → Okta → back to GitHub Pages)
+        if (isBackAtTargetDomain && wasOnLoginPage && !isLoginPage) {
+          // We were redirected to login/IdP and now we're back on the target domain
           const bodyText = (await page.locator('body').textContent()) || '';
           // Make sure it's not an error page
           if (bodyText.length > 100 && !bodyText.includes('404') && !bodyText.includes('not found')) {
-            logger.info(`[AuthManager] ✓ Returned to GitHub Pages after login`);
-            await page.waitForTimeout(1000);
-            return true;
+            logger.info(
+              `[AuthManager] ✓ Returned to target domain (${currentDomain}) after login. Visited ${visitedDomains.size} domains during auth flow.`
+            );
+            // Wait a bit longer for any post-login redirects to settle
+            await page.waitForTimeout(2000);
+
+            // Double-check we're still on target domain after waiting
+            const finalUrl = page.url();
+            let finalDomain: string;
+            try {
+              finalDomain = new URL(finalUrl).hostname.toLowerCase();
+            } catch {
+              finalDomain = '';
+            }
+
+            if (finalDomain === targetDomain || finalDomain.endsWith('.' + targetDomain)) {
+              logger.info(`[AuthManager] ✓ Confirmed on target domain: ${finalUrl}`);
+              return true;
+            } else {
+              logger.debug(`[AuthManager] Redirected away from target domain after waiting, continuing...`);
+            }
           }
         }
 
@@ -652,6 +710,7 @@ export class AuthManager {
     }
 
     logger.warn(`[AuthManager] Login detection timed out after ${timeoutSecs} seconds`);
+    logger.warn(`[AuthManager] Visited domains during flow: ${Array.from(visitedDomains).join(', ')}`);
     return false;
   }
 

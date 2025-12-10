@@ -720,12 +720,20 @@ const LOGIN_URL_PATTERNS = [
   /\/accounts\/login\b/i,
   /\/idp\//i, // Identity provider paths
   /\/saml\//i, // SAML authentication
+  /\/federation\//i, // Federation services
+  /\/adfs\//i, // Active Directory Federation Services
   /github\.com\/login/i,
   /github\.com\/session/i,
   /login\.microsoftonline\.com/i,
   /accounts\.google\.com/i,
+  // Common identity providers
   /okta\./i,
+  /oktapreview\./i,
   /auth0\./i,
+  /onelogin\./i,
+  /ping(one|identity|federate)\./i,
+  /duosecurity\./i,
+  /workforce\.okta\.com/i,
 ];
 
 /**
