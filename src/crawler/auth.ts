@@ -810,7 +810,7 @@ export class AuthManager {
     }
 
     logger.warn(`[AuthManager] Login detection timed out after ${timeoutSecs} seconds`);
-    logger.warn(`[AuthManager] Visited domains during flow: ${Array.from(visitedDomains).join(', ')}`);
+    logger.debug(`[AuthManager] Visited ${visitedDomains.size} domains during auth flow`);
     return false;
   }
 
