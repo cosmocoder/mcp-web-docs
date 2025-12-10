@@ -68,4 +68,7 @@ src/
 3. Write tests for new functionality
 4. Run `npm test` before completing
 
+### Database Migrations
+When modifying the SQLite schema, add migrations to `DocumentStore.MIGRATIONS` in `src/storage/storage.ts`. Migrations run automatically on startup. See **AGENTS.md** for details.
+
 See **AGENTS.md** for detailed architecture, testing patterns, and mocking strategies.

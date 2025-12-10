@@ -61,6 +61,9 @@ src/
 3. Write tests in corresponding `*.test.ts` file
 4. Run full test suite before submitting
 
+### Database Migrations
+When modifying the SQLite schema, add migrations to `DocumentStore.MIGRATIONS` in `src/storage/storage.ts`. Migrations run automatically on startup. See **AGENTS.md** for details.
+
 ### Common Mocking Patterns
 ```typescript
 // Hoisted mocks (configured before imports)
