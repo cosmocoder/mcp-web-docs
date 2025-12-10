@@ -268,6 +268,13 @@ npm run test:types    # Types check
 
 ---
 
+## Maintaining Agent Guidelines
+
+When making significant changes to the codebase, ask if the agent instruction files need updating:
+- `AGENTS.md`, `CONTRIBUTING.md`, `.cursorrules`, `CLAUDE.md`, `.roo/rules/01-project-rules.md`
+
+---
+
 ## Questions?
 
 If you have questions about contributing, feel free to open an issue for discussion.

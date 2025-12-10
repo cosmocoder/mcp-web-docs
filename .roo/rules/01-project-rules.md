@@ -64,6 +64,9 @@ src/
 ### Database Migrations
 When modifying the SQLite schema, add migrations to `DocumentStore.MIGRATIONS` in `src/storage/storage.ts`. Migrations run automatically on startup. See **AGENTS.md** for details.
 
+### Updating Agent Guidelines
+When making significant changes (new features, patterns, migrations), ask the user if they want to update the agent instruction files: `AGENTS.md`, `CONTRIBUTING.md`, `.cursorrules`, `CLAUDE.md`, `.roo/rules/01-project-rules.md`.
+
 ### Common Mocking Patterns
 ```typescript
 // Hoisted mocks (configured before imports)

@@ -550,3 +550,17 @@ interface EmbeddingsProvider {
 - [ ] Types check: `npm run test:types`
 - [ ] Code formatted: `npm run prettier`
 - [ ] Documentation updated if needed
+
+---
+
+## Maintaining Agent Guidelines
+
+When making significant changes to the codebase (new features, architectural changes, new patterns, database migrations, etc.), **ask the user if they want to update the agent instruction files**. These files help AI agents understand the project:
+
+- `AGENTS.md` - Comprehensive guidelines (primary reference)
+- `CONTRIBUTING.md` - Contributor guidelines
+- `.cursorrules` - Cursor IDE rules
+- `CLAUDE.md` - Claude Code guidelines
+- `.roo/rules/01-project-rules.md` - Roo/Cline rules
+
+Keep all these files in sync when updating documentation.
