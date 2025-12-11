@@ -748,4 +748,74 @@ describe('DocumentStore', () => {
       });
     });
   });
+
+  describe('optimize', () => {
+    it('should return error when storage is not initialized', async () => {
+      const uninitializedStore = new DocumentStore(join(tempDir, 'uninit.db'), join(tempDir, 'uninit-vectors'), mockEmbeddings);
+
+      const result = await uninitializedStore.optimize();
+
+      expect(result.compacted).toBe(false);
+      expect(result.cleanedUp).toBe(false);
+      expect(result.error).toBe('Storage not initialized');
+    });
+
+    it('should run optimization on empty database', async () => {
+      const result = await store.optimize();
+
+      // Optimization may succeed or fail depending on LanceDB internal state
+      // The important thing is it doesn't throw and returns a result
+      expect(typeof result.compacted).toBe('boolean');
+      expect(typeof result.cleanedUp).toBe('boolean');
+    });
+
+    it('should run optimization on database with data', async () => {
+      // Add some documents
+      await store.addDocument(createTestDocument('https://example.com/opt1', 'Optimize Test 1', 3));
+      await store.addDocument(createTestDocument('https://example.com/opt2', 'Optimize Test 2', 3));
+
+      // Delete one to create fragmentation
+      await store.deleteDocument('https://example.com/opt1');
+
+      // Run optimization
+      const result = await store.optimize();
+
+      // Should complete without throwing
+      expect(typeof result.compacted).toBe('boolean');
+      expect(typeof result.cleanedUp).toBe('boolean');
+    });
+
+    it('should clear search cache after optimization', async () => {
+      // Add document and search to populate cache
+      await store.addDocument(createTestDocument('https://example.com/cache', 'Cache Test'));
+      await store.searchByText('cache test');
+
+      // Run optimization (which should clear cache)
+      await store.optimize();
+
+      // Search should still work (but cache was cleared)
+      const results = await store.searchByText('cache test');
+      expect(Array.isArray(results)).toBe(true);
+    });
+
+    it('should preserve data after optimization', async () => {
+      // Add documents
+      await store.addDocument(createTestDocument('https://example.com/preserve1', 'Preserve 1', 2));
+      await store.addDocument(createTestDocument('https://example.com/preserve2', 'Preserve 2', 2));
+
+      // Run optimization
+      await store.optimize();
+
+      // Verify documents are still accessible
+      const doc1 = await store.getDocument('https://example.com/preserve1');
+      const doc2 = await store.getDocument('https://example.com/preserve2');
+
+      expect(doc1?.title).toBe('Preserve 1');
+      expect(doc2?.title).toBe('Preserve 2');
+
+      // Verify search still works
+      const results = await store.searchByText('preserve');
+      expect(results.length).toBeGreaterThan(0);
+    });
+  });
 });

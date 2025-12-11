@@ -1017,6 +1017,12 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
         logger.info(`[WebDocsServer] Cleared auth session for ${domain}`);
       }
 
+      // Optimize storage after deletion to reclaim space
+      // This runs in the background and doesn't block the response
+      this.store.optimize().catch((err) => {
+        logger.warn('[WebDocsServer] Background optimization after delete failed:', err);
+      });
+
       return {
         content: [
           {
@@ -1353,6 +1359,12 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
 
       this.statusTracker.updateStats(id, { chunksCreated: chunks.length });
       this.statusTracker.completeIndexing(id);
+
+      // Optimize storage after indexing to compact data and clean up old versions
+      // This runs in the background and doesn't block the response
+      this.store.optimize().catch((err) => {
+        logger.warn('[WebDocsServer] Background optimization failed:', err);
+      });
     } catch (error) {
       // Don't log AbortError as a real error
       if (error instanceof Error && error.name === 'AbortError') {

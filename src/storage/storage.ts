@@ -558,7 +558,8 @@ export class DocumentStore implements StorageProvider {
   }
 
   /**
-   * Create full-text search index on the content field
+   * Create full-text search index on the content field.
+   * Uses replace: true to prevent accumulation of old index copies.
    */
   private async createFTSIndex(): Promise<void> {
     if (!this.lanceTable || this.ftsIndexCreated) {
@@ -569,6 +570,7 @@ export class DocumentStore implements StorageProvider {
       logger.debug('[DocumentStore] Creating FTS index on content field...');
       await this.lanceTable.createIndex('content', {
         config: lancedb.Index.fts(),
+        replace: true, // Replace existing index to prevent accumulation
       });
       this.ftsIndexCreated = true;
       logger.debug('[DocumentStore] FTS index created successfully');
@@ -1164,6 +1166,61 @@ export class DocumentStore implements StorageProvider {
     } catch (error) {
       logger.error('[DocumentStore] Error validating vectors:', error);
       return false;
+    }
+  }
+
+  /**
+   * Optimizes the LanceDB table by compacting data files and cleaning up old versions.
+   * This helps reduce disk space usage by:
+   * - Compacting small data fragments into larger files
+   * - Removing deleted rows from storage
+   * - Cleaning up old table versions
+   *
+   * Should be called periodically or after batch operations (add/delete).
+   *
+   * @returns Promise with optimization statistics
+   */
+  async optimize(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }> {
+    if (!this.lanceTable) {
+      logger.debug('[DocumentStore] Cannot optimize: Storage not initialized');
+      return { compacted: false, cleanedUp: false, error: 'Storage not initialized' };
+    }
+
+    const result = { compacted: false, cleanedUp: false, error: undefined as string | undefined };
+
+    try {
+      logger.info('[DocumentStore] Starting optimization...');
+
+      // Run optimization with cleanup
+      // This performs compaction, prunes old versions, and optimizes indices
+      // cleanupOlderThan: new Date() means clean up all old versions immediately
+      try {
+        logger.debug('[DocumentStore] Running optimize with cleanup...');
+        const stats = await this.lanceTable.optimize({
+          cleanupOlderThan: new Date(),
+          deleteUnverified: true,
+        });
+        result.compacted = true;
+        result.cleanedUp = true;
+        logger.debug('[DocumentStore] Optimization stats:', stats);
+      } catch (optimizeError) {
+        const err = optimizeError as Error;
+        logger.warn('[DocumentStore] Optimization failed:', err.message);
+        result.error = `Optimization failed: ${err.message}`;
+      }
+
+      // Clear the search cache after optimization as data may have changed
+      this.searchCache.clear();
+
+      logger.info('[DocumentStore] Optimization complete:', result);
+      return result;
+    } catch (error) {
+      logger.error('[DocumentStore] Error during optimization:', error);
+      return {
+        compacted: false,
+        cleanedUp: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   }
 }
