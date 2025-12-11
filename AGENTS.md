@@ -541,6 +541,53 @@ interface EmbeddingsProvider {
 
 ---
 
+## Commit Conventions
+
+This project uses **semantic-release** for automated versioning. Commit messages directly impact releases and changelogs.
+
+### Commit Message Format
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+### Commit Types and Release Impact
+| Type | Release Impact |
+|------|----------------|
+| `feat` | Minor version bump (1.x.0) |
+| `fix` | Patch version bump (1.0.x) |
+| `perf` | Patch version bump |
+| `docs`, `style`, `refactor`, `test`, `chore`, `ci`, `build` | No release |
+
+### Commit Strategy for PRs
+- **Feature PRs**: Use `feat` for the primary commit. Use `chore`/`refactor` for follow-up fixes to the same feature (keeps release notes clean).
+- **Bug fix PRs**: Use `fix` for the primary commit.
+- **Unrelated bugs**: If you find an unrelated bug while working, use `fix`.
+
+### Writing Commit Bodies
+The commit body appears in release notes. Include:
+- What the change does and why
+- Sub-features using `-` bullet points (rendered as nested lists)
+
+**Example:**
+```
+feat(auth): add session validation
+
+Session Validation:
+- Add cookie expiration check
+- Clear expired sessions automatically
+
+Auth Tracking:
+- Store auth requirements in database
+```
+
+See **CONTRIBUTING.md** for detailed commit guidelines.
+
+---
+
 ## Contributing Checklist
 
 - [ ] Code follows existing patterns and style
@@ -549,6 +596,7 @@ interface EmbeddingsProvider {
 - [ ] Linting passes: `npm run lint`
 - [ ] Types check: `npm run test:types`
 - [ ] Code formatted: `npm run prettier`
+- [ ] Commit messages follow conventional commits format
 - [ ] Documentation updated if needed
 
 ---

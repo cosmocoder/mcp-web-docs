@@ -7,6 +7,7 @@ Thank you for your interest in contributing to MCP Web Docs! This document provi
 - [Getting Started](#getting-started)
 - [Development Setup](#development-setup)
 - [Code Style](#code-style)
+- [Commit Conventions](#commit-conventions)
 - [Testing](#testing)
 - [Adding New Features](#adding-new-features)
 - [Pull Request Process](#pull-request-process)
@@ -101,6 +102,118 @@ src/
 - Use the logger from `src/util/logger.ts` (writes to stderr)
 - Validate all user inputs with Zod schemas from `src/util/security.ts`
 - Use `validatePublicUrl()` for SSRF protection on user-provided URLs
+
+---
+
+## Commit Conventions
+
+This project uses [semantic-release](https://semantic-release.gitbook.io/) for automated versioning and release notes generation. Your commit messages directly impact the changelog and version bumps, so please follow these conventions carefully.
+
+### Commit Message Format
+
+We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification:
+
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+- **type**: The type of change (see below)
+- **scope**: Optional, the area of the codebase affected (e.g., `crawler`, `storage`, `auth`)
+- **subject**: A short description of the change (imperative mood, no period)
+- **body**: Optional, detailed description of the change
+- **footer**: Optional, for breaking changes or issue references
+
+### Commit Types and Release Impact
+
+| Type | Description | Release Impact |
+|------|-------------|----------------|
+| `feat` | A new feature | **Minor** version bump (1.x.0) |
+| `fix` | A bug fix | **Patch** version bump (1.0.x) |
+| `perf` | Performance improvement | **Patch** version bump |
+| `docs` | Documentation only | No release |
+| `style` | Code style (formatting, etc.) | No release |
+| `refactor` | Code change that neither fixes nor adds | No release |
+| `test` | Adding or updating tests | No release |
+| `chore` | Maintenance tasks | No release |
+| `ci` | CI/CD changes | No release |
+| `build` | Build system changes | No release |
+
+### Commit Strategy for Pull Requests
+
+**For feature PRs:**
+
+1. **Primary commit** — Use `feat` prefix for the main feature:
+   ```
+   feat(auth): add session validation and auth requirement tracking
+   ```
+
+2. **Follow-up fixes within the same PR** — Use `chore` or `refactor` for bug fixes or improvements to your new feature:
+   ```
+   chore(auth): fix typo in session validation logic
+   refactor(auth): simplify cookie expiration check
+   ```
+
+   This ensures only the main feature appears in release notes, not every small fix you made while developing it.
+
+3. **Unrelated bug fixes** — If you discover and fix a bug unrelated to your feature, use `fix`:
+   ```
+   fix(storage): handle null values in document metadata
+   ```
+
+**For bug fix PRs:**
+
+- Use `fix` prefix for the primary commit:
+  ```
+  fix(crawler): prevent infinite loop on circular redirects
+  ```
+
+**For documentation/maintenance PRs:**
+
+- Use `docs`, `chore`, `refactor`, etc. as appropriate
+
+### Writing Good Commit Bodies
+
+The commit body is included in release notes, so write it for your users! Use it to explain:
+- What the change does and why
+- Any important details or caveats
+- Sub-features or components (use `-` for bullet points)
+
+**Example:**
+
+```
+feat(auth): add session validation and auth requirement tracking
+
+Enhanced session validation to detect expired sessions before crawling,
+and track authentication requirements in the database for reliable
+re-indexing of protected documentation sites.
+
+Session Validation:
+- Add fast cookie expiration check before browser-based validation
+- Detect expired auth cookies by checking timestamp vs current time
+- Clear expired sessions and prompt user to re-authenticate
+
+Auth Requirement Tracking:
+- Add requiresAuth and authDomain fields to DocumentMetadata
+- Store auth requirements in SQLite when indexing authenticated sites
+- Automatically detect and mark sites that have existing sessions
+```
+
+### Breaking Changes
+
+For breaking changes, add `BREAKING CHANGE:` in the commit footer:
+
+```
+feat(api): change search result format
+
+BREAKING CHANGE: The search results now return an array of objects
+instead of a flat array. Update your code to handle the new format.
+```
+
+This triggers a **major** version bump (x.0.0).
 
 ---
 
