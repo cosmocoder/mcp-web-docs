@@ -734,6 +734,9 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
         }
       : undefined;
 
+    // Preserve existing tags during reindex
+    const existingTags = doc.tags;
+
     // Cancel any existing operation for this URL
     const wasCancelled = this.indexingQueue.isIndexing(normalizedUrl);
     const controller = await this.indexingQueue.startOperation(normalizedUrl);
@@ -748,8 +751,8 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
 
     this.statusTracker.startIndexing(docId, normalizedUrl, doc.title);
 
-    // Start reindexing in the background with abort support
-    const operationPromise = this.indexAndAdd(docId, normalizedUrl, doc.title, true, controller.signal, undefined, authInfo)
+    // Start reindexing in the background with abort support (preserving existing tags)
+    const operationPromise = this.indexAndAdd(docId, normalizedUrl, doc.title, true, controller.signal, undefined, authInfo, existingTags)
       .catch((error) => {
         const err = error as Error;
         if (err?.name !== 'AbortError') {
