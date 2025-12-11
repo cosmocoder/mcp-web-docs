@@ -115,6 +115,12 @@ export interface StorageProvider {
   listDocuments(): Promise<DocumentMetadata[]>;
   deleteDocument(url: string): Promise<void>;
   getDocument(url: string): Promise<DocumentMetadata | null>;
+  /** Set tags for a documentation site (replaces existing tags) */
+  setTags(url: string, tags: string[]): Promise<void>;
+  /** List all unique tags with their usage counts */
+  listAllTags(): Promise<Array<{ tag: string; count: number }>>;
+  /** Get URLs of documents that have ALL of the specified tags */
+  getUrlsByTags(tags: string[]): Promise<string[]>;
 }
 
 export type DocsCrawlerType = 'crawlee' | 'github';
