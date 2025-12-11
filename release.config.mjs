@@ -21,28 +21,40 @@ const commitPartial = `* {{#if scope}}**{{scope}}:** {{/if}}{{#if subject}}{{sub
 `;
 
 /**
- * Transform function to process each commit before rendering.
- * Indents each line of the commit body with 2 spaces so that:
+ * Indent each line of the commit body with 2 spaces so that:
  * - Plain text appears as indented paragraphs
- * - Lines starting with `-` become nested list items
+ * - Lines starting with `-` become nested list items under the main commit bullet
  *
- * Note: The commit object is immutable, so we must return a new object
- * with the modified properties rather than mutating the original.
- *
- * @param {object} commit - The commit object from conventional-changelog
- * @returns {object} - The transformed commit (new object)
+ * @param {string} body - The commit body
+ * @returns {string} - The indented body
  */
-function transform(commit) {
-  // Return a new object with the modified body (commit is immutable)
-  return {
-    ...commit,
-    body: commit.body
-      ? commit.body
-          .split('\n')
-          .map((line) => `  ${line}`)
-          .join('\n')
-      : commit.body,
-  };
+function indentBody(body) {
+  if (!body) return body;
+  return body
+    .split('\n')
+    .map((line) => `  ${line}`)
+    .join('\n');
+}
+
+/**
+ * finalizeContext runs after the default transform has filtered commits.
+ * This allows us to modify only the commits that will appear in release notes
+ * (feat, fix, perf, revert) without affecting the filtering logic.
+ *
+ * We iterate through each commit group and indent the body of each commit.
+ */
+function finalizeContext(context) {
+  // Process each commit group (Features, Bug Fixes, etc.)
+  if (context.commitGroups) {
+    context.commitGroups = context.commitGroups.map((group) => ({
+      ...group,
+      commits: group.commits.map((commit) => ({
+        ...commit,
+        body: indentBody(commit.body),
+      })),
+    }));
+  }
+  return context;
 }
 
 /**
@@ -60,7 +72,7 @@ export default {
       {
         writerOpts: {
           commitPartial,
-          transform,
+          finalizeContext,
         },
       },
     ],
