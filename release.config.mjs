@@ -25,6 +25,14 @@ const commitPartial = `* {{#if scope}}**{{scope}}:** {{/if}}{{#if subject}}{{sub
 `;
 
 /**
+ * Main header template for the release notes.
+ * Uses ## for second-level heading (since GitHub release page already has the release title).
+ */
+const headerPartial = `## {{#if @root.linkCompare}}[{{version}}]({{@root.host}}/{{@root.owner}}/{{@root.repository}}/compare/{{previousTag}}...{{currentTag}}){{else}}{{version}}{{/if}}{{#if date}} ({{date}}){{/if}}
+
+`;
+
+/**
  * Indent each line of the commit body with 2 spaces so that:
  * - Plain text appears as indented paragraphs
  * - Lines starting with `-` become nested list items under the main commit bullet
@@ -75,6 +83,7 @@ export default {
       '@semantic-release/release-notes-generator',
       {
         writerOpts: {
+          headerPartial,
           commitPartial,
           finalizeContext,
         },
