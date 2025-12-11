@@ -4,6 +4,7 @@ import {
   validateToolArgs,
   AddDocumentationArgsSchema,
   SearchDocumentationArgsSchema,
+  SetTagsArgsSchema,
   detectPromptInjection,
   wrapExternalContent,
   addInjectionWarnings,
@@ -37,6 +38,8 @@ vi.mock('./storage/storage.js', () => ({
     searchByText: vi.fn().mockResolvedValue([]),
     addDocument: vi.fn().mockResolvedValue(undefined),
     deleteDocument: vi.fn().mockResolvedValue(undefined),
+    setTags: vi.fn().mockResolvedValue(undefined),
+    listAllTags: vi.fn().mockResolvedValue([]),
   })),
 }));
 
@@ -179,6 +182,73 @@ describe('WebDocsServer', () => {
       const result = validateToolArgs(argsWithAuth, AddDocumentationArgsSchema);
       expect(result.auth?.requiresAuth).toBe(true);
       expect(result.auth?.browser).toBe('chromium');
+    });
+
+    it('should validate tags in add_documentation', () => {
+      const argsWithTags = {
+        url: 'https://docs.example.com',
+        tags: ['frontend', 'mycompany', 'react'],
+      };
+
+      const result = validateToolArgs(argsWithTags, AddDocumentationArgsSchema);
+      expect(result.tags).toEqual(['frontend', 'mycompany', 'react']);
+    });
+
+    it('should reject invalid tags in add_documentation', () => {
+      const invalidArgs = {
+        url: 'https://docs.example.com',
+        tags: ['valid-tag', 'invalid tag with spaces'],
+      };
+
+      expect(() => validateToolArgs(invalidArgs, AddDocumentationArgsSchema)).toThrow('Invalid arguments');
+    });
+
+    it('should validate tags in search_documentation', () => {
+      const argsWithTags = {
+        query: 'authentication',
+        tags: ['frontend', 'mycompany'],
+      };
+
+      const result = validateToolArgs(argsWithTags, SearchDocumentationArgsSchema);
+      expect(result.tags).toEqual(['frontend', 'mycompany']);
+    });
+
+    it('should validate set_tags arguments', () => {
+      const validArgs = {
+        url: 'https://docs.example.com',
+        tags: ['frontend', 'backend'],
+      };
+
+      const result = validateToolArgs(validArgs, SetTagsArgsSchema);
+      expect(result.url).toBe('https://docs.example.com');
+      expect(result.tags).toEqual(['frontend', 'backend']);
+    });
+
+    it('should reject set_tags with missing tags', () => {
+      const invalidArgs = {
+        url: 'https://docs.example.com',
+      };
+
+      expect(() => validateToolArgs(invalidArgs, SetTagsArgsSchema)).toThrow('Invalid arguments');
+    });
+
+    it('should allow empty tags array in set_tags (to clear all tags)', () => {
+      const argsWithEmptyTags = {
+        url: 'https://docs.example.com',
+        tags: [],
+      };
+
+      const result = validateToolArgs(argsWithEmptyTags, SetTagsArgsSchema);
+      expect(result.tags).toEqual([]);
+    });
+
+    it('should reject tags with special characters', () => {
+      const invalidArgs = {
+        url: 'https://docs.example.com',
+        tags: ['valid-tag', 'invalid@tag'],
+      };
+
+      expect(() => validateToolArgs(invalidArgs, SetTagsArgsSchema)).toThrow('Invalid arguments');
     });
   });
 
@@ -426,6 +496,58 @@ describe('WebDocsServer', () => {
       const mockGetDocument = vi.fn().mockResolvedValue(null);
       const doc = await mockGetDocument('https://nonexistent.com');
       expect(doc).toBeNull();
+    });
+
+    it('should mock setTags', async () => {
+      const mockSetTags = vi.fn().mockResolvedValue(undefined);
+      await mockSetTags('https://example.com', ['frontend', 'react']);
+      expect(mockSetTags).toHaveBeenCalledWith('https://example.com', ['frontend', 'react']);
+    });
+
+    it('should mock listAllTags return value', async () => {
+      const mockTags = [
+        { tag: 'frontend', count: 5 },
+        { tag: 'backend', count: 3 },
+        { tag: 'api', count: 2 },
+      ];
+
+      const mockListAllTags = vi.fn().mockResolvedValue(mockTags);
+      const tags = await mockListAllTags();
+
+      expect(tags).toHaveLength(3);
+      expect(tags[0].tag).toBe('frontend');
+      expect(tags[0].count).toBe(5);
+    });
+
+    it('should mock listDocuments with tags', async () => {
+      const mockDocs: DocumentMetadata[] = [
+        {
+          url: 'https://example.com',
+          title: 'Example',
+          lastIndexed: new Date(),
+          tags: ['frontend', 'react'],
+        },
+      ];
+
+      const mockListDocuments = vi.fn().mockResolvedValue(mockDocs);
+      const result = await mockListDocuments();
+
+      expect(result).toHaveLength(1);
+      expect(result[0].tags).toEqual(['frontend', 'react']);
+    });
+
+    it('should mock getDocument with tags', async () => {
+      const mockDoc: DocumentMetadata = {
+        url: 'https://example.com',
+        title: 'Example',
+        lastIndexed: new Date(),
+        tags: ['frontend', 'mycompany'],
+      };
+
+      const mockGetDocument = vi.fn().mockResolvedValue(mockDoc);
+      const doc = await mockGetDocument('https://example.com');
+
+      expect(doc.tags).toEqual(['frontend', 'mycompany']);
     });
   });
 
