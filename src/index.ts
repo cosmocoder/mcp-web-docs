@@ -1339,10 +1339,12 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
         })),
       });
 
-      // Set tags if provided
+      // Always update tags when indexing (clears old tags if none provided)
+      await this.store.setTags(url, tags || []);
       if (tags && tags.length > 0) {
-        await this.store.setTags(url, tags);
         logger.info(`[WebDocsServer] Tags set for ${url}:`, tags);
+      } else {
+        logger.debug(`[WebDocsServer] Tags cleared for ${url}`);
       }
 
       logger.info(`[WebDocsServer] Successfully indexed ${url}`);
