@@ -1013,6 +1013,9 @@ export class DocumentStore implements StorageProvider {
 
       await this.sqliteDb.run('COMMIT');
 
+      // Clear cached search results that may be affected by tag changes
+      this.clearCacheForUrl(url);
+
       logger.debug(`[DocumentStore] Tags set successfully for ${url}`);
     } catch (error) {
       if (this.sqliteDb) {
