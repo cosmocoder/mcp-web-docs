@@ -121,6 +121,8 @@ export interface StorageProvider {
   listAllTags(): Promise<Array<{ tag: string; count: number }>>;
   /** Get URLs of documents that have ALL of the specified tags */
   getUrlsByTags(tags: string[]): Promise<string[]>;
+  /** Optimize storage by compacting data and cleaning up old versions */
+  optimize(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }>;
 }
 
 export type DocsCrawlerType = 'crawlee' | 'github';
