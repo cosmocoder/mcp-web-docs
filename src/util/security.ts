@@ -300,6 +300,16 @@ export function secureHash(input: string): string {
 /** Browser type enum for authentication */
 const BrowserTypeEnum = z.enum(['chromium', 'chrome', 'firefox', 'webkit', 'edge']);
 
+/** Schema for tag validation - lowercase alphanumeric with hyphens/underscores */
+const TagSchema = z
+  .string()
+  .min(1)
+  .max(50)
+  .regex(/^[a-zA-Z0-9-_]+$/, 'Tags must contain only alphanumeric characters, hyphens, and underscores');
+
+/** Schema for an array of tags */
+const TagsArraySchema = z.array(TagSchema).max(20);
+
 /**
  * Schema for add_documentation tool arguments
  */
@@ -316,6 +326,7 @@ export const AddDocumentationArgsSchema = z.object({
     .max(500)
     .refine((val) => val.startsWith('/'), 'Path prefix must start with /')
     .optional(),
+  tags: TagsArraySchema.optional(),
   auth: z
     .object({
       requiresAuth: z.boolean().optional(),
@@ -358,6 +369,7 @@ export const SearchDocumentationArgsSchema = z.object({
   query: z.string().min(1).max(1000),
   url: z.string().url().max(2048).optional(),
   limit: z.number().min(1).max(100).optional(),
+  tags: TagsArraySchema.optional(),
 });
 
 export type SearchDocumentationArgs = z.infer<typeof SearchDocumentationArgsSchema>;
@@ -380,6 +392,16 @@ export const DeleteDocumentationArgsSchema = z.object({
 });
 
 export type DeleteDocumentationArgs = z.infer<typeof DeleteDocumentationArgsSchema>;
+
+/**
+ * Schema for set_tags tool arguments
+ */
+export const SetTagsArgsSchema = z.object({
+  url: z.string().url().max(2048),
+  tags: TagsArraySchema,
+});
+
+export type SetTagsArgs = z.infer<typeof SetTagsArgsSchema>;
 
 /**
  * Validate MCP tool arguments against a schema

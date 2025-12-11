@@ -534,4 +534,218 @@ describe('DocumentStore', () => {
       expect(Array.isArray(results)).toBe(true);
     });
   });
+
+  describe('document tags', () => {
+    it('should set and retrieve tags for a document', async () => {
+      const url = 'https://example.com/tagged';
+      await store.addDocument(createTestDocument(url, 'Tagged Doc'));
+
+      await store.setTags(url, ['frontend', 'react']);
+
+      const doc = await store.getDocument(url);
+      expect(doc?.tags).toEqual(['frontend', 'react']);
+    });
+
+    it('should normalize tags to lowercase', async () => {
+      const url = 'https://example.com/normalized';
+      await store.addDocument(createTestDocument(url, 'Normalized Tags'));
+
+      await store.setTags(url, ['FrontEnd', 'REACT', 'MyCompany']);
+
+      const doc = await store.getDocument(url);
+      expect(doc?.tags).toEqual(['frontend', 'mycompany', 'react']);
+    });
+
+    it('should deduplicate tags', async () => {
+      const url = 'https://example.com/dedup';
+      await store.addDocument(createTestDocument(url, 'Dedup Tags'));
+
+      await store.setTags(url, ['frontend', 'frontend', 'react', 'React']);
+
+      const doc = await store.getDocument(url);
+      expect(doc?.tags).toEqual(['frontend', 'react']);
+    });
+
+    it('should replace existing tags when setting new ones', async () => {
+      const url = 'https://example.com/replace';
+      await store.addDocument(createTestDocument(url, 'Replace Tags'));
+
+      await store.setTags(url, ['old-tag']);
+      let doc = await store.getDocument(url);
+      expect(doc?.tags).toEqual(['old-tag']);
+
+      await store.setTags(url, ['new-tag-1', 'new-tag-2']);
+      doc = await store.getDocument(url);
+      expect(doc?.tags).toEqual(['new-tag-1', 'new-tag-2']);
+    });
+
+    it('should remove all tags when setting empty array', async () => {
+      const url = 'https://example.com/remove';
+      await store.addDocument(createTestDocument(url, 'Remove Tags'));
+
+      await store.setTags(url, ['tag1', 'tag2']);
+      await store.setTags(url, []);
+
+      const doc = await store.getDocument(url);
+      expect(doc?.tags).toEqual([]);
+    });
+
+    it('should throw error when setting tags for non-existent document', async () => {
+      await expect(store.setTags('https://nonexistent.com', ['tag'])).rejects.toThrow('Documentation not found');
+    });
+
+    it('should include tags in listDocuments', async () => {
+      await store.addDocument(createTestDocument('https://example.com/list1', 'List 1'));
+      await store.addDocument(createTestDocument('https://example.com/list2', 'List 2'));
+
+      await store.setTags('https://example.com/list1', ['frontend']);
+      await store.setTags('https://example.com/list2', ['backend', 'api']);
+
+      const docs = await store.listDocuments();
+      const doc1 = docs.find((d) => d.url === 'https://example.com/list1');
+      const doc2 = docs.find((d) => d.url === 'https://example.com/list2');
+
+      expect(doc1?.tags).toEqual(['frontend']);
+      expect(doc2?.tags).toEqual(['api', 'backend']);
+    });
+
+    it('should return empty tags array for untagged documents', async () => {
+      await store.addDocument(createTestDocument('https://example.com/untagged', 'Untagged'));
+
+      const doc = await store.getDocument('https://example.com/untagged');
+      expect(doc?.tags).toEqual([]);
+    });
+
+    it('should delete tags when document is deleted', async () => {
+      const url = 'https://example.com/delete-with-tags';
+      await store.addDocument(createTestDocument(url, 'Delete With Tags'));
+      await store.setTags(url, ['tag1', 'tag2']);
+
+      await store.deleteDocument(url);
+
+      // Re-add document and verify tags are gone
+      await store.addDocument(createTestDocument(url, 'New Doc'));
+      const doc = await store.getDocument(url);
+      expect(doc?.tags).toEqual([]);
+    });
+  });
+
+  describe('listAllTags', () => {
+    it('should return empty array when no tags exist', async () => {
+      const tags = await store.listAllTags();
+      expect(tags).toEqual([]);
+    });
+
+    it('should list all unique tags with counts', async () => {
+      await store.addDocument(createTestDocument('https://example.com/t1', 'T1'));
+      await store.addDocument(createTestDocument('https://example.com/t2', 'T2'));
+      await store.addDocument(createTestDocument('https://example.com/t3', 'T3'));
+
+      await store.setTags('https://example.com/t1', ['frontend', 'react']);
+      await store.setTags('https://example.com/t2', ['frontend', 'vue']);
+      await store.setTags('https://example.com/t3', ['backend']);
+
+      const tags = await store.listAllTags();
+
+      expect(tags.find((t) => t.tag === 'frontend')?.count).toBe(2);
+      expect(tags.find((t) => t.tag === 'react')?.count).toBe(1);
+      expect(tags.find((t) => t.tag === 'vue')?.count).toBe(1);
+      expect(tags.find((t) => t.tag === 'backend')?.count).toBe(1);
+    });
+
+    it('should sort tags by count descending', async () => {
+      await store.addDocument(createTestDocument('https://example.com/s1', 'S1'));
+      await store.addDocument(createTestDocument('https://example.com/s2', 'S2'));
+      await store.addDocument(createTestDocument('https://example.com/s3', 'S3'));
+
+      await store.setTags('https://example.com/s1', ['common', 'rare']);
+      await store.setTags('https://example.com/s2', ['common']);
+      await store.setTags('https://example.com/s3', ['common']);
+
+      const tags = await store.listAllTags();
+
+      expect(tags[0].tag).toBe('common');
+      expect(tags[0].count).toBe(3);
+    });
+  });
+
+  describe('getUrlsByTags', () => {
+    beforeEach(async () => {
+      await store.addDocument(createTestDocument('https://example.com/u1', 'U1'));
+      await store.addDocument(createTestDocument('https://example.com/u2', 'U2'));
+      await store.addDocument(createTestDocument('https://example.com/u3', 'U3'));
+
+      await store.setTags('https://example.com/u1', ['frontend', 'react']);
+      await store.setTags('https://example.com/u2', ['frontend', 'vue']);
+      await store.setTags('https://example.com/u3', ['backend']);
+    });
+
+    it('should return URLs with single tag', async () => {
+      const urls = await store.getUrlsByTags(['frontend']);
+
+      expect(urls.length).toBe(2);
+      expect(urls).toContain('https://example.com/u1');
+      expect(urls).toContain('https://example.com/u2');
+    });
+
+    it('should return URLs with ALL specified tags (AND logic)', async () => {
+      const urls = await store.getUrlsByTags(['frontend', 'react']);
+
+      expect(urls.length).toBe(1);
+      expect(urls).toContain('https://example.com/u1');
+    });
+
+    it('should return empty array when no URLs match all tags', async () => {
+      const urls = await store.getUrlsByTags(['frontend', 'backend']);
+      expect(urls).toEqual([]);
+    });
+
+    it('should return empty array for empty tags', async () => {
+      const urls = await store.getUrlsByTags([]);
+      expect(urls).toEqual([]);
+    });
+
+    it('should normalize tags when searching', async () => {
+      const urls = await store.getUrlsByTags(['FrontEnd', 'REACT']);
+
+      expect(urls.length).toBe(1);
+      expect(urls).toContain('https://example.com/u1');
+    });
+  });
+
+  describe('searchByText with tag filtering', () => {
+    beforeEach(async () => {
+      await store.addDocument(createTestDocument('https://example.com/react-hooks', 'React Hooks Guide', 2));
+      await store.addDocument(createTestDocument('https://example.com/vue-components', 'Vue Components', 2));
+      await store.addDocument(createTestDocument('https://example.com/express-api', 'Express API', 2));
+
+      await store.setTags('https://example.com/react-hooks', ['frontend', 'react']);
+      await store.setTags('https://example.com/vue-components', ['frontend', 'vue']);
+      await store.setTags('https://example.com/express-api', ['backend', 'api']);
+    });
+
+    it('should filter search results by tags', async () => {
+      const results = await store.searchByText('guide', { filterByTags: ['frontend'] });
+
+      results.forEach((result) => {
+        expect(result.url.startsWith('https://example.com/react') || result.url.startsWith('https://example.com/vue')).toBe(true);
+      });
+    });
+
+    it('should return empty results when no documents match tags', async () => {
+      const results = await store.searchByText('guide', { filterByTags: ['nonexistent-tag'] });
+      expect(results).toEqual([]);
+    });
+
+    it('should combine tag filter with URL filter', async () => {
+      const results = await store.searchByText('guide', {
+        filterByTags: ['frontend'],
+        filterUrl: 'https://example.com/react',
+      });
+
+      results.forEach((result) => {
+        expect(result.url.startsWith('https://example.com/react')).toBe(true);
+      });
+    });
+  });
 });

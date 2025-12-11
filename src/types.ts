@@ -22,6 +22,8 @@ export interface DocumentMetadata {
   requiresAuth?: boolean;
   /** The domain where the auth session is stored (e.g., "github.com" for GitHub auth) */
   authDomain?: string;
+  /** User-defined tags for categorizing documentation (e.g., "frontend", "mycompany") */
+  tags?: string[];
 }
 
 export interface DocumentChunk {
@@ -101,6 +103,8 @@ export interface SearchOptions {
   textQuery?: string;
   /** Filter results to a specific documentation site by its base URL */
   filterUrl?: string;
+  /** Filter results to documentation sites that have ALL of the specified tags */
+  filterByTags?: string[];
 }
 
 export interface StorageProvider {
