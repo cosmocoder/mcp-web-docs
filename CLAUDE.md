@@ -68,6 +68,17 @@ src/
 3. Write tests for new functionality
 4. Run `npm test` before completing
 
+### Commit Conventions
+This project uses **semantic-release** for automated versioning. Follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+- `feat`: New feature → Minor version bump
+- `fix`: Bug fix → Patch version bump
+- `chore`, `refactor`, `docs`, `test`: No release
+
+**For feature PRs**: Use `feat` for the main commit, `chore`/`refactor` for follow-up fixes within the same PR (keeps release notes focused on the feature, not every small fix).
+
+Commit bodies are included in release notes—use `-` bullet points for sub-features.
+
 ### Database Migrations
 When modifying the SQLite schema, add migrations to `DocumentStore.MIGRATIONS` in `src/storage/storage.ts`. Migrations run automatically on startup. See **AGENTS.md** for details.
 
