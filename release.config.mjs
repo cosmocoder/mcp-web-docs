@@ -26,18 +26,23 @@ const commitPartial = `* {{#if scope}}**{{scope}}:** {{/if}}{{#if subject}}{{sub
  * - Plain text appears as indented paragraphs
  * - Lines starting with `-` become nested list items
  *
+ * Note: The commit object is immutable, so we must return a new object
+ * with the modified properties rather than mutating the original.
+ *
  * @param {object} commit - The commit object from conventional-changelog
- * @returns {object} - The transformed commit
+ * @returns {object} - The transformed commit (new object)
  */
 function transform(commit) {
-  if (commit.body) {
-    // Indent each line of the body with 2 spaces for proper Markdown nesting
-    commit.body = commit.body
-      .split('\n')
-      .map((line) => `  ${line}`)
-      .join('\n');
-  }
-  return commit;
+  // Return a new object with the modified body (commit is immutable)
+  return {
+    ...commit,
+    body: commit.body
+      ? commit.body
+          .split('\n')
+          .map((line) => `  ${line}`)
+          .join('\n')
+      : commit.body,
+  };
 }
 
 /**
