@@ -44,6 +44,7 @@ import {
   SearchDocumentationArgsSchema,
   ReindexDocumentationArgsSchema,
   DeleteDocumentationArgsSchema,
+  SetTagsArgsSchema,
   type ValidatedStorageState,
 } from './util/security.js';
 import type { StorageState } from './crawler/crawlee-crawler.js';
@@ -199,6 +200,12 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
                 description:
                   "Optional path prefix to restrict crawling. Only pages whose URL path starts with this prefix will be indexed. Must start with '/'. Example: '/api/v2' would only crawl pages under that path.",
               },
+              tags: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Optional tags to categorize the documentation (e.g., ["frontend", "mycompany"]). Tags help filter search results across multiple documentation sites.',
+              },
               auth: {
                 type: 'object',
                 description: 'Authentication options for protected documentation sites',
@@ -280,7 +287,8 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
         },
         {
           name: 'list_documentation',
-          description: 'List all indexed documentation sites',
+          description:
+            'List all indexed documentation sites with their metadata including tags. Use this to see what documentation is available and what tags are assigned to each site. Each doc shows: url, title, tags[], lastIndexed, requiresAuth.',
           inputSchema: {
             type: 'object',
             properties: {},
@@ -309,6 +317,11 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
    - "Card component status primary negative props table"
    - "database connection pool maxConnections timeout"
 
+## Filtering Options
+
+- **url**: Filter to a specific documentation site by URL
+- **tags**: Filter to docs with specific tags. Use when user mentions a category, project, or team name (e.g., tags: ["frontend", "jimdo"] to search only frontend Jimdo docs)
+
 ## How Search Works
 - Full-text search with stemming (run → runs, running)
 - Fuzzy matching for typos (authetication → authentication)
@@ -330,6 +343,12 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
               limit: {
                 type: 'number',
                 description: 'Maximum number of results (default: 10)',
+              },
+              tags: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Optional: Filter to docs with ALL specified tags. Use when user mentions a category, project, or team (e.g., ["frontend", "mycompany"]). See list_tags for available tags.',
               },
             },
             required: ['query'],
@@ -376,6 +395,36 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
             required: ['url'],
           },
         },
+        {
+          name: 'set_tags',
+          description:
+            'Set tags for a documentation site to enable tag-based filtering in searches. Tags categorize docs by project, team, or type (e.g., "frontend", "backend", "mycompany", "jimdo"). Replaces any existing tags. Use an empty array to remove all tags.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the documentation site',
+              },
+              tags: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Array of tags to assign. Tags are case-insensitive and must contain only alphanumeric characters, hyphens, or underscores. Example: ["frontend", "mycompany", "react"]',
+              },
+            },
+            required: ['url', 'tags'],
+          },
+        },
+        {
+          name: 'list_tags',
+          description:
+            'List all available tags with usage counts. Use this to discover what tags exist when you need to filter searches but are unsure of the exact tag names. Returns tags sorted by usage count.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+        },
       ],
     }));
 
@@ -405,6 +454,10 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
             return this.handleClearAuth(request.params.arguments);
           case 'delete_documentation':
             return this.handleDeleteDocumentation(request.params.arguments);
+          case 'set_tags':
+            return this.handleSetTags(request.params.arguments);
+          case 'list_tags':
+            return this.handleListTags();
           default:
             throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
         }
@@ -421,7 +474,7 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
-    const { url, title, id, pathPrefix, auth: authOptions } = validatedArgs;
+    const { url, title, id, pathPrefix, tags, auth: authOptions } = validatedArgs;
 
     // Additional SSRF protection check
     if (!isValidPublicUrl(url)) {
@@ -503,7 +556,7 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
     this.statusTracker.startIndexing(docId, normalizedUrl, docTitle);
 
     // Start indexing in the background with abort support
-    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal, pathPrefix, authInfo)
+    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal, pathPrefix, authInfo, tags)
       .catch((error) => {
         const err = error as Error;
         if (err?.name !== 'AbortError') {
@@ -557,12 +610,12 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
-    const { query, url, limit = 10 } = validatedArgs;
+    const { query, url, limit = 10, tags } = validatedArgs;
 
     // Normalize URL if provided for filtering
     const filterUrl = url ? normalizeUrl(url) : undefined;
 
-    const results = await this.store.searchByText(query, { limit, filterUrl });
+    const results = await this.store.searchByText(query, { limit, filterUrl, filterByTags: tags });
 
     // Apply prompt injection detection and filter/process results
     let blockedCount = 0;
@@ -681,6 +734,9 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
         }
       : undefined;
 
+    // Preserve existing tags during reindex
+    const existingTags = doc.tags;
+
     // Cancel any existing operation for this URL
     const wasCancelled = this.indexingQueue.isIndexing(normalizedUrl);
     const controller = await this.indexingQueue.startOperation(normalizedUrl);
@@ -695,8 +751,8 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
 
     this.statusTracker.startIndexing(docId, normalizedUrl, doc.title);
 
-    // Start reindexing in the background with abort support
-    const operationPromise = this.indexAndAdd(docId, normalizedUrl, doc.title, true, controller.signal, undefined, authInfo)
+    // Start reindexing in the background with abort support (preserving existing tags)
+    const operationPromise = this.indexAndAdd(docId, normalizedUrl, doc.title, true, controller.signal, undefined, authInfo, existingTags)
       .catch((error) => {
         const err = error as Error;
         if (err?.name !== 'AbortError') {
@@ -1003,6 +1059,80 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
     }
   }
 
+  /**
+   * Handle setting tags for a documentation site
+   */
+  private async handleSetTags(args: Record<string, unknown> | undefined) {
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, SetTagsArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { url, tags } = validatedArgs;
+    const normalizedUrl = normalizeUrl(url);
+
+    try {
+      await this.store.setTags(normalizedUrl, tags);
+
+      // Get the updated document to return current state
+      const doc = await this.store.getDocument(normalizedUrl);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Successfully updated tags for ${normalizedUrl}`,
+                url: normalizedUrl,
+                title: doc?.title,
+                tags: doc?.tags || [],
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error);
+
+      // Check for "Documentation not found" error
+      if (safeErrorMessage.includes('Documentation not found')) {
+        throw new McpError(ErrorCode.InvalidParams, `Documentation not found for URL: ${normalizedUrl}`);
+      }
+
+      throw new McpError(ErrorCode.InternalError, `Failed to set tags: ${safeErrorMessage}`);
+    }
+  }
+
+  /**
+   * Handle listing all tags with usage counts
+   */
+  private async handleListTags() {
+    const tags = await this.store.listAllTags();
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              tags,
+              total: tags.length,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+
   private async indexAndAdd(
     id: string,
     url: string,
@@ -1010,7 +1140,8 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
     reIndex: boolean = false,
     signal?: AbortSignal,
     pathPrefix?: string,
-    authInfo?: { requiresAuth: boolean; authDomain: string }
+    authInfo?: { requiresAuth: boolean; authDomain: string },
+    tags?: string[]
   ) {
     // Helper to check if operation was cancelled
     const checkCancelled = () => {
@@ -1207,6 +1338,14 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
           vector: embeddings[i],
         })),
       });
+
+      // Always update tags when indexing (clears old tags if none provided)
+      await this.store.setTags(url, tags || []);
+      if (tags && tags.length > 0) {
+        logger.info(`[WebDocsServer] Tags set for ${url}:`, tags);
+      } else {
+        logger.debug(`[WebDocsServer] Tags cleared for ${url}`);
+      }
 
       logger.info(`[WebDocsServer] Successfully indexed ${url}`);
       logger.info(`[WebDocsServer] Pages processed: ${pages.length}`);

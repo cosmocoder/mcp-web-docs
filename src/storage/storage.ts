@@ -120,6 +120,7 @@ export class DocumentStore implements StorageProvider {
         logger.debug(`[DocumentStore] Configuring SQLite database`);
         await this.sqliteDb.exec('PRAGMA busy_timeout = 5000;');
         await this.sqliteDb.exec('PRAGMA journal_mode = WAL;');
+        await this.sqliteDb.exec('PRAGMA foreign_keys = ON;');
       } catch (error) {
         logger.error('[DocumentStore] Error initializing SQLite:', error);
         throw new Error(`Failed to initialize SQLite: ${error instanceof Error ? error.message : String(error)}`);
@@ -225,12 +226,19 @@ export class DocumentStore implements StorageProvider {
         ALTER TABLE documents ADD COLUMN auth_domain TEXT;
       `,
     },
-    // Future migrations go here:
-    // {
-    //   version: 2,
-    //   description: 'Add some_new_column',
-    //   sql: 'ALTER TABLE documents ADD COLUMN some_new_column TEXT;',
-    // },
+    {
+      version: 2,
+      description: 'Add document tags table',
+      sql: `
+        CREATE TABLE IF NOT EXISTS document_tags (
+          url TEXT NOT NULL,
+          tag TEXT NOT NULL,
+          PRIMARY KEY (url, tag),
+          FOREIGN KEY (url) REFERENCES documents(url) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags(tag);
+      `,
+    },
   ];
 
   /**
@@ -403,13 +411,14 @@ export class DocumentStore implements StorageProvider {
       throw new Error('Storage not initialized');
     }
 
-    const { limit = 10, includeVectors = false, filterByType, textQuery } = options;
+    const { limit = 10, includeVectors = false, filterByType, filterByTags, textQuery } = options;
 
     logger.debug(`[DocumentStore] Searching documents with vector:`, {
       dimensions: queryVector.length,
       limit,
       includeVectors,
       filterByType,
+      filterByTags,
       hasTextQuery: !!textQuery,
     });
 
@@ -454,11 +463,32 @@ export class DocumentStore implements StorageProvider {
         logger.debug(`[DocumentStore] Using default zero vector with ${queryVector.length} dimensions`);
       }
 
+      // If filtering by tags, get the list of URLs that have all those tags
+      let tagFilteredUrls: string[] | undefined;
+      if (filterByTags && filterByTags.length > 0) {
+        tagFilteredUrls = await this.getUrlsByTags(filterByTags);
+        if (tagFilteredUrls.length === 0) {
+          // No documents match the tag filter, return empty results
+          logger.debug(`[DocumentStore] No documents match tag filter in vector search:`, filterByTags);
+          return [];
+        }
+        logger.debug(`[DocumentStore] Tag filter matched ${tagFilteredUrls.length} documents for vector search`);
+      }
+
       // Create search query
       let query = this.lanceTable.search(queryVector).limit(limit);
 
+      // Build WHERE conditions
+      const conditions: string[] = [];
       if (filterByType) {
-        query = query.where(`type = '${escapeFilterValue(filterByType)}'`);
+        conditions.push(`type = '${escapeFilterValue(filterByType)}'`);
+      }
+      if (tagFilteredUrls && tagFilteredUrls.length > 0) {
+        const urlConditions = tagFilteredUrls.map((u) => `url = '${escapeFilterValue(u)}'`).join(' OR ');
+        conditions.push(`(${urlConditions})`);
+      }
+      if (conditions.length > 0) {
+        query = query.where(conditions.join(' AND '));
       }
 
       const results = await query.toArray();
@@ -564,7 +594,21 @@ export class DocumentStore implements StorageProvider {
       return cached;
     }
 
-    const { limit = 10, filterByType, filterUrl } = options;
+    const { limit = 10, filterByType, filterUrl, filterByTags } = options;
+
+    // If filtering by tags, get the list of URLs that have all those tags
+    let tagFilteredUrls: string[] | undefined;
+    if (filterByTags && filterByTags.length > 0) {
+      tagFilteredUrls = await this.getUrlsByTags(filterByTags);
+      if (tagFilteredUrls.length === 0) {
+        // No documents match the tag filter, cache and return empty results
+        logger.debug(`[DocumentStore] No documents match tag filter:`, filterByTags);
+        const emptyResults: SearchResult[] = [];
+        this.searchCache.set(cacheKey, emptyResults);
+        return emptyResults;
+      }
+      logger.debug(`[DocumentStore] Tag filter matched ${tagFilteredUrls.length} documents`);
+    }
 
     // Build WHERE clause for filtering (using escaped values to prevent injection)
     const buildWhereClause = (): string | undefined => {
@@ -577,6 +621,11 @@ export class DocumentStore implements StorageProvider {
         // Escape the filterUrl and also escape LIKE wildcards within the value
         const escapedUrl = escapeFilterValue(filterUrl).replace(/%/g, '\\%').replace(/_/g, '\\_');
         conditions.push(`url LIKE '${escapedUrl}%'`);
+      }
+      if (tagFilteredUrls && tagFilteredUrls.length > 0) {
+        // Filter to only include URLs that match the tag filter
+        const urlConditions = tagFilteredUrls.map((u) => `url = '${escapeFilterValue(u)}'`).join(' OR ');
+        conditions.push(`(${urlConditions})`);
       }
       return conditions.length > 0 ? conditions.join(' AND ') : undefined;
     };
@@ -796,6 +845,9 @@ export class DocumentStore implements StorageProvider {
 
       logger.debug(`[DocumentStore] Found ${rows.length} documents`);
 
+      // Fetch tags for all documents
+      const tagsMap = await this.getAllDocumentTags();
+
       return rows.map((row) => ({
         url: row.url,
         title: row.title,
@@ -803,11 +855,32 @@ export class DocumentStore implements StorageProvider {
         lastIndexed: new Date(row.last_indexed),
         requiresAuth: row.requires_auth === 1,
         authDomain: row.auth_domain ?? undefined,
+        tags: tagsMap.get(row.url) || [],
       }));
     } catch (error) {
       logger.error('[DocumentStore] Error listing documents:', error);
       throw error;
     }
+  }
+
+  /**
+   * Get all tags for all documents as a Map
+   */
+  private async getAllDocumentTags(): Promise<Map<string, string[]>> {
+    if (!this.sqliteDb) {
+      return new Map();
+    }
+
+    const rows = await this.sqliteDb.all<Array<{ url: string; tag: string }>>('SELECT url, tag FROM document_tags ORDER BY url, tag');
+
+    const tagsMap = new Map<string, string[]>();
+    for (const row of rows) {
+      const existing = tagsMap.get(row.url) || [];
+      existing.push(row.tag);
+      tagsMap.set(row.url, existing);
+    }
+
+    return tagsMap;
   }
 
   async deleteDocument(url: string): Promise<void> {
@@ -820,6 +893,8 @@ export class DocumentStore implements StorageProvider {
     try {
       await this.sqliteDb.run('BEGIN TRANSACTION');
 
+      // Delete tags first (in case foreign key cascade isn't enabled)
+      await this.sqliteDb.run('DELETE FROM document_tags WHERE url = ?', [url]);
       await this.sqliteDb.run('DELETE FROM documents WHERE url = ?', [url]);
       await this.lanceTable.delete(`url = '${escapeFilterValue(url)}'`);
 
@@ -874,6 +949,9 @@ export class DocumentStore implements StorageProvider {
         logger.debug(`[DocumentStore] Found ${chunks} chunks in LanceDB for ${url}`);
       }
 
+      // Fetch tags for this document
+      const tags = await this.getDocumentTags(url);
+
       logger.debug(`[DocumentStore] Document found in SQLite:`, row);
 
       return {
@@ -883,9 +961,138 @@ export class DocumentStore implements StorageProvider {
         lastIndexed: new Date(row.last_indexed),
         requiresAuth: row.requires_auth === 1,
         authDomain: row.auth_domain ?? undefined,
+        tags,
       };
     } catch (error) {
       logger.error('[DocumentStore] Error getting document:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get tags for a specific document
+   */
+  private async getDocumentTags(url: string): Promise<string[]> {
+    if (!this.sqliteDb) {
+      return [];
+    }
+
+    const rows = await this.sqliteDb.all<Array<{ tag: string }>>('SELECT tag FROM document_tags WHERE url = ? ORDER BY tag', [url]);
+
+    return rows.map((row) => row.tag);
+  }
+
+  /**
+   * Set tags for a documentation site. Replaces any existing tags.
+   * @param url - The URL of the documentation site
+   * @param tags - Array of tags to assign (empty array removes all tags)
+   */
+  async setTags(url: string, tags: string[]): Promise<void> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    logger.debug(`[DocumentStore] Setting tags for ${url}:`, tags);
+
+    try {
+      await this.sqliteDb.run('BEGIN TRANSACTION');
+
+      // Verify the document exists inside the transaction to prevent race conditions
+      const row = await this.sqliteDb.get<{ url: string }>('SELECT url FROM documents WHERE url = ?', [url]);
+      if (!row) {
+        await this.sqliteDb.run('ROLLBACK');
+        throw new Error('Documentation not found');
+      }
+
+      // Delete existing tags
+      await this.sqliteDb.run('DELETE FROM document_tags WHERE url = ?', [url]);
+
+      // Insert new tags (deduplicated and normalized)
+      const uniqueTags = [...new Set(tags.map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))];
+      for (const tag of uniqueTags) {
+        await this.sqliteDb.run('INSERT INTO document_tags (url, tag) VALUES (?, ?)', [url, tag]);
+      }
+
+      await this.sqliteDb.run('COMMIT');
+
+      // Clear cached search results that may be affected by tag changes
+      this.clearCacheForUrl(url);
+
+      logger.debug(`[DocumentStore] Tags set successfully for ${url}`);
+    } catch (error) {
+      if (this.sqliteDb) {
+        try {
+          await this.sqliteDb.run('ROLLBACK');
+        } catch {
+          // Ignore rollback errors (transaction may already be rolled back)
+        }
+      }
+      logger.error('[DocumentStore] Error setting tags:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * List all unique tags with their usage counts
+   * @returns Array of tags with counts, sorted by count descending
+   */
+  async listAllTags(): Promise<Array<{ tag: string; count: number }>> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    logger.debug(`[DocumentStore] Listing all tags`);
+
+    try {
+      const rows = await this.sqliteDb.all<Array<{ tag: string; count: number }>>(
+        'SELECT tag, COUNT(*) as count FROM document_tags GROUP BY tag ORDER BY count DESC, tag ASC'
+      );
+
+      logger.debug(`[DocumentStore] Found ${rows.length} unique tags`);
+
+      return rows;
+    } catch (error) {
+      logger.error('[DocumentStore] Error listing tags:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get URLs of documents that have ALL of the specified tags
+   * @param tags - Array of tags that documents must have
+   * @returns Array of matching document URLs
+   */
+  async getUrlsByTags(tags: string[]): Promise<string[]> {
+    if (!this.sqliteDb || tags.length === 0) {
+      return [];
+    }
+
+    // Normalize tags
+    const normalizedTags = tags.map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0);
+    if (normalizedTags.length === 0) {
+      return [];
+    }
+
+    logger.debug(`[DocumentStore] Getting URLs by tags:`, normalizedTags);
+
+    try {
+      // Find documents that have ALL the specified tags
+      // This uses a GROUP BY with HAVING COUNT = number of tags
+      const placeholders = normalizedTags.map(() => '?').join(', ');
+      const query = `
+        SELECT url FROM document_tags
+        WHERE tag IN (${placeholders})
+        GROUP BY url
+        HAVING COUNT(DISTINCT tag) = ?
+      `;
+
+      const rows = await this.sqliteDb.all<Array<{ url: string }>>(query, [...normalizedTags, normalizedTags.length]);
+
+      logger.debug(`[DocumentStore] Found ${rows.length} URLs matching all tags`);
+
+      return rows.map((row) => row.url);
+    } catch (error) {
+      logger.error('[DocumentStore] Error getting URLs by tags:', error);
       throw error;
     }
   }

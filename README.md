@@ -38,6 +38,7 @@ AI assistants struggle with documentation:
 
 - **🌐 Universal Crawler** - Works with any documentation site, not just GitHub
 - **🔍 Hybrid Search** - Combines full-text search (FTS) with semantic vector search
+- **🏷️ Tags & Categories** - Organize docs with tags and filter searches by project, team, or category
 - **🔐 Authentication Support** - Crawl private/protected docs with interactive browser login (auto-detects your default browser)
 - **📊 Smart Extraction** - Automatically extracts code blocks, props tables, and structured content
 - **⚡ Local Embeddings** - Uses FastEmbed for fast, private embedding generation (no API keys)
@@ -316,9 +317,10 @@ Add a new documentation site for indexing.
 ```typescript
 add_documentation({
   url: "https://docs.example.com/",
-  title: "Example Docs",        // Optional
-  id: "example-docs",           // Optional custom ID
-  auth: {                       // Optional authentication
+  title: "Example Docs",              // Optional
+  id: "example-docs",                 // Optional custom ID
+  tags: ["frontend", "mycompany"],    // Optional tags for categorization
+  auth: {                             // Optional authentication
     requiresAuth: true,
     // browser auto-detected from OS settings if omitted
     loginTimeoutSecs: 300
@@ -333,8 +335,9 @@ Search through indexed documentation using hybrid search (FTS + semantic).
 ```typescript
 search_documentation({
   query: "how to configure authentication",
-  url: "https://docs.example.com/",  // Optional: filter to specific site
-  limit: 10                           // Optional: max results
+  url: "https://docs.example.com/",    // Optional: filter to specific site
+  tags: ["frontend", "mycompany"],     // Optional: filter by tags
+  limit: 10                            // Optional: max results
 })
 ```
 
@@ -352,7 +355,22 @@ authenticate({
 
 ### `list_documentation`
 
-List all indexed documentation sites.
+List all indexed documentation sites with their metadata including tags.
+
+### `set_tags`
+
+Set or update tags for a documentation site. Tags help categorize and filter documentation.
+
+```typescript
+set_tags({
+  url: "https://docs.example.com/",
+  tags: ["frontend", "react", "mycompany"]  // Replaces existing tags
+})
+```
+
+### `list_tags`
+
+List all available tags with usage counts. Useful to see what tags exist across your indexed docs.
 
 ### `reindex_documentation`
 
@@ -407,14 +425,49 @@ API references, configuration, or library usage.
 
 ### Scoping Searches
 
-If you have multiple sites indexed, filter by URL to search within a specific site:
+If you have multiple sites indexed, filter by URL or tags:
 
 ```typescript
+// Filter by specific site URL
 search_documentation({
   query: "routing",
-  url: "https://nextjs.org/docs/"  // Only search Next.js docs
+  url: "https://nextjs.org/docs/"
+})
+
+// Filter by tags (searches all docs with matching tags)
+search_documentation({
+  query: "Button component",
+  tags: ["frontend", "mycompany"]  // Only docs tagged with BOTH tags
 })
 ```
+
+### Organizing with Tags
+
+Tags help organize documentation when you have multiple related sites. Add tags when indexing:
+
+```typescript
+// Index frontend package docs
+add_documentation({
+  url: "https://docs.mycompany.com/ui-components/",
+  tags: ["frontend", "mycompany", "react"]
+})
+
+// Index backend API docs
+add_documentation({
+  url: "https://docs.mycompany.com/api/",
+  tags: ["backend", "mycompany", "api"]
+})
+```
+
+Later, search across all frontend docs:
+```typescript
+search_documentation({
+  query: "authentication",
+  tags: ["frontend"]  // Searches all frontend-tagged docs
+})
+```
+
+You can also add tags to existing documentation with `set_tags`.
 
 ---
 

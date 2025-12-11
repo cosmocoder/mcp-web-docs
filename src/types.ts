@@ -22,6 +22,8 @@ export interface DocumentMetadata {
   requiresAuth?: boolean;
   /** The domain where the auth session is stored (e.g., "github.com" for GitHub auth) */
   authDomain?: string;
+  /** User-defined tags for categorizing documentation (e.g., "frontend", "mycompany") */
+  tags?: string[];
 }
 
 export interface DocumentChunk {
@@ -101,6 +103,8 @@ export interface SearchOptions {
   textQuery?: string;
   /** Filter results to a specific documentation site by its base URL */
   filterUrl?: string;
+  /** Filter results to documentation sites that have ALL of the specified tags */
+  filterByTags?: string[];
 }
 
 export interface StorageProvider {
@@ -111,6 +115,12 @@ export interface StorageProvider {
   listDocuments(): Promise<DocumentMetadata[]>;
   deleteDocument(url: string): Promise<void>;
   getDocument(url: string): Promise<DocumentMetadata | null>;
+  /** Set tags for a documentation site (replaces existing tags) */
+  setTags(url: string, tags: string[]): Promise<void>;
+  /** List all unique tags with their usage counts */
+  listAllTags(): Promise<Array<{ tag: string; count: number }>>;
+  /** Get URLs of documents that have ALL of the specified tags */
+  getUrlsByTags(tags: string[]): Promise<string[]>;
 }
 
 export type DocsCrawlerType = 'crawlee' | 'github';
