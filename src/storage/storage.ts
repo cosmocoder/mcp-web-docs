@@ -601,9 +601,11 @@ export class DocumentStore implements StorageProvider {
     if (filterByTags && filterByTags.length > 0) {
       tagFilteredUrls = await this.getUrlsByTags(filterByTags);
       if (tagFilteredUrls.length === 0) {
-        // No documents match the tag filter, return empty results
+        // No documents match the tag filter, cache and return empty results
         logger.debug(`[DocumentStore] No documents match tag filter:`, filterByTags);
-        return [];
+        const emptyResults: SearchResult[] = [];
+        this.searchCache.set(cacheKey, emptyResults);
+        return emptyResults;
       }
       logger.debug(`[DocumentStore] Tag filter matched ${tagFilteredUrls.length} documents`);
     }
