@@ -970,14 +970,15 @@ export class DocumentStore implements StorageProvider {
 
     logger.debug(`[DocumentStore] Setting tags for ${url}:`, tags);
 
-    // Verify the document exists before starting transaction
-    const doc = await this.getDocument(url);
-    if (!doc) {
-      throw new Error('Documentation not found');
-    }
-
     try {
       await this.sqliteDb.run('BEGIN TRANSACTION');
+
+      // Verify the document exists inside the transaction to prevent race conditions
+      const row = await this.sqliteDb.get<{ url: string }>('SELECT url FROM documents WHERE url = ?', [url]);
+      if (!row) {
+        await this.sqliteDb.run('ROLLBACK');
+        throw new Error('Documentation not found');
+      }
 
       // Delete existing tags
       await this.sqliteDb.run('DELETE FROM document_tags WHERE url = ?', [url]);
@@ -996,7 +997,7 @@ export class DocumentStore implements StorageProvider {
         try {
           await this.sqliteDb.run('ROLLBACK');
         } catch {
-          // Ignore rollback errors
+          // Ignore rollback errors (transaction may already be rolled back)
         }
       }
       logger.error('[DocumentStore] Error setting tags:', error);
