@@ -411,13 +411,14 @@ export class DocumentStore implements StorageProvider {
       throw new Error('Storage not initialized');
     }
 
-    const { limit = 10, includeVectors = false, filterByType, textQuery } = options;
+    const { limit = 10, includeVectors = false, filterByType, filterByTags, textQuery } = options;
 
     logger.debug(`[DocumentStore] Searching documents with vector:`, {
       dimensions: queryVector.length,
       limit,
       includeVectors,
       filterByType,
+      filterByTags,
       hasTextQuery: !!textQuery,
     });
 
@@ -462,11 +463,32 @@ export class DocumentStore implements StorageProvider {
         logger.debug(`[DocumentStore] Using default zero vector with ${queryVector.length} dimensions`);
       }
 
+      // If filtering by tags, get the list of URLs that have all those tags
+      let tagFilteredUrls: string[] | undefined;
+      if (filterByTags && filterByTags.length > 0) {
+        tagFilteredUrls = await this.getUrlsByTags(filterByTags);
+        if (tagFilteredUrls.length === 0) {
+          // No documents match the tag filter, return empty results
+          logger.debug(`[DocumentStore] No documents match tag filter in vector search:`, filterByTags);
+          return [];
+        }
+        logger.debug(`[DocumentStore] Tag filter matched ${tagFilteredUrls.length} documents for vector search`);
+      }
+
       // Create search query
       let query = this.lanceTable.search(queryVector).limit(limit);
 
+      // Build WHERE conditions
+      const conditions: string[] = [];
       if (filterByType) {
-        query = query.where(`type = '${escapeFilterValue(filterByType)}'`);
+        conditions.push(`type = '${escapeFilterValue(filterByType)}'`);
+      }
+      if (tagFilteredUrls && tagFilteredUrls.length > 0) {
+        const urlConditions = tagFilteredUrls.map((u) => `url = '${escapeFilterValue(u)}'`).join(' OR ');
+        conditions.push(`(${urlConditions})`);
+      }
+      if (conditions.length > 0) {
+        query = query.where(conditions.join(' AND '));
       }
 
       const results = await query.toArray();
