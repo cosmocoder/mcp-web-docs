@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Restore node modules cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         id: cache-node-modules
         with:
           path: node_modules
@@ -46,7 +46,7 @@ jobs:
         run: npm rebuild sqlite3
 
       - name: Save node modules cache
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         if: ${{ steps.cache-node-modules.outputs.cache-hit != 'true' }}
         with:
           path: node_modules
@@ -67,7 +67,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Restore node modules cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: node_modules
           key: ${{ env.NODE_MODULES_CACHE_PREFIX }}-${{ hashFiles('package-lock.json') }}
@@ -102,7 +102,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Restore node modules cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: node_modules
           key: ${{ env.NODE_MODULES_CACHE_PREFIX }}-${{ hashFiles('package-lock.json') }}
@@ -135,7 +135,7 @@ jobs:
         uses: actions/checkout@v5
 
       - name: Restore node modules cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: node_modules
           key: ${{ env.NODE_MODULES_CACHE_PREFIX }}-${{ hashFiles('package-lock.json') }}
@@ -150,7 +150,7 @@ jobs:
         shell: bash
 
       - name: Save build
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v5
         with:
           path: build
           key: ${{ env.BUILD_VERSION }}
@@ -174,13 +174,13 @@ jobs:
           persist-credentials: false # Security: don't persist git credentials
 
       - name: Restore node modules cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: node_modules
           key: ${{ env.NODE_MODULES_CACHE_PREFIX }}-${{ hashFiles('package-lock.json') }}
 
       - name: Restore build cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v5
         with:
           path: build
           key: ${{ env.BUILD_VERSION }}
