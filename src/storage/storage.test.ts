@@ -749,6 +749,107 @@ describe('DocumentStore', () => {
     });
   });
 
+  describe('document version', () => {
+    it('should store and retrieve version for a document', async () => {
+      const doc = createTestDocument('https://react.dev/v19', 'React 19 Docs');
+      doc.metadata.version = '19';
+
+      await store.addDocument(doc);
+
+      const retrieved = await store.getDocument('https://react.dev/v19');
+      expect(retrieved?.version).toBe('19');
+    });
+
+    it('should return undefined version for documents without version', async () => {
+      const doc = createTestDocument('https://example.com/no-version', 'No Version Doc');
+      // Don't set version
+
+      await store.addDocument(doc);
+
+      const retrieved = await store.getDocument('https://example.com/no-version');
+      expect(retrieved?.version).toBeUndefined();
+    });
+
+    it('should include version in listDocuments', async () => {
+      const doc1 = createTestDocument('https://react.dev/v18', 'React 18');
+      doc1.metadata.version = '18';
+
+      const doc2 = createTestDocument('https://react.dev/v19', 'React 19');
+      doc2.metadata.version = '19';
+
+      const doc3 = createTestDocument('https://docs.company.com', 'Company Docs');
+      // No version
+
+      await store.addDocument(doc1);
+      await store.addDocument(doc2);
+      await store.addDocument(doc3);
+
+      const docs = await store.listDocuments();
+      const react18 = docs.find((d) => d.url === 'https://react.dev/v18');
+      const react19 = docs.find((d) => d.url === 'https://react.dev/v19');
+      const companyDocs = docs.find((d) => d.url === 'https://docs.company.com');
+
+      expect(react18?.version).toBe('18');
+      expect(react19?.version).toBe('19');
+      expect(companyDocs?.version).toBeUndefined();
+    });
+
+    it('should preserve version when updating document', async () => {
+      const url = 'https://example.com/version-update';
+
+      // Add document with version
+      const doc1 = createTestDocument(url, 'Original');
+      doc1.metadata.version = 'v1.0.0';
+      await store.addDocument(doc1);
+
+      // Update document, preserving version
+      const doc2 = createTestDocument(url, 'Updated');
+      doc2.metadata.version = 'v1.0.0';
+      await store.addDocument(doc2);
+
+      const retrieved = await store.getDocument(url);
+      expect(retrieved?.title).toBe('Updated');
+      expect(retrieved?.version).toBe('v1.0.0');
+    });
+
+    it('should allow changing version when updating document', async () => {
+      const url = 'https://example.com/version-change';
+
+      // Add document with version
+      const doc1 = createTestDocument(url, 'Version 1');
+      doc1.metadata.version = 'v1';
+      await store.addDocument(doc1);
+
+      // Update with new version
+      const doc2 = createTestDocument(url, 'Version 2');
+      doc2.metadata.version = 'v2';
+      await store.addDocument(doc2);
+
+      const retrieved = await store.getDocument(url);
+      expect(retrieved?.version).toBe('v2');
+    });
+
+    it('should handle various version formats', async () => {
+      const testCases = [
+        { url: 'https://example.com/semver', version: '1.2.3' },
+        { url: 'https://example.com/prefix', version: 'v6.4' },
+        { url: 'https://example.com/major', version: '18' },
+        { url: 'https://example.com/latest', version: 'latest' },
+        { url: 'https://example.com/date', version: '2024-01' },
+        { url: 'https://example.com/prerelease', version: 'v2.0.0-beta.1' },
+      ];
+
+      for (const { url, version } of testCases) {
+        const doc = createTestDocument(url, `Test ${version}`);
+        doc.metadata.version = version;
+        await store.addDocument(doc);
+
+        const retrieved = await store.getDocument(url);
+        expect(retrieved?.version).toBe(version);
+      }
+    });
+  });
+
   describe('optimize', () => {
     it('should return error when storage is not initialized', async () => {
       const uninitializedStore = new DocumentStore(join(tempDir, 'uninit.db'), join(tempDir, 'uninit-vectors'), mockEmbeddings);

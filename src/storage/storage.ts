@@ -239,6 +239,14 @@ export class DocumentStore implements StorageProvider {
         CREATE INDEX IF NOT EXISTS idx_document_tags_tag ON document_tags(tag);
       `,
     },
+    {
+      version: 3,
+      description: 'Add version column for versioned package documentation',
+      sql: `
+        ALTER TABLE documents ADD COLUMN version TEXT;
+        CREATE INDEX IF NOT EXISTS idx_documents_version ON documents(version);
+      `,
+    },
   ];
 
   /**
@@ -346,7 +354,7 @@ export class DocumentStore implements StorageProvider {
 
       // Add metadata to SQLite
       await this.sqliteDb.run(
-        'INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
         [
           doc.metadata.url,
           doc.metadata.title,
@@ -354,10 +362,11 @@ export class DocumentStore implements StorageProvider {
           doc.metadata.lastIndexed.toISOString(),
           doc.metadata.requiresAuth ? 1 : 0,
           doc.metadata.authDomain || null,
+          doc.metadata.version || null,
         ]
       );
       logger.debug(
-        `[DocumentStore] Added metadata to SQLite (requiresAuth: ${doc.metadata.requiresAuth}, authDomain: ${doc.metadata.authDomain})`
+        `[DocumentStore] Added metadata to SQLite (requiresAuth: ${doc.metadata.requiresAuth}, authDomain: ${doc.metadata.authDomain}, version: ${doc.metadata.version})`
       );
 
       // Delete existing chunks for this document (using escaped value to prevent injection)
@@ -842,8 +851,9 @@ export class DocumentStore implements StorageProvider {
           last_indexed: string;
           requires_auth: number | null;
           auth_domain: string | null;
+          version: string | null;
         }>
-      >('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain FROM documents ORDER BY last_indexed DESC');
+      >('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain, version FROM documents ORDER BY last_indexed DESC');
 
       logger.debug(`[DocumentStore] Found ${rows.length} documents`);
 
@@ -858,6 +868,7 @@ export class DocumentStore implements StorageProvider {
         requiresAuth: row.requires_auth === 1,
         authDomain: row.auth_domain ?? undefined,
         tags: tagsMap.get(row.url) || [],
+        version: row.version ?? undefined,
       }));
     } catch (error) {
       logger.error('[DocumentStore] Error listing documents:', error);
@@ -938,7 +949,8 @@ export class DocumentStore implements StorageProvider {
         last_indexed: string;
         requires_auth: number | null;
         auth_domain: string | null;
-      }>('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain FROM documents WHERE url = ?', [url]);
+        version: string | null;
+      }>('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain, version FROM documents WHERE url = ?', [url]);
 
       if (!row) {
         logger.debug(`[DocumentStore] Document not found in SQLite: ${url}`);
@@ -964,6 +976,7 @@ export class DocumentStore implements StorageProvider {
         requiresAuth: row.requires_auth === 1,
         authDomain: row.auth_domain ?? undefined,
         tags,
+        version: row.version ?? undefined,
       };
     } catch (error) {
       logger.error('[DocumentStore] Error getting document:', error);

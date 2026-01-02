@@ -39,6 +39,7 @@ AI assistants struggle with documentation:
 - **🌐 Universal Crawler** - Works with any documentation site, not just GitHub
 - **🔍 Hybrid Search** - Combines full-text search (FTS) with semantic vector search
 - **🏷️ Tags & Categories** - Organize docs with tags and filter searches by project, team, or category
+- **📦 Version Support** - Index multiple versions of the same package (e.g., React 18 and 19)
 - **🔐 Authentication Support** - Crawl private/protected docs with interactive browser login (auto-detects your default browser)
 - **📊 Smart Extraction** - Automatically extracts code blocks, props tables, and structured content
 - **⚡ Local Embeddings** - Uses FastEmbed for fast, private embedding generation (no API keys)
@@ -320,6 +321,7 @@ add_documentation({
   title: "Example Docs",              // Optional
   id: "example-docs",                 // Optional custom ID
   tags: ["frontend", "mycompany"],    // Optional tags for categorization
+  version: "2.0",                     // Optional version for versioned packages
   auth: {                             // Optional authentication
     requiresAuth: true,
     // browser auto-detected from OS settings if omitted
@@ -468,6 +470,30 @@ search_documentation({
 ```
 
 You can also add tags to existing documentation with `set_tags`.
+
+### Versioning Package Documentation
+
+When indexing documentation for versioned packages (React, Vue, Python libraries, etc.), you can specify the version to track which version you've indexed:
+
+```typescript
+// Index React 18 docs
+add_documentation({
+  url: "https://18.react.dev/",
+  title: "React 18 Docs",
+  version: "18"
+})
+
+// Index React 19 docs (different URL)
+add_documentation({
+  url: "https://react.dev/",
+  title: "React 19 Docs",
+  version: "19"
+})
+```
+
+The version is displayed in `list_documentation` output and preserved when re-indexing. Version formats are flexible — use whatever makes sense for your package (e.g., `"18"`, `"v6.4"`, `"3.11"`, `"latest"`).
+
+**Note:** Version is optional and mainly useful for software packages with multiple versions. For internal documentation, wikis, or single-version products, you can skip the version field.
 
 ---
 
