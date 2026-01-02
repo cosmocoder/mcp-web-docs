@@ -919,4 +919,379 @@ describe('DocumentStore', () => {
       expect(results.length).toBeGreaterThan(0);
     });
   });
+
+  // ============ Collection Tests ============
+
+  describe('collections', () => {
+    describe('createCollection', () => {
+      it('should create a collection successfully', async () => {
+        await store.createCollection('My React Project', 'React, Next.js, and TypeScript docs');
+
+        const collection = await store.getCollection('My React Project');
+        expect(collection).toBeDefined();
+        expect(collection?.name).toBe('My React Project');
+        expect(collection?.description).toBe('React, Next.js, and TypeScript docs');
+        expect(collection?.createdAt).toBeInstanceOf(Date);
+        expect(collection?.updatedAt).toBeInstanceOf(Date);
+      });
+
+      it('should create a collection without description', async () => {
+        await store.createCollection('Backend APIs');
+
+        const collection = await store.getCollection('Backend APIs');
+        expect(collection?.name).toBe('Backend APIs');
+        expect(collection?.description).toBeUndefined();
+      });
+
+      it('should throw error when creating duplicate collection', async () => {
+        await store.createCollection('Duplicate Test');
+        await expect(store.createCollection('Duplicate Test')).rejects.toThrow('already exists');
+      });
+
+      it('should trim whitespace from collection name', async () => {
+        await store.createCollection('  Trimmed Name  ');
+
+        const collection = await store.getCollection('Trimmed Name');
+        expect(collection?.name).toBe('Trimmed Name');
+      });
+    });
+
+    describe('deleteCollection', () => {
+      it('should delete a collection', async () => {
+        await store.createCollection('To Delete');
+
+        await store.deleteCollection('To Delete');
+
+        const collection = await store.getCollection('To Delete');
+        expect(collection).toBeNull();
+      });
+
+      it('should throw error when deleting non-existent collection', async () => {
+        await expect(store.deleteCollection('Nonexistent')).rejects.toThrow('not found');
+      });
+
+      it('should not delete documents when collection is deleted', async () => {
+        // Add document
+        await store.addDocument(createTestDocument('https://example.com/keep-me', 'Keep Me'));
+
+        // Create collection and add document
+        await store.createCollection('Temp Collection');
+        await store.addToCollection('Temp Collection', ['https://example.com/keep-me']);
+
+        // Delete collection
+        await store.deleteCollection('Temp Collection');
+
+        // Document should still exist
+        const doc = await store.getDocument('https://example.com/keep-me');
+        expect(doc).toBeDefined();
+        expect(doc?.title).toBe('Keep Me');
+      });
+    });
+
+    describe('updateCollection', () => {
+      it('should update collection description', async () => {
+        await store.createCollection('Update Test', 'Original description');
+
+        await store.updateCollection('Update Test', { description: 'Updated description' });
+
+        const collection = await store.getCollection('Update Test');
+        expect(collection?.description).toBe('Updated description');
+      });
+
+      it('should rename collection', async () => {
+        await store.createCollection('Old Name');
+
+        await store.updateCollection('Old Name', { newName: 'New Name' });
+
+        const oldCollection = await store.getCollection('Old Name');
+        const newCollection = await store.getCollection('New Name');
+
+        expect(oldCollection).toBeNull();
+        expect(newCollection?.name).toBe('New Name');
+      });
+
+      it('should rename collection and preserve documents', async () => {
+        // Add document
+        await store.addDocument(createTestDocument('https://example.com/rename-test', 'Rename Test'));
+
+        // Create collection and add document
+        await store.createCollection('Before Rename');
+        await store.addToCollection('Before Rename', ['https://example.com/rename-test']);
+
+        // Rename collection
+        await store.updateCollection('Before Rename', { newName: 'After Rename' });
+
+        // Document should be in new collection
+        const collection = await store.getCollection('After Rename');
+        expect(collection?.documents.length).toBe(1);
+        expect(collection?.documents[0].url).toBe('https://example.com/rename-test');
+      });
+
+      it('should throw error when renaming to existing name', async () => {
+        await store.createCollection('Collection A');
+        await store.createCollection('Collection B');
+
+        await expect(store.updateCollection('Collection A', { newName: 'Collection B' })).rejects.toThrow('already exists');
+      });
+
+      it('should throw error when updating non-existent collection', async () => {
+        await expect(store.updateCollection('Nonexistent', { description: 'New desc' })).rejects.toThrow('not found');
+      });
+
+      it('should update both name and description', async () => {
+        await store.createCollection('Full Update', 'Old description');
+
+        await store.updateCollection('Full Update', { newName: 'Fully Updated', description: 'New description' });
+
+        const collection = await store.getCollection('Fully Updated');
+        expect(collection?.name).toBe('Fully Updated');
+        expect(collection?.description).toBe('New description');
+      });
+    });
+
+    describe('listCollections', () => {
+      it('should return empty array when no collections exist', async () => {
+        const collections = await store.listCollections();
+        expect(collections).toEqual([]);
+      });
+
+      it('should list all collections with document counts', async () => {
+        // Add documents
+        await store.addDocument(createTestDocument('https://example.com/list1', 'List 1'));
+        await store.addDocument(createTestDocument('https://example.com/list2', 'List 2'));
+
+        // Create collections
+        await store.createCollection('Collection 1');
+        await store.createCollection('Collection 2');
+
+        // Add documents to collections
+        await store.addToCollection('Collection 1', ['https://example.com/list1', 'https://example.com/list2']);
+        await store.addToCollection('Collection 2', ['https://example.com/list1']);
+
+        const collections = await store.listCollections();
+
+        expect(collections.length).toBe(2);
+
+        const col1 = collections.find((c) => c.name === 'Collection 1');
+        const col2 = collections.find((c) => c.name === 'Collection 2');
+
+        expect(col1?.documentCount).toBe(2);
+        expect(col2?.documentCount).toBe(1);
+      });
+
+      it('should sort collections by name', async () => {
+        await store.createCollection('Zebra');
+        await store.createCollection('Alpha');
+        await store.createCollection('Middle');
+
+        const collections = await store.listCollections();
+
+        expect(collections[0].name).toBe('Alpha');
+        expect(collections[1].name).toBe('Middle');
+        expect(collections[2].name).toBe('Zebra');
+      });
+    });
+
+    describe('getCollection', () => {
+      it('should return null for non-existent collection', async () => {
+        const collection = await store.getCollection('Nonexistent');
+        expect(collection).toBeNull();
+      });
+
+      it('should return collection with all documents', async () => {
+        // Add documents
+        await store.addDocument(createTestDocument('https://example.com/get1', 'Get 1'));
+        await store.addDocument(createTestDocument('https://example.com/get2', 'Get 2'));
+
+        // Create collection and add documents
+        await store.createCollection('Get Test', 'Test collection');
+        await store.addToCollection('Get Test', ['https://example.com/get1', 'https://example.com/get2']);
+
+        const collection = await store.getCollection('Get Test');
+
+        expect(collection?.name).toBe('Get Test');
+        expect(collection?.description).toBe('Test collection');
+        expect(collection?.documents.length).toBe(2);
+        expect(collection?.documentCount).toBe(2);
+
+        const urls = collection?.documents.map((d) => d.url);
+        expect(urls).toContain('https://example.com/get1');
+        expect(urls).toContain('https://example.com/get2');
+      });
+
+      it('should include tags in collection documents', async () => {
+        await store.addDocument(createTestDocument('https://example.com/tagged-doc', 'Tagged Doc'));
+        await store.setTags('https://example.com/tagged-doc', ['frontend', 'react']);
+
+        await store.createCollection('Tagged Collection');
+        await store.addToCollection('Tagged Collection', ['https://example.com/tagged-doc']);
+
+        const collection = await store.getCollection('Tagged Collection');
+        expect(collection?.documents[0].tags).toEqual(['frontend', 'react']);
+      });
+    });
+
+    describe('addToCollection', () => {
+      beforeEach(async () => {
+        await store.addDocument(createTestDocument('https://example.com/add1', 'Add 1'));
+        await store.addDocument(createTestDocument('https://example.com/add2', 'Add 2'));
+        await store.createCollection('Add Test');
+      });
+
+      it('should add documents to collection', async () => {
+        const result = await store.addToCollection('Add Test', ['https://example.com/add1', 'https://example.com/add2']);
+
+        expect(result.added.length).toBe(2);
+        expect(result.notFound.length).toBe(0);
+        expect(result.alreadyInCollection.length).toBe(0);
+
+        const collection = await store.getCollection('Add Test');
+        expect(collection?.documents.length).toBe(2);
+      });
+
+      it('should report non-existent documents', async () => {
+        const result = await store.addToCollection('Add Test', ['https://example.com/add1', 'https://nonexistent.com/doc']);
+
+        expect(result.added).toContain('https://example.com/add1');
+        expect(result.notFound).toContain('https://nonexistent.com/doc');
+      });
+
+      it('should handle duplicate additions idempotently', async () => {
+        await store.addToCollection('Add Test', ['https://example.com/add1']);
+        const result = await store.addToCollection('Add Test', ['https://example.com/add1']);
+
+        expect(result.added.length).toBe(0);
+        expect(result.alreadyInCollection).toContain('https://example.com/add1');
+
+        // Collection should still have only one document
+        const collection = await store.getCollection('Add Test');
+        expect(collection?.documents.length).toBe(1);
+      });
+
+      it('should throw error for non-existent collection', async () => {
+        await expect(store.addToCollection('Nonexistent', ['https://example.com/add1'])).rejects.toThrow('not found');
+      });
+
+      it('should update collection updatedAt timestamp', async () => {
+        const beforeCollection = await store.getCollection('Add Test');
+        const beforeTime = beforeCollection!.updatedAt;
+
+        // Wait a bit to ensure timestamp difference
+        await new Promise((resolve) => setTimeout(resolve, 10));
+
+        await store.addToCollection('Add Test', ['https://example.com/add1']);
+
+        const afterCollection = await store.getCollection('Add Test');
+        expect(afterCollection!.updatedAt.getTime()).toBeGreaterThan(beforeTime.getTime());
+      });
+    });
+
+    describe('removeFromCollection', () => {
+      beforeEach(async () => {
+        await store.addDocument(createTestDocument('https://example.com/rem1', 'Remove 1'));
+        await store.addDocument(createTestDocument('https://example.com/rem2', 'Remove 2'));
+        await store.createCollection('Remove Test');
+        await store.addToCollection('Remove Test', ['https://example.com/rem1', 'https://example.com/rem2']);
+      });
+
+      it('should remove documents from collection', async () => {
+        const result = await store.removeFromCollection('Remove Test', ['https://example.com/rem1']);
+
+        expect(result.removed).toContain('https://example.com/rem1');
+        expect(result.notInCollection.length).toBe(0);
+
+        const collection = await store.getCollection('Remove Test');
+        expect(collection?.documents.length).toBe(1);
+        expect(collection?.documents[0].url).toBe('https://example.com/rem2');
+      });
+
+      it('should report documents not in collection', async () => {
+        const result = await store.removeFromCollection('Remove Test', ['https://example.com/not-in-collection']);
+
+        expect(result.removed.length).toBe(0);
+        expect(result.notInCollection).toContain('https://example.com/not-in-collection');
+      });
+
+      it('should throw error for non-existent collection', async () => {
+        await expect(store.removeFromCollection('Nonexistent', ['https://example.com/rem1'])).rejects.toThrow('not found');
+      });
+
+      it('should not delete the document itself', async () => {
+        await store.removeFromCollection('Remove Test', ['https://example.com/rem1']);
+
+        // Document should still exist
+        const doc = await store.getDocument('https://example.com/rem1');
+        expect(doc).toBeDefined();
+        expect(doc?.title).toBe('Remove 1');
+      });
+    });
+
+    describe('getCollectionUrls', () => {
+      it('should return URLs in collection', async () => {
+        await store.addDocument(createTestDocument('https://example.com/url1', 'URL 1'));
+        await store.addDocument(createTestDocument('https://example.com/url2', 'URL 2'));
+        await store.createCollection('URL Test');
+        await store.addToCollection('URL Test', ['https://example.com/url1', 'https://example.com/url2']);
+
+        const urls = await store.getCollectionUrls('URL Test');
+
+        expect(urls.length).toBe(2);
+        expect(urls).toContain('https://example.com/url1');
+        expect(urls).toContain('https://example.com/url2');
+      });
+
+      it('should return empty array for empty collection', async () => {
+        await store.createCollection('Empty Collection');
+
+        const urls = await store.getCollectionUrls('Empty Collection');
+        expect(urls).toEqual([]);
+      });
+
+      it('should return empty array for non-existent collection', async () => {
+        const urls = await store.getCollectionUrls('Nonexistent');
+        expect(urls).toEqual([]);
+      });
+    });
+
+    describe('document deletion cascade', () => {
+      it('should remove document from collections when document is deleted', async () => {
+        // Add document
+        await store.addDocument(createTestDocument('https://example.com/cascade', 'Cascade Test'));
+
+        // Add to multiple collections
+        await store.createCollection('Collection A');
+        await store.createCollection('Collection B');
+        await store.addToCollection('Collection A', ['https://example.com/cascade']);
+        await store.addToCollection('Collection B', ['https://example.com/cascade']);
+
+        // Delete the document
+        await store.deleteDocument('https://example.com/cascade');
+
+        // Document should be removed from both collections
+        const colA = await store.getCollection('Collection A');
+        const colB = await store.getCollection('Collection B');
+
+        expect(colA?.documents.length).toBe(0);
+        expect(colB?.documents.length).toBe(0);
+      });
+    });
+
+    describe('document in multiple collections', () => {
+      it('should allow same document in multiple collections', async () => {
+        await store.addDocument(createTestDocument('https://example.com/shared', 'Shared Doc'));
+
+        await store.createCollection('Frontend');
+        await store.createCollection('React Project');
+
+        await store.addToCollection('Frontend', ['https://example.com/shared']);
+        await store.addToCollection('React Project', ['https://example.com/shared']);
+
+        const frontendCollection = await store.getCollection('Frontend');
+        const reactCollection = await store.getCollection('React Project');
+
+        expect(frontendCollection?.documents.length).toBe(1);
+        expect(reactCollection?.documents.length).toBe(1);
+      });
+    });
+  });
 });

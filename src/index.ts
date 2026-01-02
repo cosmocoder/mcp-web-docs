@@ -45,6 +45,13 @@ import {
   ReindexDocumentationArgsSchema,
   DeleteDocumentationArgsSchema,
   SetTagsArgsSchema,
+  CreateCollectionArgsSchema,
+  DeleteCollectionArgsSchema,
+  UpdateCollectionArgsSchema,
+  GetCollectionArgsSchema,
+  AddToCollectionArgsSchema,
+  RemoveFromCollectionArgsSchema,
+  SearchCollectionArgsSchema,
   type ValidatedStorageState,
 } from './util/security.js';
 import type { StorageState } from './crawler/crawlee-crawler.js';
@@ -440,6 +447,146 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
             properties: {},
           },
         },
+        // ============ Collection Tools ============
+        {
+          name: 'create_collection',
+          description:
+            'Create a new collection to group related documentation sites. Collections help organize docs by project or context (e.g., "My React Project" with React + Next.js + TypeScript docs).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Unique name for the collection (e.g., "My React Project", "Backend APIs")',
+              },
+              description: {
+                type: 'string',
+                description: 'Optional description of what this collection contains',
+              },
+            },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'delete_collection',
+          description: 'Delete a collection. The documentation sites in the collection are NOT deleted, only the collection grouping.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection to delete',
+              },
+            },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'update_collection',
+          description: "Update a collection's name or description.",
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Current name of the collection',
+              },
+              newName: {
+                type: 'string',
+                description: 'Optional new name for the collection',
+              },
+              description: {
+                type: 'string',
+                description: 'Optional new description for the collection',
+              },
+            },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'list_collections',
+          description: 'List all collections with their document counts. Use this to see available collections for context switching.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+        },
+        {
+          name: 'get_collection',
+          description: 'Get details of a specific collection including all its documentation sites.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection',
+              },
+            },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'add_to_collection',
+          description: 'Add one or more documentation sites to a collection. Sites must already be indexed.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection',
+              },
+              urls: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'URLs of indexed documentation sites to add (max 50)',
+              },
+            },
+            required: ['name', 'urls'],
+          },
+        },
+        {
+          name: 'remove_from_collection',
+          description:
+            'Remove one or more documentation sites from a collection. The sites remain indexed, just removed from the collection.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection',
+              },
+              urls: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'URLs of documentation sites to remove from the collection',
+              },
+            },
+            required: ['name', 'urls'],
+          },
+        },
+        {
+          name: 'search_collection',
+          description:
+            'Search for documentation within a specific collection. This is useful for focused searches within a project context. Uses the same hybrid search (full-text + semantic) as search_documentation.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection to search in',
+              },
+              query: {
+                type: 'string',
+                description: 'Search query - be specific and include unique terms',
+              },
+              limit: {
+                type: 'number',
+                description: 'Maximum number of results (default: 10)',
+              },
+            },
+            required: ['name', 'query'],
+          },
+        },
       ],
     }));
 
@@ -473,6 +620,23 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
             return this.handleSetTags(request.params.arguments);
           case 'list_tags':
             return this.handleListTags();
+          // Collection handlers
+          case 'create_collection':
+            return this.handleCreateCollection(request.params.arguments);
+          case 'delete_collection':
+            return this.handleDeleteCollection(request.params.arguments);
+          case 'update_collection':
+            return this.handleUpdateCollection(request.params.arguments);
+          case 'list_collections':
+            return this.handleListCollections();
+          case 'get_collection':
+            return this.handleGetCollection(request.params.arguments);
+          case 'add_to_collection':
+            return this.handleAddToCollection(request.params.arguments);
+          case 'remove_from_collection':
+            return this.handleRemoveFromCollection(request.params.arguments);
+          case 'search_collection':
+            return this.handleSearchCollection(request.params.arguments);
           default:
             throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
         }
@@ -1160,6 +1324,381 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
             null,
             2
           ),
+        },
+      ],
+    };
+  }
+
+  // ============ Collection Handlers ============
+
+  /**
+   * Handle creating a new collection
+   */
+  private async handleCreateCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, CreateCollectionArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, description } = validatedArgs;
+
+    try {
+      await this.store.createCollection(name, description);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Collection "${name}" created successfully`,
+                collection: {
+                  name,
+                  description,
+                },
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('already exists')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to create collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle deleting a collection
+   */
+  private async handleDeleteCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, DeleteCollectionArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name } = validatedArgs;
+
+    try {
+      await this.store.deleteCollection(name);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Collection "${name}" deleted. Documentation sites remain indexed.`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('not found')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to delete collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle updating a collection's metadata
+   */
+  private async handleUpdateCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, UpdateCollectionArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, newName, description } = validatedArgs;
+
+    // Must provide at least one field to update
+    if (newName === undefined && description === undefined) {
+      throw new McpError(ErrorCode.InvalidParams, 'Must provide newName or description to update');
+    }
+
+    try {
+      await this.store.updateCollection(name, { newName, description });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Collection updated successfully`,
+                collection: {
+                  name: newName ?? name,
+                  description,
+                },
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('not found') || safeMessage.includes('already exists')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to update collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle listing all collections
+   */
+  private async handleListCollections() {
+    const collections = await this.store.listCollections();
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              collections,
+              total: collections.length,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Handle getting a specific collection with its documents
+   */
+  private async handleGetCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, GetCollectionArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name } = validatedArgs;
+
+    const collection = await this.store.getCollection(name);
+    if (!collection) {
+      throw new McpError(ErrorCode.InvalidParams, `Collection "${name}" not found`);
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(collection, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Handle adding documents to a collection
+   */
+  private async handleAddToCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, AddToCollectionArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, urls } = validatedArgs;
+
+    // Normalize URLs
+    const normalizedUrls = urls.map((url) => normalizeUrl(url));
+
+    try {
+      const result = await this.store.addToCollection(name, normalizedUrls);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Added ${result.added.length} document(s) to collection "${name}"`,
+                ...result,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('not found')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to add to collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle removing documents from a collection
+   */
+  private async handleRemoveFromCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, RemoveFromCollectionArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, urls } = validatedArgs;
+
+    // Normalize URLs
+    const normalizedUrls = urls.map((url) => normalizeUrl(url));
+
+    try {
+      const result = await this.store.removeFromCollection(name, normalizedUrls);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Removed ${result.removed.length} document(s) from collection "${name}"`,
+                ...result,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    } catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('not found')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to remove from collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle searching within a collection
+   */
+  private async handleSearchCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, SearchCollectionArgsSchema);
+    } catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, query, limit = 10 } = validatedArgs;
+
+    // Get URLs in the collection
+    const collectionUrls = await this.store.getCollectionUrls(name);
+
+    if (collectionUrls.length === 0) {
+      // Check if collection exists but is empty
+      const collection = await this.store.getCollection(name);
+      if (!collection) {
+        throw new McpError(ErrorCode.InvalidParams, `Collection "${name}" not found`);
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                results: [],
+                message: `Collection "${name}" is empty. Add documentation sites to search.`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    // Search using the existing searchByText but filter by collection URLs
+    // We'll use a custom approach: search all then filter
+    // This is less efficient than a native filter, but works with existing infrastructure
+    const allResults = await this.store.searchByText(query, { limit: limit * 3 }); // Get more results to filter
+
+    // Filter to only include results from collection URLs
+    const collectionUrlSet = new Set(collectionUrls);
+    let filteredResults = allResults.filter((result) => collectionUrlSet.has(result.url));
+
+    // Apply limit
+    filteredResults = filteredResults.slice(0, limit);
+
+    // Apply prompt injection detection and filter/process results (same as handleSearchDocumentation)
+    let blockedCount = 0;
+    const safeResults = filteredResults
+      .map((result) => {
+        const injectionResult = detectPromptInjection(result.content);
+
+        if (injectionResult.maxSeverity === 'high') {
+          blockedCount++;
+          logger.debug(
+            `[Security] Blocked search result from ${result.url} due to high-severity injection pattern: ${injectionResult.detections[0]?.description}`
+          );
+          return null;
+        }
+
+        let safeContent = addInjectionWarnings(result.content, injectionResult);
+        safeContent = wrapExternalContent(safeContent, result.url);
+
+        return {
+          ...result,
+          content: safeContent,
+          security: {
+            isExternalContent: true,
+            injectionDetected: injectionResult.hasInjection,
+            injectionSeverity: injectionResult.maxSeverity,
+            detectionCount: injectionResult.detections.length,
+          },
+        };
+      })
+      .filter((result): result is NonNullable<typeof result> => result !== null);
+
+    const response: { results: typeof safeResults; collection: string; securityNotice?: string } = {
+      results: safeResults,
+      collection: name,
+    };
+
+    if (blockedCount > 0) {
+      response.securityNotice = `${blockedCount} result(s) were blocked due to high-severity prompt injection patterns.`;
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(response, null, 2),
         },
       ],
     };
