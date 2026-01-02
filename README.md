@@ -38,6 +38,7 @@ AI assistants struggle with documentation:
 
 - **🌐 Universal Crawler** - Works with any documentation site, not just GitHub
 - **🔍 Hybrid Search** - Combines full-text search (FTS) with semantic vector search
+- **📂 Collections** - Group related docs into named collections for project-based organization
 - **🏷️ Tags & Categories** - Organize docs with tags and filter searches by project, team, or category
 - **📦 Version Support** - Index multiple versions of the same package (e.g., React 18 and 19)
 - **🔐 Authentication Support** - Crawl private/protected docs with interactive browser login (auto-detects your default browser)
@@ -390,6 +391,95 @@ Delete an indexed documentation site and all its data.
 
 Clear saved authentication session for a domain.
 
+### Collection Tools
+
+Collections let you group related documentation sites together for project-based organization. Unlike tags (which categorize individual docs), collections create named workspaces like "My React Project" containing React + Next.js + TypeScript docs.
+
+#### `create_collection`
+
+Create a new collection to group documentation sites.
+
+```typescript
+create_collection({
+  name: "My React Project",
+  description: "React, Next.js, and TypeScript docs for my project"  // Optional
+})
+```
+
+#### `add_to_collection`
+
+Add indexed documentation sites to a collection.
+
+```typescript
+add_to_collection({
+  name: "My React Project",
+  urls: [
+    "https://react.dev/",
+    "https://nextjs.org/docs/",
+    "https://www.typescriptlang.org/docs/"
+  ]
+})
+```
+
+#### `search_collection`
+
+Search within a specific collection. Uses the same hybrid search as `search_documentation` but limited to docs in the collection.
+
+```typescript
+search_collection({
+  name: "My React Project",
+  query: "server components data fetching",
+  limit: 10  // Optional
+})
+```
+
+#### `list_collections`
+
+List all collections with their document counts.
+
+#### `get_collection`
+
+Get details of a specific collection including all its documentation sites.
+
+```typescript
+get_collection({
+  name: "My React Project"
+})
+```
+
+#### `update_collection`
+
+Rename a collection or update its description.
+
+```typescript
+update_collection({
+  name: "My React Project",
+  newName: "Frontend Stack",           // Optional
+  description: "Updated description"   // Optional
+})
+```
+
+#### `remove_from_collection`
+
+Remove documentation sites from a collection. The sites remain indexed, just removed from the collection.
+
+```typescript
+remove_from_collection({
+  name: "My React Project",
+  urls: ["https://old-library.dev/docs/"]
+})
+```
+
+#### `delete_collection`
+
+Delete a collection. The documentation sites in the collection are **not** deleted, only the collection grouping.
+
+```typescript
+delete_collection({
+  name: "Old Project"
+})
+```
+
 ---
 
 ## 💡 Tips
@@ -470,6 +560,48 @@ search_documentation({
 ```
 
 You can also add tags to existing documentation with `set_tags`.
+
+### Using Collections for Project Organization
+
+Collections provide a higher-level grouping than tags — they let you organize documentation by project or context, making it easy to switch between different work contexts.
+
+**Create a collection for your project:**
+```typescript
+create_collection({
+  name: "E-commerce Backend",
+  description: "All docs for the backend rewrite project"
+})
+```
+
+**Add relevant documentation:**
+```typescript
+add_to_collection({
+  name: "E-commerce Backend",
+  urls: [
+    "https://fastapi.tiangolo.com/",
+    "https://docs.sqlalchemy.org/",
+    "https://redis.io/docs/"
+  ]
+})
+```
+
+**Search within your project context:**
+```typescript
+search_collection({
+  name: "E-commerce Backend",
+  query: "connection pooling best practices"
+})
+```
+
+**Collections vs Tags:**
+| Feature | Collections | Tags |
+|---------|-------------|------|
+| Purpose | Group docs as a project/workspace | Categorize individual docs |
+| Structure | Named container with multiple docs | Labels on individual docs |
+| Use case | "My React Project" with React + Next.js + TS | "This doc is about React" |
+| Searching | `search_collection` for focused results | `tags` filter in `search_documentation` |
+
+You can use both together — a document can have tags AND belong to multiple collections.
 
 ### Versioning Package Documentation
 
