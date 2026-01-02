@@ -452,6 +452,12 @@ private static readonly MIGRATIONS: Array<{
 - Always increment the version number
 - Keep migrations idempotent where possible
 
+**Current Migrations:**
+1. Auth tracking columns (requires_auth, auth_domain)
+2. Document tags table
+3. Version column for versioned packages
+4. Collections feature (collections table, collection_documents junction table)
+
 ---
 
 ## Key Interfaces
@@ -501,6 +507,21 @@ interface DocumentChunk {
 interface EmbeddingsProvider {
   embed(text: string): Promise<number[]>;
   dimensions: number;
+}
+```
+
+### Collection
+```typescript
+interface Collection {
+  name: string;              // Unique name/identifier
+  description?: string;      // Optional description
+  createdAt: Date;
+  updatedAt: Date;
+  documentCount?: number;    // Number of docs in collection
+}
+
+interface CollectionWithDocuments extends Collection {
+  documents: DocumentMetadata[];  // Full list of docs
 }
 ```
 

@@ -148,3 +148,31 @@ export interface WebCrawler {
 export interface DocumentProcessor {
   process(crawlResult: CrawlResult, chunkSize?: number): Promise<ProcessedDocument>;
 }
+
+// ============ Collections ============
+
+/**
+ * A collection groups related documentation sites together.
+ * For example, "My React Project" might contain React, Next.js, and TypeScript docs.
+ */
+export interface Collection {
+  /** Unique name/identifier for the collection */
+  name: string;
+  /** Optional description of the collection's purpose */
+  description?: string;
+  /** When the collection was created */
+  createdAt: Date;
+  /** When the collection was last modified */
+  updatedAt: Date;
+  /** Number of documents in this collection (for list views) */
+  documentCount?: number;
+}
+
+/**
+ * A collection with its full list of documents.
+ * Used when fetching a specific collection's details.
+ */
+export interface CollectionWithDocuments extends Collection {
+  /** The documentation sites in this collection */
+  documents: DocumentMetadata[];
+}

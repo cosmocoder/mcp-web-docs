@@ -411,6 +411,83 @@ export const SetTagsArgsSchema = z.object({
 
 export type SetTagsArgs = z.infer<typeof SetTagsArgsSchema>;
 
+// ============ Collection Tool Argument Schemas ============
+
+/** Schema for collection name validation - alphanumeric with hyphens, underscores, and spaces */
+const CollectionNameSchema = z
+  .string()
+  .min(1, 'Collection name is required')
+  .max(100, 'Collection name must be 100 characters or less')
+  .regex(/^[a-zA-Z0-9-_ ]+$/, 'Collection name must contain only alphanumeric characters, hyphens, underscores, and spaces');
+
+/**
+ * Schema for create_collection tool arguments
+ */
+export const CreateCollectionArgsSchema = z.object({
+  name: CollectionNameSchema,
+  description: z.string().max(500).optional(),
+});
+
+export type CreateCollectionArgs = z.infer<typeof CreateCollectionArgsSchema>;
+
+/**
+ * Schema for delete_collection tool arguments
+ */
+export const DeleteCollectionArgsSchema = z.object({
+  name: CollectionNameSchema,
+});
+
+export type DeleteCollectionArgs = z.infer<typeof DeleteCollectionArgsSchema>;
+
+/**
+ * Schema for update_collection tool arguments
+ */
+export const UpdateCollectionArgsSchema = z.object({
+  name: CollectionNameSchema,
+  newName: CollectionNameSchema.optional(),
+  description: z.string().max(500).optional(),
+});
+
+export type UpdateCollectionArgs = z.infer<typeof UpdateCollectionArgsSchema>;
+
+/**
+ * Schema for get_collection tool arguments
+ */
+export const GetCollectionArgsSchema = z.object({
+  name: CollectionNameSchema,
+});
+
+export type GetCollectionArgs = z.infer<typeof GetCollectionArgsSchema>;
+
+/**
+ * Schema for add_to_collection tool arguments
+ */
+export const AddToCollectionArgsSchema = z.object({
+  name: CollectionNameSchema,
+  urls: z.array(z.string().url().max(2048)).min(1, 'At least one URL is required').max(50, 'Maximum 50 URLs per request'),
+});
+
+export type AddToCollectionArgs = z.infer<typeof AddToCollectionArgsSchema>;
+
+/**
+ * Schema for remove_from_collection tool arguments
+ */
+export const RemoveFromCollectionArgsSchema = z.object({
+  name: CollectionNameSchema,
+  urls: z.array(z.string().url().max(2048)).min(1, 'At least one URL is required').max(50, 'Maximum 50 URLs per request'),
+});
+
+export type RemoveFromCollectionArgs = z.infer<typeof RemoveFromCollectionArgsSchema>;
+
+/**
+ * Schema for search_collection tool arguments
+ */
+export const SearchCollectionArgsSchema = z.object({
+  name: CollectionNameSchema,
+  query: z.string().min(1).max(1000),
+  limit: z.number().min(1).max(100).optional(),
+});
+
 /**
  * Validate MCP tool arguments against a schema
  * @param args - Raw arguments from MCP request

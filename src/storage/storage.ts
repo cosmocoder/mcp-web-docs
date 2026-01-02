@@ -6,7 +6,15 @@ import { Field, FixedSizeList, Float32, Schema, Utf8, Int32 } from 'apache-arrow
 import QuickLRU from 'quick-lru';
 import { mkdir } from 'fs/promises';
 import { dirname } from 'path';
-import { DocumentMetadata, ProcessedDocument, SearchResult, SearchOptions, StorageProvider } from '../types.js';
+import {
+  Collection,
+  CollectionWithDocuments,
+  DocumentMetadata,
+  ProcessedDocument,
+  SearchResult,
+  SearchOptions,
+  StorageProvider,
+} from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
 import { logger } from '../util/logger.js';
 import { escapeFilterValue } from '../util/security.js';
@@ -245,6 +253,28 @@ export class DocumentStore implements StorageProvider {
       sql: `
         ALTER TABLE documents ADD COLUMN version TEXT;
         CREATE INDEX IF NOT EXISTS idx_documents_version ON documents(version);
+      `,
+    },
+    {
+      version: 4,
+      description: 'Add collections feature for grouping documentation sites',
+      sql: `
+        CREATE TABLE IF NOT EXISTS collections (
+          name TEXT PRIMARY KEY,
+          description TEXT,
+          created_at DATETIME NOT NULL,
+          updated_at DATETIME NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS collection_documents (
+          collection_name TEXT NOT NULL,
+          url TEXT NOT NULL,
+          added_at DATETIME NOT NULL,
+          PRIMARY KEY (collection_name, url),
+          FOREIGN KEY (collection_name) REFERENCES collections(name) ON DELETE CASCADE,
+          FOREIGN KEY (url) REFERENCES documents(url) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_collection_documents_name ON collection_documents(collection_name);
+        CREATE INDEX IF NOT EXISTS idx_collection_documents_url ON collection_documents(url);
       `,
     },
   ];
@@ -1110,6 +1140,429 @@ export class DocumentStore implements StorageProvider {
       logger.error('[DocumentStore] Error getting URLs by tags:', error);
       throw error;
     }
+  }
+
+  // ============ Collection Methods ============
+
+  /**
+   * Create a new collection.
+   * @param name - Unique name for the collection
+   * @param description - Optional description
+   * @throws Error if collection already exists
+   */
+  async createCollection(name: string, description?: string): Promise<void> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const normalizedName = name.trim();
+    const now = new Date().toISOString();
+
+    logger.debug(`[DocumentStore] Creating collection: ${normalizedName}`);
+
+    try {
+      await this.sqliteDb.run('INSERT INTO collections (name, description, created_at, updated_at) VALUES (?, ?, ?, ?)', [
+        normalizedName,
+        description || null,
+        now,
+        now,
+      ]);
+      logger.info(`[DocumentStore] Collection created: ${normalizedName}`);
+    } catch (error) {
+      const err = error as Error;
+      if (err.message?.includes('UNIQUE constraint failed') || err.message?.includes('PRIMARY KEY constraint failed')) {
+        throw new Error(`Collection "${normalizedName}" already exists`);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Delete a collection.
+   * Documents in the collection are NOT deleted, only the collection association.
+   * @param name - Name of the collection to delete
+   * @throws Error if collection doesn't exist
+   */
+  async deleteCollection(name: string): Promise<void> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const normalizedName = name.trim();
+    logger.debug(`[DocumentStore] Deleting collection: ${normalizedName}`);
+
+    const result = await this.sqliteDb.run('DELETE FROM collections WHERE name = ?', [normalizedName]);
+
+    if (result.changes === 0) {
+      throw new Error(`Collection "${normalizedName}" not found`);
+    }
+
+    // collection_documents entries are cascade-deleted by foreign key
+    logger.info(`[DocumentStore] Collection deleted: ${normalizedName}`);
+  }
+
+  /**
+   * Update a collection's metadata.
+   * @param name - Current name of the collection
+   * @param updates - Fields to update
+   * @throws Error if collection doesn't exist
+   */
+  async updateCollection(name: string, updates: { newName?: string; description?: string }): Promise<void> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const normalizedName = name.trim();
+    const now = new Date().toISOString();
+
+    // Check if collection exists
+    const existing = await this.sqliteDb.get<{ name: string; description: string | null; created_at: string }>(
+      'SELECT name, description, created_at FROM collections WHERE name = ?',
+      [normalizedName]
+    );
+    if (!existing) {
+      throw new Error(`Collection "${normalizedName}" not found`);
+    }
+
+    logger.debug(`[DocumentStore] Updating collection: ${normalizedName}`, updates);
+
+    try {
+      // If renaming, we need to handle FK constraints carefully
+      // SQLite doesn't allow PRAGMA changes within a transaction, so we use a different approach:
+      // 1. Create new collection with new name
+      // 2. Move documents to new collection
+      // 3. Delete old collection
+      if (updates.newName !== undefined) {
+        const newNormalizedName = updates.newName.trim();
+
+        // Check if new name already exists
+        const existingNew = await this.sqliteDb.get<{ name: string }>('SELECT name FROM collections WHERE name = ?', [newNormalizedName]);
+        if (existingNew) {
+          throw new Error(`Collection "${newNormalizedName}" already exists`);
+        }
+
+        await this.sqliteDb.run('BEGIN TRANSACTION');
+
+        // Create collection with new name
+        const newDescription = updates.description ?? existing.description;
+        await this.sqliteDb.run('INSERT INTO collections (name, description, created_at, updated_at) VALUES (?, ?, ?, ?)', [
+          newNormalizedName,
+          newDescription,
+          existing.created_at,
+          now,
+        ]);
+
+        // Get all document URLs in the old collection
+        const docs = await this.sqliteDb.all<Array<{ url: string; added_at: string }>>(
+          'SELECT url, added_at FROM collection_documents WHERE collection_name = ?',
+          [normalizedName]
+        );
+
+        // Add documents to new collection
+        for (const doc of docs) {
+          await this.sqliteDb.run('INSERT INTO collection_documents (collection_name, url, added_at) VALUES (?, ?, ?)', [
+            newNormalizedName,
+            doc.url,
+            doc.added_at,
+          ]);
+        }
+
+        // Delete old collection (cascade will remove old collection_documents entries)
+        await this.sqliteDb.run('DELETE FROM collections WHERE name = ?', [normalizedName]);
+
+        await this.sqliteDb.run('COMMIT');
+      } else if (updates.description !== undefined) {
+        // Just updating description, simple update
+        await this.sqliteDb.run('UPDATE collections SET description = ?, updated_at = ? WHERE name = ?', [
+          updates.description,
+          now,
+          normalizedName,
+        ]);
+      }
+
+      logger.info(`[DocumentStore] Collection updated: ${normalizedName}`);
+    } catch (error) {
+      try {
+        await this.sqliteDb.run('ROLLBACK');
+      } catch {
+        // Ignore rollback errors
+      }
+      const err = error as Error;
+      if (err.message?.includes('already exists')) {
+        throw err;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * List all collections with document counts.
+   * @returns Array of collections sorted by name
+   */
+  async listCollections(): Promise<Collection[]> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    logger.debug(`[DocumentStore] Listing collections`);
+
+    const rows = await this.sqliteDb.all<
+      Array<{
+        name: string;
+        description: string | null;
+        created_at: string;
+        updated_at: string;
+        document_count: number;
+      }>
+    >(`
+      SELECT c.name, c.description, c.created_at, c.updated_at,
+             COUNT(cd.url) as document_count
+      FROM collections c
+      LEFT JOIN collection_documents cd ON c.name = cd.collection_name
+      GROUP BY c.name
+      ORDER BY c.name ASC
+    `);
+
+    logger.debug(`[DocumentStore] Found ${rows.length} collections`);
+
+    return rows.map((row) => ({
+      name: row.name,
+      description: row.description ?? undefined,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+      documentCount: row.document_count,
+    }));
+  }
+
+  /**
+   * Get a collection with its full list of documents.
+   * @param name - Name of the collection
+   * @returns Collection with documents, or null if not found
+   */
+  async getCollection(name: string): Promise<CollectionWithDocuments | null> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const normalizedName = name.trim();
+    logger.debug(`[DocumentStore] Getting collection: ${normalizedName}`);
+
+    // Get collection metadata
+    const row = await this.sqliteDb.get<{
+      name: string;
+      description: string | null;
+      created_at: string;
+      updated_at: string;
+    }>('SELECT name, description, created_at, updated_at FROM collections WHERE name = ?', [normalizedName]);
+
+    if (!row) {
+      logger.debug(`[DocumentStore] Collection not found: ${normalizedName}`);
+      return null;
+    }
+
+    // Get documents in the collection
+    const docRows = await this.sqliteDb.all<
+      Array<{
+        url: string;
+        title: string;
+        favicon: string | null;
+        last_indexed: string;
+        requires_auth: number | null;
+        auth_domain: string | null;
+        version: string | null;
+      }>
+    >(
+      `
+      SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version
+      FROM documents d
+      INNER JOIN collection_documents cd ON d.url = cd.url
+      WHERE cd.collection_name = ?
+      ORDER BY d.title ASC
+    `,
+      [normalizedName]
+    );
+
+    // Fetch tags for all documents
+    const tagsMap = await this.getAllDocumentTags();
+
+    const documents: DocumentMetadata[] = docRows.map((doc) => ({
+      url: doc.url,
+      title: doc.title,
+      favicon: doc.favicon ?? undefined,
+      lastIndexed: new Date(doc.last_indexed),
+      requiresAuth: doc.requires_auth === 1,
+      authDomain: doc.auth_domain ?? undefined,
+      tags: tagsMap.get(doc.url) || [],
+      version: doc.version ?? undefined,
+    }));
+
+    logger.debug(`[DocumentStore] Collection "${normalizedName}" has ${documents.length} documents`);
+
+    return {
+      name: row.name,
+      description: row.description ?? undefined,
+      createdAt: new Date(row.created_at),
+      updatedAt: new Date(row.updated_at),
+      documentCount: documents.length,
+      documents,
+    };
+  }
+
+  /**
+   * Add documents to a collection.
+   * @param name - Name of the collection
+   * @param urls - URLs of documents to add
+   * @throws Error if collection doesn't exist
+   */
+  async addToCollection(name: string, urls: string[]): Promise<{ added: string[]; notFound: string[]; alreadyInCollection: string[] }> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const normalizedName = name.trim();
+    const now = new Date().toISOString();
+
+    logger.debug(`[DocumentStore] Adding ${urls.length} documents to collection: ${normalizedName}`);
+
+    // Check if collection exists
+    const collection = await this.sqliteDb.get<{ name: string }>('SELECT name FROM collections WHERE name = ?', [normalizedName]);
+    if (!collection) {
+      throw new Error(`Collection "${normalizedName}" not found`);
+    }
+
+    const added: string[] = [];
+    const notFound: string[] = [];
+    const alreadyInCollection: string[] = [];
+
+    await this.sqliteDb.run('BEGIN TRANSACTION');
+
+    try {
+      for (const url of urls) {
+        // Check if document exists
+        const doc = await this.sqliteDb.get<{ url: string }>('SELECT url FROM documents WHERE url = ?', [url]);
+        if (!doc) {
+          notFound.push(url);
+          continue;
+        }
+
+        // Try to add to collection
+        try {
+          await this.sqliteDb.run('INSERT INTO collection_documents (collection_name, url, added_at) VALUES (?, ?, ?)', [
+            normalizedName,
+            url,
+            now,
+          ]);
+          added.push(url);
+        } catch (error) {
+          const err = error as Error;
+          if (err.message?.includes('UNIQUE constraint failed') || err.message?.includes('PRIMARY KEY constraint failed')) {
+            alreadyInCollection.push(url);
+          } else {
+            throw error;
+          }
+        }
+      }
+
+      // Update collection's updated_at timestamp
+      if (added.length > 0) {
+        await this.sqliteDb.run('UPDATE collections SET updated_at = ? WHERE name = ?', [now, normalizedName]);
+      }
+
+      await this.sqliteDb.run('COMMIT');
+
+      logger.info(`[DocumentStore] Added ${added.length} documents to collection "${normalizedName}"`);
+      if (notFound.length > 0) {
+        logger.debug(`[DocumentStore] Documents not found: ${notFound.join(', ')}`);
+      }
+      if (alreadyInCollection.length > 0) {
+        logger.debug(`[DocumentStore] Documents already in collection: ${alreadyInCollection.join(', ')}`);
+      }
+
+      return { added, notFound, alreadyInCollection };
+    } catch (error) {
+      await this.sqliteDb.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Remove documents from a collection.
+   * @param name - Name of the collection
+   * @param urls - URLs of documents to remove
+   * @throws Error if collection doesn't exist
+   */
+  async removeFromCollection(name: string, urls: string[]): Promise<{ removed: string[]; notInCollection: string[] }> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const normalizedName = name.trim();
+    const now = new Date().toISOString();
+
+    logger.debug(`[DocumentStore] Removing ${urls.length} documents from collection: ${normalizedName}`);
+
+    // Check if collection exists
+    const collection = await this.sqliteDb.get<{ name: string }>('SELECT name FROM collections WHERE name = ?', [normalizedName]);
+    if (!collection) {
+      throw new Error(`Collection "${normalizedName}" not found`);
+    }
+
+    const removed: string[] = [];
+    const notInCollection: string[] = [];
+
+    await this.sqliteDb.run('BEGIN TRANSACTION');
+
+    try {
+      for (const url of urls) {
+        const result = await this.sqliteDb.run('DELETE FROM collection_documents WHERE collection_name = ? AND url = ?', [
+          normalizedName,
+          url,
+        ]);
+        if (result.changes && result.changes > 0) {
+          removed.push(url);
+        } else {
+          notInCollection.push(url);
+        }
+      }
+
+      // Update collection's updated_at timestamp
+      if (removed.length > 0) {
+        await this.sqliteDb.run('UPDATE collections SET updated_at = ? WHERE name = ?', [now, normalizedName]);
+      }
+
+      await this.sqliteDb.run('COMMIT');
+
+      logger.info(`[DocumentStore] Removed ${removed.length} documents from collection "${normalizedName}"`);
+      if (notInCollection.length > 0) {
+        logger.debug(`[DocumentStore] Documents not in collection: ${notInCollection.join(', ')}`);
+      }
+
+      return { removed, notInCollection };
+    } catch (error) {
+      await this.sqliteDb.run('ROLLBACK');
+      throw error;
+    }
+  }
+
+  /**
+   * Get URLs of all documents in a collection.
+   * Used for search filtering.
+   * @param name - Name of the collection
+   * @returns Array of document URLs
+   */
+  async getCollectionUrls(name: string): Promise<string[]> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const normalizedName = name.trim();
+    logger.debug(`[DocumentStore] Getting URLs for collection: ${normalizedName}`);
+
+    const rows = await this.sqliteDb.all<Array<{ url: string }>>('SELECT url FROM collection_documents WHERE collection_name = ?', [
+      normalizedName,
+    ]);
+
+    return rows.map((row) => row.url);
   }
 
   private clearCacheForUrl(url: string): void {
