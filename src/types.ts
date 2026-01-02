@@ -24,6 +24,8 @@ export interface DocumentMetadata {
   authDomain?: string;
   /** User-defined tags for categorizing documentation (e.g., "frontend", "mycompany") */
   tags?: string[];
+  /** Version of the documentation (e.g., "18", "v6.4", "3.11") for versioned packages */
+  version?: string;
 }
 
 export interface DocumentChunk {

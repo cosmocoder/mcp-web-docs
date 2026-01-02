@@ -310,6 +310,13 @@ const TagSchema = z
 /** Schema for an array of tags */
 const TagsArraySchema = z.array(TagSchema).max(20);
 
+/** Schema for version validation - alphanumeric with dots, dashes, underscores (e.g., "v1.2.3", "18", "latest") */
+const VersionSchema = z
+  .string()
+  .min(1)
+  .max(50)
+  .regex(/^[a-zA-Z0-9._-]+$/, 'Version must contain only alphanumeric characters, dots, hyphens, and underscores');
+
 /**
  * Schema for add_documentation tool arguments
  */
@@ -327,6 +334,7 @@ export const AddDocumentationArgsSchema = z.object({
     .refine((val) => val.startsWith('/'), 'Path prefix must start with /')
     .optional(),
   tags: TagsArraySchema.optional(),
+  version: VersionSchema.optional(),
   auth: z
     .object({
       requiresAuth: z.boolean().optional(),

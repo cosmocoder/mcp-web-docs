@@ -178,7 +178,17 @@ class WebDocsServer {
           name: 'add_documentation',
           description: `Add new documentation site for indexing. Supports authenticated sites via the auth options.
 
-IMPORTANT: Before calling this tool, ask the user if they want to restrict crawling to a specific path prefix. For example, if indexing https://docs.example.com/api/v2/overview, the user might want to restrict to '/api/v2' to avoid crawling unrelated sections of the site.`,
+IMPORTANT: Before calling this tool, ask the user if they want to restrict crawling to a specific path prefix. For example, if indexing https://docs.example.com/api/v2/overview, the user might want to restrict to '/api/v2' to avoid crawling unrelated sections of the site.
+
+VERSIONING: If the user is indexing documentation for a versioned software package/library (e.g., React, Vue, Python, a database, an SDK), ask what version they want to associate with this documentation. Many packages have multiple versions with different APIs.
+
+Do NOT ask about versioning for:
+- Internal company documentation (wikis, best practices, runbooks)
+- Single-version products or services
+- Documentation the user indicates should always reflect "latest"
+
+Examples where version matters: "React 18", "Python 3.11", "PostgreSQL 15", "Next.js 14"
+Examples where version doesn't matter: "Company engineering handbook", "AWS console docs", "Confluence spaces"`,
           inputSchema: {
             type: 'object',
             properties: {
@@ -205,6 +215,11 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
                 items: { type: 'string' },
                 description:
                   'Optional tags to categorize the documentation (e.g., ["frontend", "mycompany"]). Tags help filter search results across multiple documentation sites.',
+              },
+              version: {
+                type: 'string',
+                description:
+                  'Optional version identifier for versioned package documentation (e.g., "18", "v6.4", "3.11", "latest"). Helps distinguish between multiple versions of the same package.',
               },
               auth: {
                 type: 'object',
@@ -474,7 +489,7 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
-    const { url, title, id, pathPrefix, tags, auth: authOptions } = validatedArgs;
+    const { url, title, id, pathPrefix, tags, version, auth: authOptions } = validatedArgs;
 
     // Additional SSRF protection check
     if (!isValidPublicUrl(url)) {
@@ -556,7 +571,7 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
     this.statusTracker.startIndexing(docId, normalizedUrl, docTitle);
 
     // Start indexing in the background with abort support
-    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal, pathPrefix, authInfo, tags)
+    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal, pathPrefix, authInfo, tags, version)
       .catch((error) => {
         const err = error as Error;
         if (err?.name !== 'AbortError') {
@@ -734,8 +749,9 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
         }
       : undefined;
 
-    // Preserve existing tags during reindex
+    // Preserve existing tags and version during reindex
     const existingTags = doc.tags;
+    const existingVersion = doc.version;
 
     // Cancel any existing operation for this URL
     const wasCancelled = this.indexingQueue.isIndexing(normalizedUrl);
@@ -751,8 +767,18 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
 
     this.statusTracker.startIndexing(docId, normalizedUrl, doc.title);
 
-    // Start reindexing in the background with abort support (preserving existing tags)
-    const operationPromise = this.indexAndAdd(docId, normalizedUrl, doc.title, true, controller.signal, undefined, authInfo, existingTags)
+    // Start reindexing in the background with abort support (preserving existing tags and version)
+    const operationPromise = this.indexAndAdd(
+      docId,
+      normalizedUrl,
+      doc.title,
+      true,
+      controller.signal,
+      undefined,
+      authInfo,
+      existingTags,
+      existingVersion
+    )
       .catch((error) => {
         const err = error as Error;
         if (err?.name !== 'AbortError') {
@@ -1147,7 +1173,8 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
     signal?: AbortSignal,
     pathPrefix?: string,
     authInfo?: { requiresAuth: boolean; authDomain: string },
-    tags?: string[]
+    tags?: string[],
+    version?: string
   ) {
     // Helper to check if operation was cancelled
     const checkCancelled = () => {
@@ -1338,6 +1365,7 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
           lastIndexed: new Date(),
           requiresAuth: authInfo?.requiresAuth,
           authDomain: authInfo?.authDomain,
+          version,
         },
         chunks: chunks.map((chunk, i) => ({
           ...chunk,
@@ -1406,6 +1434,7 @@ IMPORTANT: Before calling this tool, ask the user if they want to restrict crawl
         lastIndexed: Date;
         requiresAuth?: boolean;
         authDomain?: string;
+        version?: string;
       };
       chunks: DocumentChunk[];
     },
