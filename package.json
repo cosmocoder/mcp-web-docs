@@ -68,7 +68,7 @@
     "fastembed": "2.1.0",
     "jsdom": "27.3.0",
     "node-html-markdown": "2.0.0",
-    "pdfjs-dist": "5.4.449",
+    "pdfjs-dist": "5.4.530",
     "playwright": "1.57.0",
     "quick-lru": "7.3.0",
     "safe-regex2": "5.0.0",
