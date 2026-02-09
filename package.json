@@ -69,7 +69,7 @@
     "jsdom": "27.4.0",
     "node-html-markdown": "2.0.0",
     "pdfjs-dist": "5.4.624",
-    "playwright": "1.58.0",
+    "playwright": "1.58.1",
     "quick-lru": "7.3.0",
     "safe-regex2": "5.0.0",
     "semver": "7.7.4",
