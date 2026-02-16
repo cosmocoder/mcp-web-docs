@@ -58,7 +58,7 @@
   },
   "dependencies": {
     "@andersmyrmel/vard": "1.2.0",
-    "@lancedb/lancedb": "0.24.1",
+    "@lancedb/lancedb": "0.26.2",
     "@modelcontextprotocol/sdk": "1.26.0",
     "@mozilla/readability": "0.6.0",
     "cheerio": "1.2.0",
