@@ -66,7 +66,7 @@
     "crawlee": "3.16.0",
     "default-browser": "5.5.0",
     "fastembed": "2.1.0",
-    "jsdom": "27.4.0",
+    "jsdom": "28.1.0",
     "node-html-markdown": "2.0.0",
     "pdfjs-dist": "5.4.624",
     "playwright": "1.58.2",
