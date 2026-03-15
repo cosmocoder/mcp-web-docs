@@ -126,7 +126,8 @@ export const siteRules: SiteDetectionRule[] = [
     detect: async (page) => {
       return page.evaluate(() => {
         return (
-          window.location.hostname.includes('github.io') && document.querySelector('.markdown-body, .site-footer, .page-header') !== null
+          (window.location.hostname === 'github.io' || window.location.hostname.endsWith('.github.io')) &&
+          document.querySelector('.markdown-body, .site-footer, .page-header') !== null
         );
       });
     },
