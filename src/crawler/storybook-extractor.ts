@@ -254,8 +254,9 @@ export class StorybookExtractor implements ContentExtractor {
         type = '-';
       }
 
-      // Clean default value
+      // Clean default value - escape backslashes first, then pipes
       const formattedDefault = defaultValue
+        .replace(/\\/g, '\\\\')
         .replace(/\|/g, '\\|')
         .replace(/^"([^"]+)"$/, '`"$1"`')
         .replace(/^'([^']+)'$/, "`'$1'`");
@@ -571,7 +572,7 @@ export class StorybookExtractor implements ContentExtractor {
       for (const row of rows) {
         const cells = Array.from(row.querySelectorAll('td')).map((td) => {
           const text = this.extractLinks(td);
-          return text.replace(/\|/g, '\\|');
+          return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
         });
 
         if (cells.length > 0) {
