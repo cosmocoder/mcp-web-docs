@@ -660,7 +660,7 @@ export class DocumentStore implements StorageProvider {
       if (filterUrl) {
         // Filter by base URL - use LIKE to match URLs that start with the base URL
         // Escape the filterUrl and also escape LIKE wildcards within the value
-        const escapedUrl = escapeFilterValue(filterUrl).replace(/%/g, '\\%').replace(/_/g, '\\_');
+        const escapedUrl = escapeFilterValue(filterUrl).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
         conditions.push(`url LIKE '${escapedUrl}%'`);
       }
       if (tagFilteredUrls && tagFilteredUrls.length > 0) {
