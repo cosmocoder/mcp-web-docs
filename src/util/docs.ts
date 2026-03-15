@@ -3,7 +3,7 @@ export function generateDocId(url: string, title: string): string {
   const pathParts = urlObj.pathname.split('/').filter(Boolean);
 
   // For GitHub Pages (e.g., jimdo.github.io/ui/latest)
-  if (urlObj.hostname.endsWith('github.io')) {
+  if (urlObj.hostname === 'github.io' || urlObj.hostname.endsWith('.github.io')) {
     const org = urlObj.hostname.split('.')[0];
     const repo = pathParts[0];
     return `${org}-${repo}`;
