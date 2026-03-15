@@ -28,6 +28,10 @@ export class StorybookExtractor implements ContentExtractor {
     return `\`\`\`${language}\n${cleanCode}\n\`\`\``;
   }
 
+  private escapeHtml(text: string): string {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
   private extractLinks(element: Element): string {
     let content = element.innerHTML;
 
@@ -38,7 +42,9 @@ export class StorybookExtractor implements ContentExtractor {
       const href = link.getAttribute('href');
       if (text && href) {
         const linkHtml = link.outerHTML;
-        content = content.replace(linkHtml, `[${text}](${href})`);
+        // Escape HTML meta-characters in DOM text to prevent XSS when
+        // the modified string is later assigned to innerHTML (CWE-079)
+        content = content.replace(linkHtml, `[${this.escapeHtml(text)}](${this.escapeHtml(href)})`);
       }
     });
 
@@ -48,7 +54,8 @@ export class StorybookExtractor implements ContentExtractor {
       const text = code.textContent?.trim();
       if (text) {
         const codeHtml = code.outerHTML;
-        content = content.replace(codeHtml, `\`${text}\``);
+        // Escape HTML meta-characters in DOM text to prevent XSS (CWE-079)
+        content = content.replace(codeHtml, `\`${this.escapeHtml(text)}\``);
       }
     });
 
