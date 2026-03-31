@@ -6,7 +6,6 @@ import { logger } from '../util/logger.js';
 
 export class DocsCrawler implements WebCrawler {
   private readonly GITHUB_HOST = 'github.com';
-  private readonly MIN_PAGES = 2; // Require at least 2 pages for component libraries
   private isAborting = false;
   private storageState?: StorageState;
   private pathPrefix?: string;
@@ -86,12 +85,12 @@ export class DocsCrawler implements WebCrawler {
         yield page;
       }
 
-      if (pageCount >= this.MIN_PAGES) {
-        logger.debug(`[DocsCrawler] Crawlee crawler successful (${pageCount} pages)`);
-        return 'crawlee';
+      if (pageCount === 0) {
+        logger.warn(`[DocsCrawler] Crawlee crawler found no pages for ${url}`);
+      } else {
+        logger.debug(`[DocsCrawler] Crawlee crawler completed (${pageCount} pages)`);
       }
-      logger.debug(`[DocsCrawler] Crawlee crawler found insufficient pages (${pageCount})`);
-      throw new Error(`Crawlee crawler found only ${pageCount} pages, need at least ${this.MIN_PAGES}`);
+      return 'crawlee';
     } catch (e) {
       logger.debug('[DocsCrawler] Crawlee crawler failed:', e);
       throw e;

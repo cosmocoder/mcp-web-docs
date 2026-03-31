@@ -1,8 +1,9 @@
 import { RequestQueue, Dataset, Log, EnqueueLinksOptions, EnqueueStrategy } from 'crawlee';
-import { generateDocId } from '../util/docs.js';
+import { generateDocId, isPathAllowed } from '../util/docs.js';
 import { CrawlResult } from '../types.js';
 import { SiteDetectionRule } from './site-rules.js';
 import { logger } from '../util/logger.js';
+import { discoverUrlsFromLlmsTxt } from './llms-txt.js';
 
 export class QueueManager {
   private requestQueue: RequestQueue | null = null;
@@ -47,6 +48,50 @@ export class QueueManager {
     // Clear existing dataset
     const dataset = await Dataset.open(this.websiteId);
     await dataset.drop();
+  }
+
+  /**
+   * Attempt to discover URLs from the site's llms.txt and add them to the queue.
+   * This provides upfront URL discovery that bypasses bot-protection on link following.
+   */
+  async seedFromLlmsTxt(baseUrl: string): Promise<number> {
+    const urls = await discoverUrlsFromLlmsTxt(baseUrl);
+    if (urls.length === 0) return 0;
+
+    return this.addSeedUrls(urls);
+  }
+
+  /**
+   * Add a batch of URLs to the request queue as seeds.
+   * Applies the same hostname and path prefix filters as enqueueLinks.
+   */
+  async addSeedUrls(urls: string[]): Promise<number> {
+    if (!this.requestQueue) {
+      logger.warn(`[QueueManager] Cannot add seed URLs: queue not initialized`);
+      return 0;
+    }
+
+    let added = 0;
+    for (const rawUrl of urls) {
+      try {
+        const parsed = new URL(rawUrl);
+
+        if (!this.isHostnameAllowed(parsed.hostname)) continue;
+
+        if (this.pathPrefix && !isPathAllowed(parsed.pathname, this.pathPrefix)) continue;
+
+        const normalizedUrl = parsed.origin + parsed.pathname + parsed.search;
+        const uniqueKey = parsed.pathname + parsed.search;
+
+        await this.requestQueue.addRequest({ url: normalizedUrl, uniqueKey }, { forefront: false });
+        added++;
+      } catch {
+        logger.debug(`[QueueManager] Skipping invalid seed URL: ${rawUrl}`);
+      }
+    }
+
+    logger.info(`[QueueManager] Seeded ${added} URLs from llms.txt (${urls.length - added} filtered)`);
+    return added;
   }
 
   getFilteredByPathCount(): number {
@@ -133,13 +178,10 @@ export class QueueManager {
 
         // Skip URLs outside the path prefix (if configured)
         // Use precise matching: /docs matches /docs and /docs/foo but NOT /documentation
-        if (pathPrefix) {
-          const isMatch = url.pathname === pathPrefix || url.pathname.startsWith(pathPrefix + '/');
-          if (!isMatch) {
-            logger.debug(`[QueueManager] Skipping URL outside path prefix: ${url.pathname} (prefix: ${pathPrefix})`);
-            incrementFilteredByPath();
-            return false;
-          }
+        if (pathPrefix && !isPathAllowed(url.pathname, pathPrefix)) {
+          logger.debug(`[QueueManager] Skipping URL outside path prefix: ${url.pathname} (prefix: ${pathPrefix})`);
+          incrementFilteredByPath();
+          return false;
         }
 
         // Return the request with a normalized URL (without hash) and unique key

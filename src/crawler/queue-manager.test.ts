@@ -3,7 +3,7 @@ import { QueueManager } from './queue-manager.js';
 import type { CrawlResult } from '../types.js';
 import type { SiteDetectionRule } from './site-rules.js';
 
-const { mockRequestQueue, mockDataset } = vi.hoisted(() => ({
+const { mockRequestQueue, mockDataset, mockDiscoverUrls } = vi.hoisted(() => ({
   mockRequestQueue: {
     drop: vi.fn().mockResolvedValue(undefined),
     addRequest: vi.fn().mockResolvedValue(undefined),
@@ -17,6 +17,11 @@ const { mockRequestQueue, mockDataset } = vi.hoisted(() => ({
     drop: vi.fn().mockResolvedValue(undefined),
     pushData: vi.fn().mockResolvedValue(undefined),
   },
+  mockDiscoverUrls: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock('./llms-txt.js', () => ({
+  discoverUrlsFromLlmsTxt: mockDiscoverUrls,
 }));
 
 vi.mock('crawlee', () => ({
@@ -349,6 +354,49 @@ describe('QueueManager', () => {
         uniqueKey: '/docs',
       });
     });
+
+    it('should allow subpaths when pathPrefix has a trailing slash', async () => {
+      await queueManager.initialize('https://example.com/docs/', '/docs/');
+
+      let capturedOptions: EnqueueLinksOptions | null = null;
+      const mockEnqueueLinks = vi.fn().mockImplementation((options: EnqueueLinksOptions) => {
+        capturedOptions = options;
+        return Promise.resolve({ processedRequests: [] });
+      });
+
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+
+      const transformFn = capturedOptions!.transformRequestFunction;
+      if (transformFn) {
+        // Subpaths must not be filtered out due to double-slash bug
+        const subpath = transformFn({
+          url: 'https://example.com/docs/intro',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(subpath).not.toBe(false);
+
+        // Deeper subpaths should also be allowed
+        const deepSubpath = transformFn({
+          url: 'https://example.com/docs/guides/getting-started',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(deepSubpath).not.toBe(false);
+
+        // The root path itself should match
+        const rootPath = transformFn({
+          url: 'https://example.com/docs/',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(rootPath).not.toBe(false);
+
+        // Unrelated paths must still be filtered
+        const outside = transformFn({
+          url: 'https://example.com/blog/post',
+          uniqueKey: 'original',
+        } as Parameters<typeof transformFn>[0]);
+        expect(outside).toBe(false);
+      }
+    });
   });
 
   describe('hostname filtering', () => {
@@ -609,6 +657,94 @@ describe('QueueManager', () => {
       await queueManager.initialize('https://example.com');
 
       expect(queueManager.getRequestQueue()).toBe(mockRequestQueue);
+    });
+  });
+
+  describe('addSeedUrls', () => {
+    beforeEach(async () => {
+      await queueManager.initialize('https://example.com/docs');
+      mockRequestQueue.addRequest.mockClear();
+    });
+
+    it('should add valid URLs to the queue', async () => {
+      const added = await queueManager.addSeedUrls(['https://example.com/docs/page1/', 'https://example.com/docs/page2/']);
+
+      expect(added).toBe(2);
+      expect(mockRequestQueue.addRequest).toHaveBeenCalledTimes(2);
+      expect(mockRequestQueue.addRequest).toHaveBeenCalledWith(
+        { url: 'https://example.com/docs/page1/', uniqueKey: '/docs/page1/' },
+        { forefront: false }
+      );
+    });
+
+    it('should filter URLs with different hostname', async () => {
+      const added = await queueManager.addSeedUrls(['https://example.com/docs/page1/', 'https://other.com/docs/page2/']);
+
+      expect(added).toBe(1);
+      expect(mockRequestQueue.addRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('should filter URLs outside path prefix', async () => {
+      await queueManager.initialize('https://example.com/docs', '/docs');
+      mockRequestQueue.addRequest.mockClear();
+
+      const added = await queueManager.addSeedUrls(['https://example.com/docs/page1/', 'https://example.com/blog/post1/']);
+
+      expect(added).toBe(1);
+    });
+
+    it('should allow subpaths when pathPrefix has a trailing slash', async () => {
+      await queueManager.initialize('https://example.com/docs/', '/docs/');
+      mockRequestQueue.addRequest.mockClear();
+
+      const added = await queueManager.addSeedUrls([
+        'https://example.com/docs/intro',
+        'https://example.com/docs/guides/getting-started',
+        'https://example.com/blog/post1',
+      ]);
+
+      expect(added).toBe(2);
+    });
+
+    it('should return 0 when queue is not initialized', async () => {
+      const freshManager = new QueueManager();
+      const added = await freshManager.addSeedUrls(['https://example.com/page']);
+
+      expect(added).toBe(0);
+    });
+
+    it('should skip invalid URLs', async () => {
+      const added = await queueManager.addSeedUrls(['not-a-url', 'https://example.com/docs/valid/']);
+
+      expect(added).toBe(1);
+    });
+  });
+
+  describe('seedFromLlmsTxt', () => {
+    beforeEach(async () => {
+      await queueManager.initialize('https://example.com/docs');
+      mockRequestQueue.addRequest.mockClear();
+    });
+
+    it('should seed URLs from llms.txt discovery', async () => {
+      mockDiscoverUrls.mockResolvedValueOnce([
+        'https://example.com/docs/page1/',
+        'https://example.com/docs/page2/',
+        'https://example.com/docs/page3/',
+      ]);
+
+      const added = await queueManager.seedFromLlmsTxt('https://example.com/docs');
+
+      expect(mockDiscoverUrls).toHaveBeenCalledWith('https://example.com/docs');
+      expect(added).toBe(3);
+    });
+
+    it('should return 0 when no llms.txt exists', async () => {
+      mockDiscoverUrls.mockResolvedValueOnce([]);
+
+      const added = await queueManager.seedFromLlmsTxt('https://example.com/docs');
+
+      expect(added).toBe(0);
     });
   });
 

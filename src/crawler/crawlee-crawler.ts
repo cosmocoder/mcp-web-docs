@@ -127,6 +127,85 @@ export class CrawleeCrawler extends BaseCrawler {
     return false;
   }
 
+  /**
+   * Wait for the page to fully stabilize after navigation, handling:
+   * - Client-side redirects (meta-refresh, JavaScript location changes) common in Docusaurus
+   * - Cloudflare challenge interstitials
+   *
+   * Must be called after initial waitForLoadState, before content extraction.
+   */
+  private async waitForPageStabilization(page: Page): Promise<void> {
+    const initialUrl = page.url();
+
+    // Detect client-side redirect pages (Docusaurus generates these for /docs/ → /docs/intro/)
+    // These are tiny HTML pages with a meta-refresh and/or JS redirect but no real content.
+    let isRedirectPage = false;
+    try {
+      isRedirectPage = await page.evaluate(() => {
+        const metaRefresh = document.querySelector('meta[http-equiv="refresh"]');
+        if (metaRefresh) return true;
+        const body = document.body;
+        const hasMinimalContent = !body || (body.textContent?.trim().length || 0) < 100;
+        const hasNoMainContent = !document.querySelector('main, article, [role="main"], .content, #content');
+        return hasMinimalContent && hasNoMainContent;
+      });
+    } catch {
+      // evaluate failed — page is likely mid-navigation already, which is fine
+      isRedirectPage = true;
+    }
+
+    if (isRedirectPage) {
+      logger.debug(`[CrawleeCrawler] Redirect/minimal page detected at ${initialUrl}, waiting for navigation...`);
+      try {
+        await page.waitForURL((url) => url.href !== initialUrl, { timeout: 10000 });
+        await Promise.all([
+          page.waitForLoadState('domcontentloaded'),
+          page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {}),
+        ]);
+        logger.debug(`[CrawleeCrawler] Redirect completed: ${initialUrl} → ${page.url()}`);
+      } catch {
+        logger.debug(`[CrawleeCrawler] No redirect detected within timeout, continuing with current page`);
+      }
+    }
+
+    // Detect Cloudflare challenge pages (after any redirect has settled)
+    try {
+      const isChallenge = await page.evaluate(() => {
+        const bodyText = document.body?.textContent || '';
+        const hasChallengeText =
+          bodyText.includes('Checking your browser') ||
+          bodyText.includes('Verify you are human') ||
+          bodyText.includes('Enable JavaScript and cookies');
+        const hasChallengeElement =
+          document.querySelector('#challenge-running, #challenge-stage, .cf-browser-verification, #cf-wrapper') !== null;
+        return hasChallengeText || hasChallengeElement;
+      });
+
+      if (isChallenge) {
+        logger.info(`[CrawleeCrawler] Cloudflare challenge detected, waiting for resolution...`);
+        try {
+          await page.waitForFunction(
+            () => {
+              const bodyText = document.body?.textContent || '';
+              const stillChallenge = bodyText.includes('Checking your browser') || bodyText.includes('Verify you are human');
+              const hasChallengeElement = document.querySelector('#challenge-running, #challenge-stage, .cf-browser-verification') !== null;
+              return !stillChallenge && !hasChallengeElement;
+            },
+            { timeout: 15000 }
+          );
+          await page.waitForLoadState('domcontentloaded');
+          await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+          logger.info(`[CrawleeCrawler] Cloudflare challenge resolved`);
+        } catch {
+          logger.warn(`[CrawleeCrawler] Cloudflare challenge did not resolve within timeout`);
+        }
+      }
+    } catch {
+      // evaluate failed during challenge detection — page may be navigating, proceed anyway
+      logger.debug(`[CrawleeCrawler] Could not check for Cloudflare challenge, continuing`);
+    }
+  }
+
   private async findContentFrame(page: Page): Promise<Frame | null> {
     const frames = await page.frames();
     const contentFrames = await Promise.all(
@@ -231,6 +310,9 @@ export class CrawleeCrawler extends BaseCrawler {
 
     await this.queueManager.initialize(url, this.pathPrefix);
 
+    // Seed URLs from llms.txt for better coverage on bot-protected sites
+    await this.queueManager.seedFromLlmsTxt(url);
+
     // Build crawler options with optional authentication
     const crawlerOptions = getBrowserConfig(this.queueManager.getRequestQueue() ?? undefined);
 
@@ -279,6 +361,9 @@ export class CrawleeCrawler extends BaseCrawler {
             page.waitForLoadState('domcontentloaded'),
             page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway')),
           ]);
+
+          // Handle client-side redirects (Docusaurus) and Cloudflare challenges
+          await this.waitForPageStabilization(page);
 
           // Get the actual URL after any redirects
           const actualUrl = page.url();

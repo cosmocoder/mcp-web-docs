@@ -9,10 +9,11 @@ describe('Browser Config', () => {
       const config = getBrowserConfig(mockQueue);
 
       expect(config.maxRequestsPerCrawl).toBe(1000);
-      expect(config.maxConcurrency).toBe(20);
-      expect(config.maxRequestsPerMinute).toBe(600);
-      expect(config.maxRequestRetries).toBe(0);
-      expect(config.navigationTimeoutSecs).toBe(10);
+      expect(config.maxConcurrency).toBe(5);
+      expect(config.maxRequestsPerMinute).toBe(120);
+      expect(config.maxRequestRetries).toBe(2);
+      expect(config.navigationTimeoutSecs).toBe(30);
+      expect(config.requestHandlerTimeoutSecs).toBe(60);
     });
 
     it('should return config with requestQueue', () => {
@@ -27,10 +28,10 @@ describe('Browser Config', () => {
       const config = getBrowserConfig(mockQueue);
 
       expect(config.browserPoolOptions).toBeDefined();
-      expect(config.browserPoolOptions?.maxOpenPagesPerBrowser).toBe(5);
-      expect(config.browserPoolOptions?.useFingerprints).toBe(false);
-      expect(config.browserPoolOptions?.operationTimeoutSecs).toBe(15);
-      expect(config.browserPoolOptions?.closeInactiveBrowserAfterSecs).toBe(10);
+      expect(config.browserPoolOptions?.maxOpenPagesPerBrowser).toBe(3);
+      expect(config.browserPoolOptions?.useFingerprints).toBe(true);
+      expect(config.browserPoolOptions?.operationTimeoutSecs).toBe(30);
+      expect(config.browserPoolOptions?.closeInactiveBrowserAfterSecs).toBe(20);
     });
 
     it('should have preNavigationHooks', () => {
@@ -64,7 +65,6 @@ describe('Browser Config', () => {
         expect.objectContaining({
           'Accept-Language': expect.any(String),
           Accept: expect.any(String),
-          'User-Agent': expect.any(String),
         })
       );
     });

@@ -1,4 +1,4 @@
-import { generateDocId } from './docs.js';
+import { generateDocId, isPathAllowed } from './docs.js';
 
 describe('Docs Utilities', () => {
   describe('generateDocId', () => {
@@ -53,6 +53,36 @@ describe('Docs Utilities', () => {
     it('should handle URLs with fragments', () => {
       const result = generateDocId('https://example.com/guide#section', 'Guide');
       expect(result).toBe('example-guide');
+    });
+  });
+
+  describe('isPathAllowed', () => {
+    it('should match exact prefix without trailing slash', () => {
+      expect(isPathAllowed('/docs', '/docs')).toBe(true);
+    });
+
+    it('should match exact prefix with trailing slash', () => {
+      expect(isPathAllowed('/docs/', '/docs/')).toBe(true);
+    });
+
+    it('should match subpaths', () => {
+      expect(isPathAllowed('/docs/intro', '/docs')).toBe(true);
+      expect(isPathAllowed('/docs/guides/getting-started', '/docs')).toBe(true);
+    });
+
+    it('should match subpaths when prefix has a trailing slash', () => {
+      expect(isPathAllowed('/docs/intro', '/docs/')).toBe(true);
+      expect(isPathAllowed('/docs/guides/getting-started', '/docs/')).toBe(true);
+    });
+
+    it('should reject paths outside the prefix', () => {
+      expect(isPathAllowed('/blog/post', '/docs')).toBe(false);
+      expect(isPathAllowed('/', '/docs')).toBe(false);
+    });
+
+    it('should not match paths that only share a string prefix', () => {
+      expect(isPathAllowed('/documentation', '/docs')).toBe(false);
+      expect(isPathAllowed('/docs-old/page', '/docs')).toBe(false);
     });
   });
 });
