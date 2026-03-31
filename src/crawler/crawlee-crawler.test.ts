@@ -2,6 +2,7 @@ import type { CrawlResult } from '../types.js';
 
 const mockQueueManager = {
   initialize: vi.fn().mockResolvedValue(undefined),
+  seedFromLlmsTxt: vi.fn().mockResolvedValue(0),
   getRequestQueue: vi.fn().mockReturnValue({}),
   handleQueueAndLinks: vi.fn().mockResolvedValue(undefined),
   addResult: vi.fn(),

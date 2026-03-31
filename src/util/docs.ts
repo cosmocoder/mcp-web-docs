@@ -27,3 +27,19 @@ export function generateDocId(url: string, title: string): string {
 
   return urlObj.hostname;
 }
+
+/**
+ * Check if a URL pathname falls within a given path prefix.
+ * Strips trailing slashes from the prefix before comparing so that
+ * `/docs` and `/docs/` behave identically.
+ *
+ * @example
+ * isPathAllowed('/docs/intro', '/docs/') → true
+ * isPathAllowed('/docs/', '/docs/')      → true
+ * isPathAllowed('/blog/post', '/docs/')  → false
+ * isPathAllowed('/documentation', '/docs') → false
+ */
+export function isPathAllowed(pathname: string, prefix: string): boolean {
+  const normalizedPrefix = prefix.replace(/\/$/, '');
+  return pathname === normalizedPrefix || pathname.startsWith(normalizedPrefix + '/');
+}

@@ -12,11 +12,13 @@ vi.mock('./github.js', () => ({
 
 const mockCrawleeCrawl = vi.fn();
 const mockSetStorageState = vi.fn();
+const mockSetPathPrefix = vi.fn();
 vi.mock('./crawlee-crawler.js', () => ({
   CrawleeCrawler: function () {
     return {
       crawl: mockCrawleeCrawl,
       setStorageState: mockSetStorageState,
+      setPathPrefix: mockSetPathPrefix,
     };
   },
 }));
@@ -119,15 +121,32 @@ describe('DocsCrawler', () => {
         expect(results).toHaveLength(2);
       });
 
-      it('should return crawlee type for sufficient pages', async () => {
+      it('should return crawlee type regardless of page count', async () => {
         mockCrawleeCrawl.mockImplementation(async function* () {
           yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
-          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', title: 'Page 2' };
         });
+
+        const results: CrawlResult[] = [];
+        const generator = crawler.crawl('https://example.com');
+
+        let result = await generator.next();
+        while (!result.done) {
+          results.push(result.value);
+          result = await generator.next();
+        }
+        const crawlerType = result.value;
+
+        expect(results).toHaveLength(1);
+        expect(crawlerType).toBe('crawlee');
+      });
+
+      it('should return crawlee type even with 0 pages found', async () => {
+        mockCrawleeCrawl.mockImplementation(() => ({
+          [Symbol.asyncIterator]: () => ({ next: () => Promise.resolve({ done: true, value: undefined }) }),
+        }));
 
         const generator = crawler.crawl('https://example.com');
 
-        // Manually iterate to capture the return value
         let result = await generator.next();
         while (!result.done) {
           result = await generator.next();
@@ -135,22 +154,6 @@ describe('DocsCrawler', () => {
         const crawlerType = result.value;
 
         expect(crawlerType).toBe('crawlee');
-      });
-
-      it('should throw error when insufficient pages found', async () => {
-        mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
-          // Only 1 page, needs at least 2
-        });
-
-        const generator = crawler.crawl('https://example.com');
-
-        await expect(async () => {
-          // eslint-disable-next-line @typescript-eslint/no-unused-vars
-          for await (const _ of generator) {
-            // Just consume results
-          }
-        }).rejects.toThrow(/found only 1 pages/);
       });
     });
 
