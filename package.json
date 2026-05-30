@@ -49,8 +49,8 @@
     "test:ui": "vitest --ui",
     "test:coverage": "vitest run --coverage",
     "test:types": "tsc --noEmit",
-    "prettier": "prettier --write src/",
-    "prettier:ci": "prettier --check src/",
+    "prettier": "prettier --write .",
+    "prettier:ci": "prettier --check .",
     "clean": "rm -rf build",
     "postinstall": "npx playwright install",
     "prepare": "husky",
@@ -97,6 +97,7 @@
     "jiti": "2.7.0",
     "lint-staged": "16.4.0",
     "prettier": "3.8.3",
+    "prettier-plugin-brace-style": "0.10.1",
     "typescript-eslint": "8.60.0",
     "vitest": "4.1.7",
     "vitest-fetch-mock": "0.4.5"

@@ -13,6 +13,10 @@ export default defineConfig([
     extends: ['js/recommended'],
     languageOptions: {
       globals: globals.node
+    },
+    rules: {
+      'brace-style': ['error', 'stroustrup', { allowSingleLine: false }],
+      curly: ['error', 'all']
     }
   },
   tseslint.configs.recommended,
