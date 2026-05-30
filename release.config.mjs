@@ -49,6 +49,27 @@ function indentBody(body) {
 }
 
 /**
+ * Dependabot opens its commit body with a "Bumps [pkg](url) from X to Y." line
+ * (or "Bumps the <group> group with N updates..." for grouped updates) that
+ * simply restates the commit subject (e.g. "bump qs from 6.14.2 to 6.15.2").
+ * Rendering both produces duplicated text in the release notes, so we drop the
+ * redundant intro line and any blank lines that follow it. Non-Dependabot
+ * bodies don't start with "Bumps" and are returned untouched.
+ *
+ * @param {string} body - The commit body
+ * @returns {string} - The body without the redundant Dependabot intro line
+ */
+function stripDependabotIntro(body) {
+  if (!body) return body;
+  const lines = body.split('\n');
+  const firstIdx = lines.findIndex((line) => line.trim() !== '');
+  if (firstIdx === -1 || !/^Bumps\b/.test(lines[firstIdx].trim())) return body;
+  let rest = lines.slice(firstIdx + 1);
+  while (rest.length && rest[0].trim() === '') rest = rest.slice(1);
+  return rest.join('\n');
+}
+
+/**
  * finalizeContext runs after the default transform has filtered commits.
  * This allows us to modify only the commits that will appear in release notes
  * (feat, fix, perf, revert) without affecting the filtering logic.
@@ -62,7 +83,7 @@ function finalizeContext(context) {
       ...group,
       commits: group.commits.map((commit) => ({
         ...commit,
-        body: indentBody(commit.body),
+        body: indentBody(stripDependabotIntro(commit.body)),
       })),
     }));
   }
