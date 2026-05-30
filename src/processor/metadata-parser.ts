@@ -37,8 +37,12 @@ function splitTableRow(line: string): string[] {
   const cells = escaped.split('|').map((cell) => cell.trim().replace(new RegExp(placeholder, 'g'), '|'));
 
   // Remove empty first/last cells from | at start/end
-  if (cells[0] === '') cells.shift();
-  if (cells[cells.length - 1] === '') cells.pop();
+  if (cells[0] === '') {
+    cells.shift();
+  }
+  if (cells[cells.length - 1] === '') {
+    cells.pop();
+  }
 
   return cells;
 }
@@ -55,14 +59,20 @@ function isTableSeparator(line: string): boolean {
  * Handles tables with blank lines between rows and escaped pipes
  */
 function parseMarkdownTable(tableLines: string[]): Record<string, string>[] {
-  if (tableLines.length < 2) return [];
+  if (tableLines.length < 2) {
+    return [];
+  }
 
   // Find header row (first non-empty row with pipes)
   const headerIndex = tableLines.findIndex((l) => l.includes('|') && !isTableSeparator(l));
-  if (headerIndex === -1) return [];
+  if (headerIndex === -1) {
+    return [];
+  }
 
   const headers = splitTableRow(tableLines[headerIndex]).map((h) => h.toLowerCase().trim());
-  if (headers.length === 0) return [];
+  if (headers.length === 0) {
+    return [];
+  }
 
   // Find separator (skip it)
   const separatorIndex = tableLines.findIndex((l, i) => i > headerIndex && isTableSeparator(l));
@@ -239,7 +249,8 @@ export function extractCodeBlocks(content: string): ParsedCodeBlock[] {
       if (line.startsWith('#')) {
         context = line.replace(/^#+\s*/, '');
         break;
-      } else if (line.length > 10 && !line.startsWith('|')) {
+      }
+      else if (line.length > 10 && !line.startsWith('|')) {
         context = line.slice(0, 100);
         break;
       }

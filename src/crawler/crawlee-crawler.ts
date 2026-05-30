@@ -79,7 +79,8 @@ export class CrawleeCrawler extends BaseCrawler {
       }
 
       return false;
-    } catch {
+    }
+    catch {
       return false;
     }
   }
@@ -120,7 +121,8 @@ export class CrawleeCrawler extends BaseCrawler {
         );
         return true;
       }
-    } catch (error) {
+    }
+    catch (error) {
       logger.debug(`[CrawleeCrawler] Error checking for login page:`, error);
     }
 
@@ -143,13 +145,16 @@ export class CrawleeCrawler extends BaseCrawler {
     try {
       isRedirectPage = await page.evaluate(() => {
         const metaRefresh = document.querySelector('meta[http-equiv="refresh"]');
-        if (metaRefresh) return true;
+        if (metaRefresh) {
+          return true;
+        }
         const body = document.body;
         const hasMinimalContent = !body || (body.textContent?.trim().length || 0) < 100;
         const hasNoMainContent = !document.querySelector('main, article, [role="main"], .content, #content');
         return hasMinimalContent && hasNoMainContent;
       });
-    } catch {
+    }
+    catch {
       // evaluate failed — page is likely mid-navigation already, which is fine
       isRedirectPage = true;
     }
@@ -163,7 +168,8 @@ export class CrawleeCrawler extends BaseCrawler {
           page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {}),
         ]);
         logger.debug(`[CrawleeCrawler] Redirect completed: ${initialUrl} → ${page.url()}`);
-      } catch {
+      }
+      catch {
         logger.debug(`[CrawleeCrawler] No redirect detected within timeout, continuing with current page`);
       }
     }
@@ -196,11 +202,13 @@ export class CrawleeCrawler extends BaseCrawler {
           await page.waitForLoadState('domcontentloaded');
           await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
           logger.info(`[CrawleeCrawler] Cloudflare challenge resolved`);
-        } catch {
+        }
+        catch {
           logger.warn(`[CrawleeCrawler] Cloudflare challenge did not resolve within timeout`);
         }
       }
-    } catch {
+    }
+    catch {
       // evaluate failed during challenge detection — page may be navigating, proceed anyway
       logger.debug(`[CrawleeCrawler] Could not check for Cloudflare challenge, continuing`);
     }
@@ -226,7 +234,8 @@ export class CrawleeCrawler extends BaseCrawler {
             ]);
             return frame;
           }
-        } catch (error) {
+        }
+        catch (error) {
           logger.debug('Error checking frame', { error: String(error) });
         }
         return null;
@@ -271,10 +280,12 @@ export class CrawleeCrawler extends BaseCrawler {
         if (!content) {
           content = await this.evaluateExtractor(page, extractor);
         }
-      } else {
+      }
+      else {
         content = await this.evaluateExtractor(page, extractor);
       }
-    } catch {
+    }
+    catch {
       content = await page.evaluate<string>(() => document.body.textContent || '');
       extractorUsed = 'ErrorFallback';
     }
@@ -304,7 +315,8 @@ export class CrawleeCrawler extends BaseCrawler {
     try {
       this.allowedHostname = new URL(url).hostname;
       logger.info(`[CrawleeCrawler] Domain restriction: only crawling pages on ${this.allowedHostname}`);
-    } catch {
+    }
+    catch {
       this.allowedHostname = '';
     }
 
@@ -388,13 +400,15 @@ export class CrawleeCrawler extends BaseCrawler {
                 log.error(`Session expired - redirected to external domain: ${actualHostname}. Aborting crawl.`);
                 this.abort();
                 return;
-              } else {
+              }
+              else {
                 // No auth but redirected - might be site misconfiguration
                 log.error(`First page redirected to external domain: ${actualHostname}. Aborting crawl.`);
                 this.abort();
                 return;
               }
-            } else {
+            }
+            else {
               // Subsequent page redirected outside domain - skip it
               this.skippedExternalPages++;
               log.warning(
@@ -413,7 +427,8 @@ export class CrawleeCrawler extends BaseCrawler {
               return;
             }
             this.isFirstPage = false;
-          } else if (this.isFirstPage) {
+          }
+          else if (this.isFirstPage) {
             this.isFirstPage = false;
           }
 
@@ -442,7 +457,8 @@ export class CrawleeCrawler extends BaseCrawler {
               break;
             }
           }
-        } catch (error) {
+        }
+        catch (error) {
           const errorMessage = error instanceof Error ? error.message : String(error);
           log.error(`Error processing ${request.url}: ${errorMessage}`);
         }
@@ -459,7 +475,9 @@ export class CrawleeCrawler extends BaseCrawler {
           }
         }
 
-        if (await Promise.race([crawlerPromise.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 100))])) break;
+        if (await Promise.race([crawlerPromise.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 100))])) {
+          break;
+        }
       }
 
       await crawlerPromise;
@@ -480,14 +498,16 @@ export class CrawleeCrawler extends BaseCrawler {
       for (const result of await this.queueManager.processBatch()) {
         yield result;
       }
-    } catch (error) {
+    }
+    catch (error) {
       // Re-throw session expired errors as-is
       if (error instanceof SessionExpiredError) {
         throw error;
       }
       logger.debug('Crawler error:', error);
       throw error;
-    } finally {
+    }
+    finally {
       await this.queueManager.cleanup();
       this.crawler = null;
     }

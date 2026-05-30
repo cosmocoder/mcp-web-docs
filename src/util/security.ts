@@ -106,7 +106,8 @@ export function validatePublicUrl(urlString: string): URL {
   let url: URL;
   try {
     url = new URL(urlString);
-  } catch {
+  }
+  catch {
     throw new Error('Invalid URL format');
   }
 
@@ -180,7 +181,8 @@ export function isSafeRegex(pattern: string): boolean {
     new RegExp(pattern);
     // Then check for ReDoS vulnerability
     return safeRegex(pattern);
-  } catch {
+  }
+  catch {
     // Invalid regex is not safe
     return false;
   }
@@ -274,7 +276,8 @@ export function safeJsonParse<T>(jsonString: string, schema: z.ZodSchema<T>): T 
   let parsed: unknown;
   try {
     parsed = JSON.parse(jsonString);
-  } catch (e) {
+  }
+  catch (e) {
     throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : 'parse error'}`);
   }
 
@@ -546,9 +549,11 @@ export function sanitizeErrorMessage(error: unknown): string {
 
   if (error instanceof Error) {
     message = error.message;
-  } else if (typeof error === 'string') {
+  }
+  else if (typeof error === 'string') {
     message = error;
-  } else {
+  }
+  else {
     return 'An unexpected error occurred';
   }
 
@@ -617,12 +622,15 @@ export function redactForLogging(data: unknown): string {
 
   if (typeof data === 'string') {
     text = data;
-  } else if (data instanceof Error) {
+  }
+  else if (data instanceof Error) {
     text = data.message;
-  } else {
+  }
+  else {
     try {
       text = JSON.stringify(data);
-    } catch {
+    }
+    catch {
       text = String(data);
     }
   }
@@ -900,7 +908,8 @@ export function isLoginPageUrl(url: string): boolean {
 
     // Check against known login URL patterns
     return LOGIN_URL_PATTERNS.some((pattern) => pattern.test(fullUrl) || pattern.test(pathname));
-  } catch {
+  }
+  catch {
     return false;
   }
 }

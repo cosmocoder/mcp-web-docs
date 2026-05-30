@@ -112,7 +112,8 @@ export class DocumentStore implements StorageProvider {
         await mkdir(dirname(this.dbPath), { recursive: true });
         logger.debug(`[DocumentStore] Creating LanceDB directory: ${this.vectorDbPath}`);
         await mkdir(this.vectorDbPath, { recursive: true });
-      } catch (error) {
+      }
+      catch (error) {
         logger.error('[DocumentStore] Error creating directories:', error);
         throw new Error(`Failed to create storage directories: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -129,7 +130,8 @@ export class DocumentStore implements StorageProvider {
         await this.sqliteDb.exec('PRAGMA busy_timeout = 5000;');
         await this.sqliteDb.exec('PRAGMA journal_mode = WAL;');
         await this.sqliteDb.exec('PRAGMA foreign_keys = ON;');
-      } catch (error) {
+      }
+      catch (error) {
         logger.error('[DocumentStore] Error initializing SQLite:', error);
         throw new Error(`Failed to initialize SQLite: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -188,7 +190,8 @@ export class DocumentStore implements StorageProvider {
 
           // Create FTS index for better text search
           await this.createFTSIndex();
-        } else {
+        }
+        else {
           logger.debug(`[DocumentStore] Using existing chunks table`);
           this.lanceTable = await this.lanceConn.openTable('chunks');
 
@@ -199,13 +202,15 @@ export class DocumentStore implements StorageProvider {
         // Verify table is accessible
         const rowCount = await this.lanceTable.countRows();
         logger.debug(`[DocumentStore] Chunks table initialized, contains ${rowCount} rows`);
-      } catch (error) {
+      }
+      catch (error) {
         logger.error('[DocumentStore] Error initializing LanceDB:', error);
         throw new Error(`Failed to initialize LanceDB: ${error instanceof Error ? error.message : String(error)}`);
       }
 
       logger.debug(`[DocumentStore] All storage components initialized successfully`);
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[DocumentStore] Error initializing storage:', error);
       throw error;
     }
@@ -322,7 +327,8 @@ export class DocumentStore implements StorageProvider {
         for (const statement of statements) {
           try {
             await this.sqliteDb.exec(statement);
-          } catch (error) {
+          }
+          catch (error) {
             // Ignore "duplicate column" errors for ALTER TABLE ADD COLUMN
             // This handles cases where the column already exists
             const errorMsg = error instanceof Error ? error.message : String(error);
@@ -342,7 +348,8 @@ export class DocumentStore implements StorageProvider {
         ]);
 
         logger.info(`[DocumentStore] ✓ Migration ${migration.version} completed`);
-      } catch (error) {
+      }
+      catch (error) {
         logger.error(`[DocumentStore] Migration ${migration.version} failed:`, error);
         throw new Error(`Database migration ${migration.version} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -435,7 +442,8 @@ export class DocumentStore implements StorageProvider {
 
       // Clear search cache for this URL
       this.clearCacheForUrl(doc.metadata.url);
-    } catch (error) {
+    }
+    catch (error) {
       // Rollback on error
       if (this.sqliteDb) {
         await this.sqliteDb.run('ROLLBACK');
@@ -483,7 +491,8 @@ export class DocumentStore implements StorageProvider {
         // Pad the vector with zeros
         queryVector = [...queryVector, ...new Array(this.embeddings.dimensions - queryVector.length).fill(0)];
         logger.debug(`[DocumentStore] Padded vector to ${queryVector.length} dimensions`);
-      } else {
+      }
+      else {
         // Truncate the vector
         queryVector = queryVector.slice(0, this.embeddings.dimensions);
         logger.debug(`[DocumentStore] Truncated vector to ${queryVector.length} dimensions`);
@@ -560,12 +569,14 @@ export class DocumentStore implements StorageProvider {
         let props;
         try {
           codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined;
-        } catch {
+        }
+        catch {
           codeBlocks = undefined;
         }
         try {
           props = result.props ? JSON.parse(result.props) : undefined;
-        } catch {
+        }
+        catch {
           props = undefined;
         }
 
@@ -590,7 +601,8 @@ export class DocumentStore implements StorageProvider {
       });
 
       return searchResults;
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[DocumentStore] Error searching documents:', error);
       throw error;
     }
@@ -613,12 +625,14 @@ export class DocumentStore implements StorageProvider {
       });
       this.ftsIndexCreated = true;
       logger.debug('[DocumentStore] FTS index created successfully');
-    } catch (error) {
+    }
+    catch (error) {
       const err = error as Error;
       if (err.message?.toLowerCase().includes('already exists')) {
         logger.debug('[DocumentStore] FTS index already exists');
         this.ftsIndexCreated = true;
-      } else {
+      }
+      else {
         logger.warn('[DocumentStore] Failed to create FTS index:', err.message);
         // Don't throw - FTS is optional, we can fall back to vector search
       }
@@ -732,7 +746,8 @@ export class DocumentStore implements StorageProvider {
             this.searchCache.set(cacheKey, searchResults);
             return searchResults;
           }
-        } catch (phraseError) {
+        }
+        catch (phraseError) {
           const err = phraseError as Error;
           logger.debug('[DocumentStore] Phrase-based search failed:', err.message);
         }
@@ -772,7 +787,8 @@ export class DocumentStore implements StorageProvider {
             this.searchCache.set(cacheKey, searchResults);
             return searchResults;
           }
-        } catch (ftsError) {
+        }
+        catch (ftsError) {
           const err = ftsError as Error;
           logger.debug('[DocumentStore] FTS search failed, falling back to vector search:', err.message);
         }
@@ -783,7 +799,8 @@ export class DocumentStore implements StorageProvider {
       const results = await this.searchDocuments(queryVector, options);
       this.searchCache.set(cacheKey, results);
       return results;
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[DocumentStore] Error searching documents by text:', error);
       throw error;
     }
@@ -816,7 +833,8 @@ export class DocumentStore implements StorageProvider {
         // Combine scores if result appears in both
         const existing = scores.get(key)!;
         existing.score += rrfScore;
-      } else {
+      }
+      else {
         scores.set(key, { result, score: rrfScore });
       }
     });
@@ -836,12 +854,14 @@ export class DocumentStore implements StorageProvider {
       let codeBlocks, props;
       try {
         codeBlocks = result.codeBlocks ? JSON.parse(result.codeBlocks) : undefined;
-      } catch {
+      }
+      catch {
         codeBlocks = undefined;
       }
       try {
         props = result.props ? JSON.parse(result.props) : undefined;
-      } catch {
+      }
+      catch {
         props = undefined;
       }
 
@@ -900,7 +920,8 @@ export class DocumentStore implements StorageProvider {
         tags: tagsMap.get(row.url) || [],
         version: row.version ?? undefined,
       }));
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[DocumentStore] Error listing documents:', error);
       throw error;
     }
@@ -946,7 +967,8 @@ export class DocumentStore implements StorageProvider {
       // Clear cache for this URL
       this.clearCacheForUrl(url);
       logger.debug(`[DocumentStore] Document deleted successfully`);
-    } catch (error) {
+    }
+    catch (error) {
       if (this.sqliteDb) {
         await this.sqliteDb.run('ROLLBACK');
       }
@@ -1008,7 +1030,8 @@ export class DocumentStore implements StorageProvider {
         tags,
         version: row.version ?? undefined,
       };
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[DocumentStore] Error getting document:', error);
       throw error;
     }
@@ -1064,11 +1087,13 @@ export class DocumentStore implements StorageProvider {
       this.clearCacheForUrl(url);
 
       logger.debug(`[DocumentStore] Tags set successfully for ${url}`);
-    } catch (error) {
+    }
+    catch (error) {
       if (this.sqliteDb) {
         try {
           await this.sqliteDb.run('ROLLBACK');
-        } catch {
+        }
+        catch {
           // Ignore rollback errors (transaction may already be rolled back)
         }
       }
@@ -1096,7 +1121,8 @@ export class DocumentStore implements StorageProvider {
       logger.debug(`[DocumentStore] Found ${rows.length} unique tags`);
 
       return rows;
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[DocumentStore] Error listing tags:', error);
       throw error;
     }
@@ -1136,7 +1162,8 @@ export class DocumentStore implements StorageProvider {
       logger.debug(`[DocumentStore] Found ${rows.length} URLs matching all tags`);
 
       return rows.map((row) => row.url);
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[DocumentStore] Error getting URLs by tags:', error);
       throw error;
     }
@@ -1168,7 +1195,8 @@ export class DocumentStore implements StorageProvider {
         now,
       ]);
       logger.info(`[DocumentStore] Collection created: ${normalizedName}`);
-    } catch (error) {
+    }
+    catch (error) {
       const err = error as Error;
       if (err.message?.includes('UNIQUE constraint failed') || err.message?.includes('PRIMARY KEY constraint failed')) {
         throw new Error(`Collection "${normalizedName}" already exists`);
@@ -1271,7 +1299,8 @@ export class DocumentStore implements StorageProvider {
         await this.sqliteDb.run('DELETE FROM collections WHERE name = ?', [normalizedName]);
 
         await this.sqliteDb.run('COMMIT');
-      } else if (updates.description !== undefined) {
+      }
+      else if (updates.description !== undefined) {
         // Just updating description, simple update
         await this.sqliteDb.run('UPDATE collections SET description = ?, updated_at = ? WHERE name = ?', [
           updates.description,
@@ -1281,10 +1310,12 @@ export class DocumentStore implements StorageProvider {
       }
 
       logger.info(`[DocumentStore] Collection updated: ${normalizedName}`);
-    } catch (error) {
+    }
+    catch (error) {
       try {
         await this.sqliteDb.run('ROLLBACK');
-      } catch {
+      }
+      catch {
         // Ignore rollback errors
       }
       const err = error as Error;
@@ -1453,11 +1484,13 @@ export class DocumentStore implements StorageProvider {
             now,
           ]);
           added.push(url);
-        } catch (error) {
+        }
+        catch (error) {
           const err = error as Error;
           if (err.message?.includes('UNIQUE constraint failed') || err.message?.includes('PRIMARY KEY constraint failed')) {
             alreadyInCollection.push(url);
-          } else {
+          }
+          else {
             throw error;
           }
         }
@@ -1479,7 +1512,8 @@ export class DocumentStore implements StorageProvider {
       }
 
       return { added, notFound, alreadyInCollection };
-    } catch (error) {
+    }
+    catch (error) {
       await this.sqliteDb.run('ROLLBACK');
       throw error;
     }
@@ -1520,7 +1554,8 @@ export class DocumentStore implements StorageProvider {
         ]);
         if (result.changes && result.changes > 0) {
           removed.push(url);
-        } else {
+        }
+        else {
           notInCollection.push(url);
         }
       }
@@ -1538,7 +1573,8 @@ export class DocumentStore implements StorageProvider {
       }
 
       return { removed, notInCollection };
-    } catch (error) {
+    }
+    catch (error) {
       await this.sqliteDb.run('ROLLBACK');
       throw error;
     }
@@ -1629,7 +1665,8 @@ export class DocumentStore implements StorageProvider {
       // Consider vectors valid if we have rows and can perform a search
       // Even if scores are null, the search is still working
       return rowCount > 0 && sample.length > 0 && searchResults.length > 0;
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[DocumentStore] Error validating vectors:', error);
       return false;
     }
@@ -1669,7 +1706,8 @@ export class DocumentStore implements StorageProvider {
         result.compacted = true;
         result.cleanedUp = true;
         logger.debug('[DocumentStore] Optimization stats:', stats);
-      } catch (optimizeError) {
+      }
+      catch (optimizeError) {
         const err = optimizeError as Error;
         logger.warn('[DocumentStore] Optimization failed:', err.message);
         result.error = `Optimization failed: ${err.message}`;
@@ -1680,7 +1718,8 @@ export class DocumentStore implements StorageProvider {
 
       logger.info('[DocumentStore] Optimization complete:', result);
       return result;
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[DocumentStore] Error during optimization:', error);
       return {
         compacted: false,

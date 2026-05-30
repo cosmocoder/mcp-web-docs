@@ -87,7 +87,8 @@ export abstract class BaseCrawler {
       }
 
       return true;
-    } catch (error) {
+    }
+    catch (error) {
       logger.debug(`[${this.constructor.name}] Error checking URL: ${urlString}`, error);
       return false;
     }
@@ -101,7 +102,8 @@ export abstract class BaseCrawler {
     try {
       const url = new URL(urlString);
       return url.pathname + url.search; // Include query params in path
-    } catch {
+    }
+    catch {
       return urlString;
     }
   }
@@ -112,7 +114,8 @@ export abstract class BaseCrawler {
       // Remove hash fragment but keep query params
       url.hash = '';
       return url.toString().replace(/\/$/, '');
-    } catch {
+    }
+    catch {
       return urlString;
     }
   }
@@ -152,9 +155,12 @@ export abstract class BaseCrawler {
     for (let i = 0; i < maxRetries; i++) {
       try {
         return await operation();
-      } catch (error) {
+      }
+      catch (error) {
         lastError = error as Error;
-        if (i === maxRetries - 1) break;
+        if (i === maxRetries - 1) {
+          break;
+        }
 
         // Exponential backoff
         const delay = baseDelay * Math.pow(2, i);

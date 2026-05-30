@@ -39,15 +39,19 @@ export class GitHubCrawler extends BaseCrawler {
       if (docDirs.length > 0) {
         // Process documentation directories
         for (const docDir of docDirs) {
-          if (this.isAborting) break;
+          if (this.isAborting) {
+            break;
+          }
           yield* this.processDirectory(repoInfo, docDir);
         }
-      } else {
+      }
+      else {
         // Fall back to processing markdown files in root
         logger.debug('[GitHubCrawler] No documentation directory found, processing root markdown files');
         yield* this.processDirectory(repoInfo, '');
       }
-    } catch (error) {
+    }
+    catch (error) {
       logger.debug('[GitHubCrawler] Error crawling repository:', error);
     }
   }
@@ -55,10 +59,14 @@ export class GitHubCrawler extends BaseCrawler {
   private parseGitHubUrl(url: string): { owner: string; repo: string; branch: string } | null {
     try {
       const urlObj = new URL(url);
-      if (urlObj.hostname !== 'github.com') return null;
+      if (urlObj.hostname !== 'github.com') {
+        return null;
+      }
 
       const [, owner, repo] = urlObj.pathname.split('/');
-      if (!owner || !repo) return null;
+      if (!owner || !repo) {
+        return null;
+      }
 
       // Remove .git extension if present
       const cleanRepo = repo.replace(/\.git$/, '');
@@ -68,7 +76,8 @@ export class GitHubCrawler extends BaseCrawler {
         repo: cleanRepo,
         branch: 'main', // Default to main, could be determined dynamically
       };
-    } catch {
+    }
+    catch {
       return null;
     }
   }
@@ -84,7 +93,8 @@ export class GitHubCrawler extends BaseCrawler {
           dirs.push(item.path);
         }
       }
-    } catch (error) {
+    }
+    catch (error) {
       logger.debug('[GitHubCrawler] Error finding documentation directories:', error);
     }
 
@@ -96,7 +106,9 @@ export class GitHubCrawler extends BaseCrawler {
       const contents = await this.fetchRepoContents(repoInfo, path);
 
       for (const item of contents) {
-        if (this.isAborting) break;
+        if (this.isAborting) {
+          break;
+        }
 
         if (item.type === 'file' && this.isMarkdownFile(item.path)) {
           const content = await this.fetchFileContent(repoInfo, item.path);
@@ -108,11 +120,13 @@ export class GitHubCrawler extends BaseCrawler {
               title: this.extractTitleFromPath(item.path),
             };
           }
-        } else if (item.type === 'dir' && this.shouldProcessDirectory(item.path)) {
+        }
+        else if (item.type === 'dir' && this.shouldProcessDirectory(item.path)) {
           yield* this.processDirectory(repoInfo, item.path);
         }
       }
-    } catch (error) {
+    }
+    catch (error) {
       logger.debug(`[GitHubCrawler] Error processing directory ${path}:`, error);
     }
   }
@@ -149,7 +163,8 @@ export class GitHubCrawler extends BaseCrawler {
       }
 
       return validationResult.data;
-    } catch (error) {
+    }
+    catch (error) {
       logger.debug(`[GitHubCrawler] Error fetching repo contents for ${path}:`, error);
       return [];
     }
@@ -169,7 +184,8 @@ export class GitHubCrawler extends BaseCrawler {
       }
 
       return await response.text();
-    } catch (error) {
+    }
+    catch (error) {
       logger.debug(`[GitHubCrawler] Error fetching content for ${path}:`, error);
       return null;
     }

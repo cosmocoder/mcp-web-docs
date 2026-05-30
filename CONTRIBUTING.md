@@ -20,12 +20,14 @@ Thank you for your interest in contributing to MCP Web Docs! This document provi
 1. **Fork the repository** on GitHub
 
 2. **Clone your fork**
+
    ```bash
    git clone https://github.com/YOUR-USERNAME/mcp-web-docs.git
    cd mcp-web-docs
    ```
 
 3. **Install dependencies** (automatically installs Playwright browsers)
+
    ```bash
    npm install
    ```
@@ -80,13 +82,15 @@ src/
 
 - Use TypeScript with strict mode enabled
 - **Always use `.js` extensions in imports** (ESM requirement)
+
   ```typescript
   // ✅ Correct
   import { Something } from './module.js';
-
+  
   // ❌ Wrong
   import { Something } from './module';
   ```
+
 - Use interfaces for data shapes, types for unions/intersections
 - Explicit return types for public APIs
 - No unused locals/parameters
@@ -129,29 +133,31 @@ We follow the [Conventional Commits](https://www.conventionalcommits.org/) speci
 
 ### Commit Types and Release Impact
 
-| Type | Description | Release Impact |
-|------|-------------|----------------|
-| `feat` | A new feature | **Minor** version bump (1.x.0) |
-| `fix` | A bug fix | **Patch** version bump (1.0.x) |
-| `perf` | Performance improvement | **Patch** version bump |
-| `docs` | Documentation only | No release |
-| `style` | Code style (formatting, etc.) | No release |
-| `refactor` | Code change that neither fixes nor adds | No release |
-| `test` | Adding or updating tests | No release |
-| `chore` | Maintenance tasks | No release |
-| `ci` | CI/CD changes | No release |
-| `build` | Build system changes | No release |
+| Type       | Description                             | Release Impact                 |
+| ---------- | --------------------------------------- | ------------------------------ |
+| `feat`     | A new feature                           | **Minor** version bump (1.x.0) |
+| `fix`      | A bug fix                               | **Patch** version bump (1.0.x) |
+| `perf`     | Performance improvement                 | **Patch** version bump         |
+| `docs`     | Documentation only                      | No release                     |
+| `style`    | Code style (formatting, etc.)           | No release                     |
+| `refactor` | Code change that neither fixes nor adds | No release                     |
+| `test`     | Adding or updating tests                | No release                     |
+| `chore`    | Maintenance tasks                       | No release                     |
+| `ci`       | CI/CD changes                           | No release                     |
+| `build`    | Build system changes                    | No release                     |
 
 ### Commit Strategy for Pull Requests
 
 **For feature PRs:**
 
 1. **Primary commit** — Use `feat` prefix for the main feature:
+
    ```
    feat(auth): add session validation and auth requirement tracking
    ```
 
 2. **Follow-up fixes within the same PR** — Use `chore` or `refactor` for bug fixes or improvements to your new feature:
+
    ```
    chore(auth): fix typo in session validation logic
    refactor(auth): simplify cookie expiration check
@@ -178,6 +184,7 @@ We follow the [Conventional Commits](https://www.conventionalcommits.org/) speci
 ### Writing Good Commit Bodies
 
 The commit body is included in release notes, so write it for your users! Use it to explain:
+
 - What the change does and why
 - Any important details or caveats
 - Sub-features or components (use `-` for bullet points)
@@ -226,6 +233,7 @@ We use **Vitest** with global test APIs (`describe`, `it`, `expect`, `vi`).
 ### Test File Location
 
 Tests are co-located with source files: `*.test.ts` next to the source file.
+
 - Example: `src/config.ts` → `src/config.test.ts`
 
 ### Writing Tests
@@ -250,12 +258,14 @@ describe('ModuleName', () => {
 ### Mocking
 
 Use the mock embeddings provider for storage/search tests:
+
 ```typescript
 import { createMockEmbeddings } from '../__mocks__/embeddings.js';
 const mockEmbeddings = createMockEmbeddings();
 ```
 
 Use `vi.hoisted()` for mocks that need to be configured before imports:
+
 ```typescript
 const { mockFn } = vi.hoisted(() => ({ mockFn: vi.fn() }));
 vi.mock('module', () => ({ default: mockFn }));
@@ -270,17 +280,18 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
 ### Adding a New Content Extractor
 
 1. Create extractor in `src/crawler/`:
+
    ```typescript
    // my-extractor.ts
    import type { ContentExtractor, ExtractionResult } from './content-extractor-types.js';
-
+   
    export const MyExtractor: ContentExtractor = {
      name: 'MyExtractor',
-
+   
      detect(url: string, $: cheerio.CheerioAPI): boolean {
        return url.includes('my-site.com');
      },
-
+   
      async extract(url: string, $: cheerio.CheerioAPI): Promise<ExtractionResult> {
        return {
          title: 'Page Title',
@@ -299,6 +310,7 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
 ### Adding a New Tool
 
 1. Define input schema in `src/util/security.ts`:
+
    ```typescript
    export const MyToolArgsSchema = z.object({
      param1: z.string().min(1),
@@ -307,6 +319,7 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
    ```
 
 2. Add tool definition in `src/index.ts` `setupToolHandlers()`:
+
    ```typescript
    {
      name: 'my_tool',
@@ -324,6 +337,7 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
 When you need to modify the SQLite schema (e.g., adding new columns), use the migration system in `src/storage/storage.ts`:
 
 1. Add a new entry to the `MIGRATIONS` array with an incremented version number:
+
    ```typescript
    {
      version: 2, // Next version number
@@ -347,6 +361,7 @@ Migrations run automatically on server startup and are tracked in the `schema_mi
 ### Before Submitting
 
 Run all checks:
+
 ```bash
 npm run lint          # Linting passes
 npm run prettier      # Code is formatted
@@ -384,6 +399,7 @@ npm run test:types    # Types check
 ## Maintaining Agent Guidelines
 
 When making significant changes to the codebase, ask if the agent instruction files need updating:
+
 - `AGENTS.md`, `CONTRIBUTING.md`, `.cursorrules`, `CLAUDE.md`, `.roo/rules/01-project-rules.md`
 
 ---

@@ -8,12 +8,16 @@ export default defineConfig([
   {
     files: ['**/*.{js,mjs,cjs,ts,mts,cts}'],
     plugins: {
-      js
+      js,
     },
     extends: ['js/recommended'],
     languageOptions: {
-      globals: globals.node
-    }
+      globals: globals.node,
+    },
+    rules: {
+      'brace-style': ['error', 'stroustrup', { allowSingleLine: false }],
+      curly: ['error', 'all'],
+    },
   },
   tseslint.configs.recommended,
 ]);

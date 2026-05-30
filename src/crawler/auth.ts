@@ -60,7 +60,8 @@ export async function detectDefaultBrowser(): Promise<BrowserType> {
     // Unknown browser, default to chromium
     logger.warn(`[Auth] Unknown browser "${browser.name}" (id: ${browser.id}), falling back to chromium`);
     return 'chromium';
-  } catch (error) {
+  }
+  catch (error) {
     const err = error as Error;
     logger.error(`[Auth] ✗ default-browser package threw an error:`);
     logger.error(`[Auth]   Error name: ${err?.name}`);
@@ -145,7 +146,8 @@ export class AuthManager {
     try {
       await access(sessionPath);
       return true;
-    } catch {
+    }
+    catch {
       return false;
     }
   }
@@ -171,7 +173,8 @@ export class AuthManager {
 
       logger.info(`[AuthManager] Loaded and validated saved session for ${domain}`);
       return decryptedStorageState;
-    } catch (error) {
+    }
+    catch (error) {
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
       logger.debug(`[AuthManager] Failed to load session for ${domain}: ${errorMsg}`);
       return null;
@@ -219,7 +222,8 @@ export class AuthManager {
       const { unlink } = await import('fs/promises');
       await unlink(sessionPath);
       logger.info(`[AuthManager] Cleared session for ${domain}`);
-    } catch {
+    }
+    catch {
       // Session didn't exist
     }
   }
@@ -276,7 +280,9 @@ export class AuthManager {
       // Common auth cookie names
       const authCookiePatterns = /session|auth|token|jwt|sid|login|user|identity|sso|saml|oauth/i;
       const expiredAuthCookies = cookiesToCheck.filter((cookie: { name: string; expires?: number }) => {
-        if (!cookie.expires || cookie.expires === -1 || cookie.expires === 0) return false;
+        if (!cookie.expires || cookie.expires === -1 || cookie.expires === 0) {
+          return false;
+        }
         return cookie.expires < now && authCookiePatterns.test(cookie.name);
       });
 
@@ -289,7 +295,8 @@ export class AuthManager {
             ? details.filter((d) => expiredAuthCookies.some((c: { name: string }) => d.includes(c.name)))
             : details.slice(0, 3), // Limit details
       };
-    } catch (error) {
+    }
+    catch (error) {
       logger.debug(`[AuthManager] Error checking cookie expiration:`, error);
       return { hasExpiredCookies: false, expiredCount: 0, totalCount: 0, details: [] };
     }
@@ -419,7 +426,8 @@ export class AuthManager {
       // Session appears valid
       logger.info(`[AuthManager] ✓ Session for ${domain} is valid`);
       return { isValid: true, finalUrl };
-    } catch (error) {
+    }
+    catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.error(`[AuthManager] Error validating session: ${errorMsg}`);
       // On error, we can't confirm validity - treat as potentially invalid
@@ -427,9 +435,14 @@ export class AuthManager {
         isValid: false,
         reason: `Validation failed: ${errorMsg}`,
       };
-    } finally {
-      if (context) await context.close().catch(() => {});
-      if (browser) await browser.close().catch(() => {});
+    }
+    finally {
+      if (context) {
+        await context.close().catch(() => {});
+      }
+      if (browser) {
+        await browser.close().catch(() => {});
+      }
     }
   }
 
@@ -614,7 +627,8 @@ export class AuthManager {
       logger.info(`[AuthManager] ✓ Session saved for ${domain}`);
 
       return storageStateJson;
-    } finally {
+    }
+    finally {
       await this.cleanup();
     }
   }
@@ -647,7 +661,8 @@ export class AuthManager {
     let targetDomain: string;
     try {
       targetDomain = new URL(targetUrl).hostname.toLowerCase();
-    } catch {
+    }
+    catch {
       targetDomain = '';
     }
 
@@ -675,7 +690,8 @@ export class AuthManager {
         await page.waitForURL(pattern, { timeout: timeoutMs });
         logger.info(`[AuthManager] ✓ URL matched success pattern`);
         return true;
-      } catch {
+      }
+      catch {
         logger.debug(`[AuthManager] ✗ URL did not match pattern within timeout`);
         return false;
       }
@@ -687,7 +703,8 @@ export class AuthManager {
         await page.waitForSelector(successSelector, { timeout: timeoutMs });
         logger.info(`[AuthManager] ✓ Success selector found`);
         return true;
-      } catch {
+      }
+      catch {
         logger.debug(`[AuthManager] ✗ Selector not found within timeout`);
         return false;
       }
@@ -719,7 +736,8 @@ export class AuthManager {
         let currentDomain: string;
         try {
           currentDomain = new URL(currentUrl).hostname.toLowerCase();
-        } catch {
+        }
+        catch {
           currentDomain = '';
         }
 
@@ -787,14 +805,16 @@ export class AuthManager {
             let finalDomain: string;
             try {
               finalDomain = new URL(finalUrl).hostname.toLowerCase();
-            } catch {
+            }
+            catch {
               finalDomain = '';
             }
 
             if (finalDomain === targetDomain || finalDomain.endsWith('.' + targetDomain)) {
               logger.info(`[AuthManager] ✓ Confirmed on target domain: ${finalUrl}`);
               return true;
-            } else {
+            }
+            else {
               logger.debug(`[AuthManager] Redirected away from target domain after waiting, continuing...`);
             }
           }
@@ -802,7 +822,8 @@ export class AuthManager {
 
         // Wait a bit before checking again
         await page.waitForTimeout(1000);
-      } catch (error) {
+      }
+      catch (error) {
         // Page might have navigated, which is fine
         logger.debug(`[AuthManager] Error during login check (may be normal during navigation):`, error);
         await page.waitForTimeout(1000);

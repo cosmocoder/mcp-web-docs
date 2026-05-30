@@ -27,22 +27,28 @@ export function parseLlmsTxt(content: string, baseUrl: string): string[] {
 
   while ((match = linkPattern.exec(content)) !== null) {
     const rawUrl = match[2].trim();
-    if (!rawUrl) continue;
+    if (!rawUrl) {
+      continue;
+    }
 
     let fullUrl: string;
     try {
       if (rawUrl.startsWith('http://') || rawUrl.startsWith('https://')) {
         fullUrl = rawUrl;
-      } else if (rawUrl.startsWith('/')) {
+      }
+      else if (rawUrl.startsWith('/')) {
         fullUrl = origin + rawUrl;
-      } else {
+      }
+      else {
         continue;
       }
 
       const parsed = new URL(fullUrl);
 
       // Only include URLs from the same origin
-      if (parsed.origin !== origin) continue;
+      if (parsed.origin !== origin) {
+        continue;
+      }
 
       // Skip non-page resources
       const ext = parsed.pathname.split('.').pop()?.toLowerCase();
@@ -57,7 +63,8 @@ export function parseLlmsTxt(content: string, baseUrl: string): string[] {
         seen.add(normalized);
         urls.push(normalized);
       }
-    } catch {
+    }
+    catch {
       logger.debug(`[llms-txt] Skipping invalid URL: ${rawUrl}`);
     }
   }
@@ -110,10 +117,12 @@ export async function discoverUrlsFromLlmsTxt(baseUrl: string): Promise<string[]
     logger.info(`[llms-txt] Discovered ${urls.length} URLs from llms.txt`);
 
     return urls;
-  } catch (error) {
+  }
+  catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       logger.debug(`[llms-txt] Request timed out`);
-    } else {
+    }
+    else {
       logger.debug(`[llms-txt] Failed to fetch:`, error);
     }
     return [];
