@@ -8,6 +8,8 @@ updates:
       timezone: 'Europe/Berlin'
     open-pull-requests-limit: 20
     versioning-strategy: 'increase'
+    allow:
+      - dependency-type: 'direct'
     labels:
       - 'dependencies'
     commit-message:
