@@ -23,7 +23,8 @@ describe('DocumentStore', () => {
     // Clean up temporary directory
     try {
       await rm(tempDir, { recursive: true, force: true });
-    } catch {
+    }
+    catch {
       // Ignore cleanup errors
     }
   });
@@ -378,7 +379,8 @@ describe('DocumentStore', () => {
       try {
         // Attempt to add a document (this should succeed)
         await store.addDocument(createTestDocument(url, 'Rollback Test'));
-      } catch {
+      }
+      catch {
         // If it fails, verify nothing was written
         const doc = await store.getDocument(url);
         expect(doc).toBeNull();

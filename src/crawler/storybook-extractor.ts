@@ -89,16 +89,21 @@ export class StorybookExtractor implements ContentExtractor {
       for (const content of remainingContent) {
         await this.processSectionContent(content, sections, addedSections);
       }
-    } catch (error) {
+    }
+    catch (error) {
       console.error('Error processing section:', error);
     }
   }
 
   private async processSectionContent(element: Element | null, sections: string[], addedSections: Set<string>): Promise<void> {
-    if (!element) return;
+    if (!element) {
+      return;
+    }
 
     try {
-      if (!this.isElementVisible(element)) return;
+      if (!this.isElementVisible(element)) {
+        return;
+      }
 
       if (
         element.matches('p, div[class*="description"], [class*="markdown"], [class*="text"], [class*="content"], [class*="docblock-text"]')
@@ -140,7 +145,8 @@ export class StorybookExtractor implements ContentExtractor {
         try {
           (button as HTMLButtonElement).click();
           await new Promise((resolve) => setTimeout(resolve, 500));
-        } catch (error) {
+        }
+        catch (error) {
           console.error('Error clicking expand button:', error);
         }
       }
@@ -152,14 +158,18 @@ export class StorybookExtractor implements ContentExtractor {
 
       for (const button of codeButtons) {
         try {
-          if (!this.isElementVisible(button)) continue;
+          if (!this.isElementVisible(button)) {
+            continue;
+          }
 
           (button as HTMLButtonElement).click();
           await new Promise((resolve) => setTimeout(resolve, 500));
 
           const codeBlocks = element.querySelectorAll('pre.prismjs');
           for (const block of codeBlocks) {
-            if (!this.isElementVisible(block)) continue;
+            if (!this.isElementVisible(block)) {
+              continue;
+            }
             const code = block.textContent?.trim() || '';
             if (code) {
               const language = block.className.match(/language-(\w+)/)?.[1] || 'typescript';
@@ -170,22 +180,30 @@ export class StorybookExtractor implements ContentExtractor {
           }
 
           (button as HTMLButtonElement).click();
-        } catch (error) {
+        }
+        catch (error) {
           console.error('Error handling code button:', error);
         }
       }
 
       const children = Array.from(element.children).filter((el) => {
-        if (el.matches('h1, h2, h3, h4')) return false;
-        if (el.matches('script, style, iframe')) return false;
-        if (element.matches('pre, code') && el.matches('pre, code')) return false;
+        if (el.matches('h1, h2, h3, h4')) {
+          return false;
+        }
+        if (el.matches('script, style, iframe')) {
+          return false;
+        }
+        if (element.matches('pre, code') && el.matches('pre, code')) {
+          return false;
+        }
         return true;
       });
 
       for (const child of children) {
         await this.processSectionContent(child, sections, addedSections);
       }
-    } catch (error) {
+    }
+    catch (error) {
       console.error('Error processing section content:', error);
     }
   }
@@ -205,14 +223,17 @@ export class StorybookExtractor implements ContentExtractor {
       // If the heading already contains "Props" with a component name, use it as-is
       if (/\w+\s+Props$/i.test(headingText)) {
         propsHeading = `## ${headingText}`;
-      } else if (/^Props$/i.test(headingText) && componentName) {
+      }
+      else if (/^Props$/i.test(headingText) && componentName) {
         // If it's just "Props", prepend the component name
         propsHeading = `## ${componentName} Props`;
-      } else if (componentName) {
+      }
+      else if (componentName) {
         // Heading doesn't contain Props pattern, use component name
         propsHeading = `## ${componentName} Props`;
       }
-    } else if (componentName) {
+    }
+    else if (componentName) {
       // No heading found, use component name
       propsHeading = `## ${componentName} Props`;
     }
@@ -226,10 +247,14 @@ export class StorybookExtractor implements ContentExtractor {
 
     for (const row of rows) {
       // Skip header rows
-      if (row.querySelector('th, [role="columnheader"]')) continue;
+      if (row.querySelector('th, [role="columnheader"]')) {
+        continue;
+      }
 
       const cells = row.querySelectorAll('td, [role="cell"]');
-      if (cells.length === 0) continue;
+      if (cells.length === 0) {
+        continue;
+      }
 
       let name = '';
       let type = '';
@@ -336,14 +361,16 @@ export class StorybookExtractor implements ContentExtractor {
           try {
             (button as HTMLButtonElement).click();
             await new Promise((resolve) => setTimeout(resolve, 100));
-          } catch {
+          }
+          catch {
             // Ignore click errors
           }
         }
       }
       // Wait for expansion to complete
       await new Promise((resolve) => setTimeout(resolve, 200));
-    } catch (error) {
+    }
+    catch (error) {
       console.error('[StorybookExtractor] Error expanding type values:', error);
     }
   }
@@ -357,7 +384,9 @@ export class StorybookExtractor implements ContentExtractor {
 
     // Helper to add a value if it's valid and not seen
     const addValue = (val: string | null | undefined) => {
-      if (!val) return;
+      if (!val) {
+        return;
+      }
       const cleaned = val
         .trim()
         .replace(/^["']|["']$/g, '') // Remove surrounding quotes
@@ -396,7 +425,9 @@ export class StorybookExtractor implements ContentExtractor {
       for (const container of typeContainers) {
         // Get the direct text, not nested button text
         const hasButton = container.querySelector('button');
-        if (hasButton) continue;
+        if (hasButton) {
+          continue;
+        }
 
         const text = container.textContent?.trim();
         addValue(text);
@@ -463,7 +494,8 @@ export class StorybookExtractor implements ContentExtractor {
         for (const part of parts) {
           addValue(part);
         }
-      } else {
+      }
+      else {
         // Last resort: just use the text as-is
         return fullText || '-';
       }
@@ -528,7 +560,8 @@ export class StorybookExtractor implements ContentExtractor {
 
       // Final wait to ensure all sections have expanded
       await new Promise((resolve) => setTimeout(resolve, 1000));
-    } catch (error) {
+    }
+    catch (error) {
       console.error('[StorybookExtractor] Error expanding sidebar sections:', error);
     }
   }
@@ -544,7 +577,9 @@ export class StorybookExtractor implements ContentExtractor {
       await new Promise((resolve) => setTimeout(resolve, delay));
 
       const mainArea = document.querySelector('.sbdocs-content, #docs-root');
-      if (!mainArea) continue;
+      if (!mainArea) {
+        continue;
+      }
 
       const hasContent =
         mainArea.querySelector('h1') &&
@@ -570,7 +605,9 @@ export class StorybookExtractor implements ContentExtractor {
   private async processTableContent(table: Element, sections: string[], addedSections: Set<string>): Promise<void> {
     try {
       const headers = Array.from(table.querySelectorAll('th')).map((th) => th.textContent?.trim() || '');
-      if (headers.length === 0) return;
+      if (headers.length === 0) {
+        return;
+      }
 
       this.addContentToSections(`| ${headers.join(' | ')} |`, sections, addedSections);
       this.addContentToSections(`| ${headers.map(() => '---').join(' | ')} |`, sections, addedSections);
@@ -588,7 +625,8 @@ export class StorybookExtractor implements ContentExtractor {
       }
 
       this.addContentToSections('', sections, addedSections);
-    } catch (error) {
+    }
+    catch (error) {
       console.error('Error processing table:', error);
     }
   }
@@ -604,7 +642,8 @@ export class StorybookExtractor implements ContentExtractor {
         }
       }
       this.addContentToSections('', sections, addedSections);
-    } catch (error) {
+    }
+    catch (error) {
       console.error('Error processing list:', error);
     }
   }
@@ -680,7 +719,8 @@ export class StorybookExtractor implements ContentExtractor {
           this.addContentToSections('', sections, addedSections);
         }
       }
-    } catch (error) {
+    }
+    catch (error) {
       console.error('[StorybookExtractor] Error extracting type annotations:', error);
     }
   }
@@ -693,7 +733,8 @@ export class StorybookExtractor implements ContentExtractor {
           const api = win.__STORYBOOK_CLIENT_API__;
           if (api?.storyStore?.ready) {
             resolve();
-          } else {
+          }
+          else {
             setTimeout(checkReady, 100);
           }
         };
@@ -755,7 +796,9 @@ export class StorybookExtractor implements ContentExtractor {
         if (title && !addedSections.has(`## ${title}`)) {
           // Skip "Props" section - it will be handled by processPropsTable
           const isPropsSection = /^props$/i.test(title);
-          if (isPropsSection) continue;
+          if (isPropsSection) {
+            continue;
+          }
 
           const level = heading.tagName === 'H1' ? '#' : '##';
           this.addContentToSections(`${level} ${title}`, sections, addedSections);
@@ -768,9 +811,11 @@ export class StorybookExtractor implements ContentExtractor {
               const isPropsTable = current.matches('.docblock-argstable, [class*="ArgTable"], [class*="argtable"]');
               if (current.matches('table') && !isPropsTable) {
                 await this.processTableContent(current, sections, addedSections);
-              } else if (current.matches('ul, ol')) {
+              }
+              else if (current.matches('ul, ol')) {
                 await this.processListContent(current, sections, addedSections);
-              } else if (!isPropsTable) {
+              }
+              else if (!isPropsTable) {
                 await this.processSectionContent(current, sections, addedSections);
               }
             }
@@ -797,8 +842,11 @@ export class StorybookExtractor implements ContentExtractor {
       for (const selector of propsTableSelectors) {
         try {
           propsTable = mainArea.querySelector(selector);
-          if (propsTable) break;
-        } catch {
+          if (propsTable) {
+            break;
+          }
+        }
+        catch {
           // Some selectors may not be valid in all browsers
           continue;
         }
@@ -842,7 +890,8 @@ export class StorybookExtractor implements ContentExtractor {
               await this.extractTypeAnnotations(iframeContent, sections, addedSections);
             }
           }
-        } catch (error) {
+        }
+        catch (error) {
           // Cross-origin iframe - expected for external content
           console.error('Error processing iframe (may be cross-origin):', error);
         }
@@ -861,7 +910,8 @@ export class StorybookExtractor implements ContentExtractor {
           },
         },
       };
-    } catch (error) {
+    }
+    catch (error) {
       console.error('Error extracting Storybook content:', error);
       return emptyResult;
     }

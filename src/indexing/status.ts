@@ -59,7 +59,9 @@ export class IndexingStatusTracker {
 
   updateStats(id: string, stats: { pagesFound?: number; pagesProcessed?: number; chunksCreated?: number }): void {
     const currentStatus = this.statuses.get(id);
-    if (!currentStatus) return;
+    if (!currentStatus) {
+      return;
+    }
 
     const status: IndexingStatus = {
       ...currentStatus,

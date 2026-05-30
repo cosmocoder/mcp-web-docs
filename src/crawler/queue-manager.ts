@@ -56,7 +56,9 @@ export class QueueManager {
    */
   async seedFromLlmsTxt(baseUrl: string): Promise<number> {
     const urls = await discoverUrlsFromLlmsTxt(baseUrl);
-    if (urls.length === 0) return 0;
+    if (urls.length === 0) {
+      return 0;
+    }
 
     return this.addSeedUrls(urls);
   }
@@ -76,16 +78,21 @@ export class QueueManager {
       try {
         const parsed = new URL(rawUrl);
 
-        if (!this.isHostnameAllowed(parsed.hostname)) continue;
+        if (!this.isHostnameAllowed(parsed.hostname)) {
+          continue;
+        }
 
-        if (this.pathPrefix && !isPathAllowed(parsed.pathname, this.pathPrefix)) continue;
+        if (this.pathPrefix && !isPathAllowed(parsed.pathname, this.pathPrefix)) {
+          continue;
+        }
 
         const normalizedUrl = parsed.origin + parsed.pathname + parsed.search;
         const uniqueKey = parsed.pathname + parsed.search;
 
         await this.requestQueue.addRequest({ url: normalizedUrl, uniqueKey }, { forefront: false });
         added++;
-      } catch {
+      }
+      catch {
         logger.debug(`[QueueManager] Skipping invalid seed URL: ${rawUrl}`);
       }
     }
@@ -209,7 +216,9 @@ export class QueueManager {
   }
 
   async processBatch(): Promise<CrawlResult[]> {
-    if (this.results.length === 0) return [];
+    if (this.results.length === 0) {
+      return [];
+    }
 
     const dataset = await Dataset.open(this.websiteId);
     const resultsToProcess = [...this.results];

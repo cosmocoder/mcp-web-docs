@@ -8,7 +8,7 @@
 
 **Index Any Documentation. Search Locally. Stay Private.**
 
-A self-hosted Model Context Protocol (MCP) server that crawls, indexes, and searches documentation from *any* website. Unlike remote MCP servers limited to GitHub repos or pre-indexed libraries, web-docs gives you full control over what gets indexed — including private documentation behind authentication.
+A self-hosted Model Context Protocol (MCP) server that crawls, indexes, and searches documentation from _any_ website. Unlike remote MCP servers limited to GitHub repos or pre-indexed libraries, web-docs gives you full control over what gets indexed — including private documentation behind authentication.
 
 [Features](#-features) • [Installation](#-installation) • [Quick Start](#-quick-start) • [Tools](#-available-tools) • [Tips](#-tips) • [Troubleshooting](#-troubleshooting) • [Contributing](#-contributing)
 
@@ -87,6 +87,7 @@ npm run build
 Add to your Cursor MCP settings (`~/.cursor/mcp.json`):
 
 **Using npx (no install required):**
+
 ```json
 {
   "mcpServers": {
@@ -99,6 +100,7 @@ Add to your Cursor MCP settings (`~/.cursor/mcp.json`):
 ```
 
 **Using global install:**
+
 ```json
 {
   "mcpServers": {
@@ -110,6 +112,7 @@ Add to your Cursor MCP settings (`~/.cursor/mcp.json`):
 ```
 
 **Using local build:**
+
 ```json
 {
   "mcpServers": {
@@ -129,6 +132,7 @@ Add to your Cursor MCP settings (`~/.cursor/mcp.json`):
 Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
 
 **Using npx:**
+
 ```json
 {
   "mcpServers": {
@@ -141,6 +145,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 ```
 
 **Using global install:**
+
 ```json
 {
   "mcpServers": {
@@ -159,6 +164,7 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 Add to `.vscode/mcp.json` in your workspace:
 
 **Using npx:**
+
 ```json
 {
   "servers": {
@@ -171,6 +177,7 @@ Add to `.vscode/mcp.json` in your workspace:
 ```
 
 **Using global install:**
+
 ```json
 {
   "servers": {
@@ -189,6 +196,7 @@ Add to `.vscode/mcp.json` in your workspace:
 Add to `~/.codeium/windsurf/mcp_config.json`:
 
 **Using npx:**
+
 ```json
 {
   "mcpServers": {
@@ -201,6 +209,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 ```
 
 **Using global install:**
+
 ```json
 {
   "mcpServers": {
@@ -219,6 +228,7 @@ Add to `~/.codeium/windsurf/mcp_config.json`:
 Add to `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`:
 
 **Using npx:**
+
 ```json
 {
   "mcpServers": {
@@ -233,6 +243,7 @@ Add to `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude
 ```
 
 **Using global install:**
+
 ```json
 {
   "mcpServers": {
@@ -255,6 +266,7 @@ Add to `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude
 **Project-level configuration:** Create `.roo/mcp.json` at your project root
 
 **Using npx:**
+
 ```json
 {
   "mcpServers": {
@@ -267,6 +279,7 @@ Add to `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude
 ```
 
 **Using global install:**
+
 ```json
 {
   "mcpServers": {
@@ -318,17 +331,18 @@ Add a new documentation site for indexing.
 
 ```typescript
 add_documentation({
-  url: "https://docs.example.com/",
-  title: "Example Docs",              // Optional
-  id: "example-docs",                 // Optional custom ID
-  tags: ["frontend", "mycompany"],    // Optional tags for categorization
-  version: "2.0",                     // Optional version for versioned packages
-  auth: {                             // Optional authentication
+  url: 'https://docs.example.com/',
+  title: 'Example Docs', // Optional
+  id: 'example-docs', // Optional custom ID
+  tags: ['frontend', 'mycompany'], // Optional tags for categorization
+  version: '2.0', // Optional version for versioned packages
+  auth: {
+    // Optional authentication
     requiresAuth: true,
     // browser auto-detected from OS settings if omitted
-    loginTimeoutSecs: 300
-  }
-})
+    loginTimeoutSecs: 300,
+  },
+});
 ```
 
 ### `search_documentation`
@@ -337,11 +351,11 @@ Search through indexed documentation using hybrid search (FTS + semantic).
 
 ```typescript
 search_documentation({
-  query: "how to configure authentication",
-  url: "https://docs.example.com/",    // Optional: filter to specific site
-  tags: ["frontend", "mycompany"],     // Optional: filter by tags
-  limit: 10                            // Optional: max results
-})
+  query: 'how to configure authentication',
+  url: 'https://docs.example.com/', // Optional: filter to specific site
+  tags: ['frontend', 'mycompany'], // Optional: filter by tags
+  limit: 10, // Optional: max results
+});
 ```
 
 ### `authenticate`
@@ -350,10 +364,10 @@ Open a browser window for interactive login to protected sites. Your default bro
 
 ```typescript
 authenticate({
-  url: "https://private-docs.example.com/",
+  url: 'https://private-docs.example.com/',
   // browser auto-detected from OS settings - only specify to override
-  loginTimeoutSecs: 300         // Optional: timeout in seconds
-})
+  loginTimeoutSecs: 300, // Optional: timeout in seconds
+});
 ```
 
 ### `list_documentation`
@@ -366,9 +380,9 @@ Set or update tags for a documentation site. Tags help categorize and filter doc
 
 ```typescript
 set_tags({
-  url: "https://docs.example.com/",
-  tags: ["frontend", "react", "mycompany"]  // Replaces existing tags
-})
+  url: 'https://docs.example.com/',
+  tags: ['frontend', 'react', 'mycompany'], // Replaces existing tags
+});
 ```
 
 ### `list_tags`
@@ -401,9 +415,9 @@ Create a new collection to group documentation sites.
 
 ```typescript
 create_collection({
-  name: "My React Project",
-  description: "React, Next.js, and TypeScript docs for my project"  // Optional
-})
+  name: 'My React Project',
+  description: 'React, Next.js, and TypeScript docs for my project', // Optional
+});
 ```
 
 #### `add_to_collection`
@@ -412,13 +426,9 @@ Add indexed documentation sites to a collection.
 
 ```typescript
 add_to_collection({
-  name: "My React Project",
-  urls: [
-    "https://react.dev/",
-    "https://nextjs.org/docs/",
-    "https://www.typescriptlang.org/docs/"
-  ]
-})
+  name: 'My React Project',
+  urls: ['https://react.dev/', 'https://nextjs.org/docs/', 'https://www.typescriptlang.org/docs/'],
+});
 ```
 
 #### `search_collection`
@@ -427,10 +437,10 @@ Search within a specific collection. Uses the same hybrid search as `search_docu
 
 ```typescript
 search_collection({
-  name: "My React Project",
-  query: "server components data fetching",
-  limit: 10  // Optional
-})
+  name: 'My React Project',
+  query: 'server components data fetching',
+  limit: 10, // Optional
+});
 ```
 
 #### `list_collections`
@@ -443,8 +453,8 @@ Get details of a specific collection including all its documentation sites.
 
 ```typescript
 get_collection({
-  name: "My React Project"
-})
+  name: 'My React Project',
+});
 ```
 
 #### `update_collection`
@@ -453,10 +463,10 @@ Rename a collection or update its description.
 
 ```typescript
 update_collection({
-  name: "My React Project",
-  newName: "Frontend Stack",           // Optional
-  description: "Updated description"   // Optional
-})
+  name: 'My React Project',
+  newName: 'Frontend Stack', // Optional
+  description: 'Updated description', // Optional
+});
 ```
 
 #### `remove_from_collection`
@@ -465,9 +475,9 @@ Remove documentation sites from a collection. The sites remain indexed, just rem
 
 ```typescript
 remove_from_collection({
-  name: "My React Project",
-  urls: ["https://old-library.dev/docs/"]
-})
+  name: 'My React Project',
+  urls: ['https://old-library.dev/docs/'],
+});
 ```
 
 #### `delete_collection`
@@ -476,8 +486,8 @@ Delete a collection. The documentation sites in the collection are **not** delet
 
 ```typescript
 delete_collection({
-  name: "Old Project"
-})
+  name: 'Old Project',
+});
 ```
 
 ---
@@ -504,12 +514,14 @@ The search uses hybrid full-text and semantic search. For best results:
 To avoid typing search instructions in every prompt, add a rule to your MCP client:
 
 **Cursor** (`Cursor Settings > Rules`):
+
 ```
 When I ask about library documentation or need code examples,
 use the web-docs MCP server to search indexed documentation.
 ```
 
 **Windsurf** (`.windsurfrules`):
+
 ```
 Always use web-docs search_documentation when I ask about
 API references, configuration, or library usage.
@@ -522,15 +534,15 @@ If you have multiple sites indexed, filter by URL or tags:
 ```typescript
 // Filter by specific site URL
 search_documentation({
-  query: "routing",
-  url: "https://nextjs.org/docs/"
-})
+  query: 'routing',
+  url: 'https://nextjs.org/docs/',
+});
 
 // Filter by tags (searches all docs with matching tags)
 search_documentation({
-  query: "Button component",
-  tags: ["frontend", "mycompany"]  // Only docs tagged with BOTH tags
-})
+  query: 'Button component',
+  tags: ['frontend', 'mycompany'], // Only docs tagged with BOTH tags
+});
 ```
 
 ### Organizing with Tags
@@ -540,23 +552,24 @@ Tags help organize documentation when you have multiple related sites. Add tags 
 ```typescript
 // Index frontend package docs
 add_documentation({
-  url: "https://docs.mycompany.com/ui-components/",
-  tags: ["frontend", "mycompany", "react"]
-})
+  url: 'https://docs.mycompany.com/ui-components/',
+  tags: ['frontend', 'mycompany', 'react'],
+});
 
 // Index backend API docs
 add_documentation({
-  url: "https://docs.mycompany.com/api/",
-  tags: ["backend", "mycompany", "api"]
-})
+  url: 'https://docs.mycompany.com/api/',
+  tags: ['backend', 'mycompany', 'api'],
+});
 ```
 
 Later, search across all frontend docs:
+
 ```typescript
 search_documentation({
-  query: "authentication",
-  tags: ["frontend"]  // Searches all frontend-tagged docs
-})
+  query: 'authentication',
+  tags: ['frontend'], // Searches all frontend-tagged docs
+});
 ```
 
 You can also add tags to existing documentation with `set_tags`.
@@ -566,31 +579,30 @@ You can also add tags to existing documentation with `set_tags`.
 Collections provide a higher-level grouping than tags — they let you organize documentation by project or context, making it easy to switch between different work contexts.
 
 **Create a collection for your project:**
+
 ```typescript
 create_collection({
-  name: "E-commerce Backend",
-  description: "All docs for the backend rewrite project"
-})
+  name: 'E-commerce Backend',
+  description: 'All docs for the backend rewrite project',
+});
 ```
 
 **Add relevant documentation:**
+
 ```typescript
 add_to_collection({
-  name: "E-commerce Backend",
-  urls: [
-    "https://fastapi.tiangolo.com/",
-    "https://docs.sqlalchemy.org/",
-    "https://redis.io/docs/"
-  ]
-})
+  name: 'E-commerce Backend',
+  urls: ['https://fastapi.tiangolo.com/', 'https://docs.sqlalchemy.org/', 'https://redis.io/docs/'],
+});
 ```
 
 **Search within your project context:**
+
 ```typescript
 search_collection({
-  name: "E-commerce Backend",
-  query: "connection pooling best practices"
-})
+  name: 'E-commerce Backend',
+  query: 'connection pooling best practices',
+});
 ```
 
 **Collections vs Tags:**
@@ -610,17 +622,17 @@ When indexing documentation for versioned packages (React, Vue, Python libraries
 ```typescript
 // Index React 18 docs
 add_documentation({
-  url: "https://18.react.dev/",
-  title: "React 18 Docs",
-  version: "18"
-})
+  url: 'https://18.react.dev/',
+  title: 'React 18 Docs',
+  version: '18',
+});
 
 // Index React 19 docs (different URL)
 add_documentation({
-  url: "https://react.dev/",
-  title: "React 19 Docs",
-  version: "19"
-})
+  url: 'https://react.dev/',
+  title: 'React 19 Docs',
+  version: '19',
+});
 ```
 
 The version is displayed in `list_documentation` output and preserved when re-indexing. Version formats are flexible — use whatever makes sense for your package (e.g., `"18"`, `"v6.4"`, `"3.11"`, `"latest"`).
@@ -635,6 +647,7 @@ The version is displayed in `list_documentation` output and preserved when re-in
 <summary><b>"Failed to parse document content"</b></summary>
 
 The content extractor couldn't process the page. Try:
+
 - Re-indexing the documentation
 - Checking if the site uses JavaScript rendering (should work with Playwright)
 - Looking at the crawled data in `~/.mcp-web-docs/crawlee/datasets/`
@@ -665,6 +678,7 @@ The content extractor couldn't process the page. Try:
 <summary><b>Playwright browser issues</b></summary>
 
 If browsers aren't installed, run:
+
 ```bash
 npx playwright install
 ```
@@ -684,6 +698,7 @@ All data is stored locally in `~/.mcp-web-docs/`:
 ├── sessions/         # Saved authentication sessions
 └── crawlee/          # Crawlee datasets (cached crawl data)
 ```
+
 ---
 
 ## 📄 License

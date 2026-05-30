@@ -49,7 +49,8 @@ function extractTextWithCodeBlocks(html: string): string {
       const isBlock = el.tagName === 'PRE' || code.includes('\n');
       if (isBlock) {
         el.textContent = `\n\`\`\`\n${code}\n\`\`\`\n`;
-      } else {
+      }
+      else {
         el.textContent = `\`${code}\``;
       }
     }
@@ -109,7 +110,9 @@ function findMainContent(doc: Document): Element | null {
 
   // Fallback: try to find the element with the most content
   const candidates = Array.from(doc.body.children);
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    return null;
+  }
 
   return candidates.reduce((best, current) => {
     const bestLength = best.textContent?.length || 0;
@@ -196,7 +199,8 @@ function extractContentBetweenElements(start: Element, end: Element | null): str
       }
       if (parent && parent !== end) {
         current = parent.nextElementSibling;
-      } else {
+      }
+      else {
         break;
       }
     }
@@ -333,7 +337,8 @@ export async function processHtmlContent(page: CrawlResult): Promise<ProcessedCo
         .join('\n\n')
         .trim(),
     };
-  } catch (error) {
+  }
+  catch (error) {
     logger.debug('[ContentProcessor] Error processing HTML content:', error);
     logger.debug('[ContentProcessor] Error details:', error instanceof Error ? error.stack : error);
     return undefined;

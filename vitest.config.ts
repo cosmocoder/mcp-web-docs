@@ -19,4 +19,3 @@ export default defineConfig({
     maxWorkers: 8,
   },
 });
-

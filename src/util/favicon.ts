@@ -19,7 +19,8 @@ async function fetchWithTimeout(url: string, timeoutMs: number = FETCH_TIMEOUT_M
   try {
     const response = await fetch(url, { signal: controller.signal });
     return response;
-  } finally {
+  }
+  finally {
     clearTimeout(timeoutId);
   }
 }
@@ -88,11 +89,13 @@ export async function fetchFavicon(url: URL): Promise<string | undefined> {
     }
 
     return undefined;
-  } catch (error) {
+  }
+  catch (error) {
     // Handle abort errors (timeout) differently
     if (error instanceof Error && error.name === 'AbortError') {
       logger.debug(`[Favicon] Timeout fetching favicon for ${url.origin}`);
-    } else {
+    }
+    else {
       logger.debug(`[Favicon] Error fetching favicon for ${url.origin}:`, error);
     }
     return undefined;

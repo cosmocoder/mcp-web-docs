@@ -48,7 +48,8 @@ function extractFrontMatter(content: string): {
       content: content.slice(match[0].length),
       endLine: match[0].split('\n').length - 1,
     };
-  } catch (e) {
+  }
+  catch (e) {
     logger.debug('[MarkdownProcessor] Error parsing front matter:', e);
     return { frontMatter: {}, content, endLine: 0 };
   }
@@ -131,13 +132,15 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
         startLine: startLine + i,
         endLine: startLine + i,
       };
-    } else if (currentSection) {
+    }
+    else if (currentSection) {
       // Add line to current section
       if (currentSection.content.length > 0) {
         currentSection.content += '\n';
       }
       currentSection.content += line;
-    } else {
+    }
+    else {
       // Content before first header goes into an "Introduction" section
       if (!sections.length) {
         currentSection = {
@@ -215,7 +218,8 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
         .join('\n\n')
         .trim(),
     };
-  } catch (error) {
+  }
+  catch (error) {
     logger.debug('[MarkdownProcessor] Error processing markdown content:', error);
     logger.debug('[MarkdownProcessor] Error details:', error instanceof Error ? error.stack : error);
     return undefined;
@@ -302,7 +306,8 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
         .join('\n\n')
         .trim(),
     };
-  } catch (error) {
+  }
+  catch (error) {
     logger.debug('[ExtractedContentProcessor] Error processing extracted content:', error);
     logger.debug('[ExtractedContentProcessor] Error details:', error instanceof Error ? error.stack : error);
     return undefined;

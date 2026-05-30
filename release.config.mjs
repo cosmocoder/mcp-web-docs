@@ -41,7 +41,9 @@ const headerPartial = `## {{#if @root.linkCompare}}[{{version}}]({{@root.host}}/
  * @returns {string} - The indented body
  */
 function indentBody(body) {
-  if (!body) return body;
+  if (!body) {
+    return body;
+  }
   return body
     .split('\n')
     .map((line) => `  ${line}`)
@@ -60,12 +62,18 @@ function indentBody(body) {
  * @returns {string} - The body without the redundant Dependabot intro line
  */
 function stripDependabotIntro(body) {
-  if (!body) return body;
+  if (!body) {
+    return body;
+  }
   const lines = body.split('\n');
   const firstIdx = lines.findIndex((line) => line.trim() !== '');
-  if (firstIdx === -1 || !/^Bumps\b/.test(lines[firstIdx].trim())) return body;
+  if (firstIdx === -1 || !/^Bumps\b/.test(lines[firstIdx].trim())) {
+    return body;
+  }
   let rest = lines.slice(firstIdx + 1);
-  while (rest.length && rest[0].trim() === '') rest = rest.slice(1);
+  while (rest.length && rest[0].trim() === '') {
+    rest = rest.slice(1);
+  }
   return rest.join('\n');
 }
 

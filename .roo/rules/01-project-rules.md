@@ -16,24 +16,28 @@ For comprehensive guidelines, see **AGENTS.md** in the project root.
 ## Essential Rules
 
 ### Code Style
+
 - Use TypeScript with strict mode enabled
 - **Always use `.js` extensions in imports** (ESM requirement)
 - Follow existing patterns in the codebase
 - Run `npm run lint` and `npm run prettier` before committing
 
 ### Testing
+
 - Tests are co-located: `*.test.ts` next to source files
 - Use Vitest globals: `describe`, `it`, `expect`, `vi`
 - Mock embeddings: `createMockEmbeddings()` from `src/__mocks__/embeddings.ts`
 - Use `vi.hoisted()` for mocks that need to be configured before imports
 
 ### Critical Constraints
+
 - **Never log to stdout** - MCP servers use stdio for JSON-RPC communication
 - Use the logger from `src/util/logger.ts` (writes to stderr)
 - Validate all user inputs with Zod schemas from `src/util/security.ts`
 - Use `validatePublicUrl()` for SSRF protection on user-provided URLs
 
 ### Key Commands
+
 ```bash
 npm test              # Run tests
 npm run build         # Build TypeScript
@@ -44,6 +48,7 @@ npm run test:types    # Type check without emit
 ```
 
 ### Architecture Overview
+
 ```
 src/
 ├── index.ts          # Main MCP server (WebDocsServer class)
@@ -56,12 +61,14 @@ src/
 ```
 
 ### When Adding Features
+
 1. Add Zod schema for input validation in `src/util/security.ts`
 2. Add tool definition in `src/index.ts` `setupToolHandlers()`
 3. Write tests in corresponding `*.test.ts` file
 4. Run full test suite before submitting
 
 ### Commit Conventions
+
 This project uses **semantic-release** for automated versioning. Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 - `feat`: New feature → Minor version bump
@@ -73,12 +80,15 @@ This project uses **semantic-release** for automated versioning. Follow [Convent
 Commit bodies are included in release notes—use `-` bullet points for sub-features.
 
 ### Database Migrations
+
 When modifying the SQLite schema, add migrations to `DocumentStore.MIGRATIONS` in `src/storage/storage.ts`. Migrations run automatically on startup. See **AGENTS.md** for details.
 
 ### Updating Agent Guidelines
+
 When making significant changes (new features, patterns, migrations), ask the user if they want to update the agent instruction files: `AGENTS.md`, `CONTRIBUTING.md`, `.cursorrules`, `CLAUDE.md`, `.roo/rules/01-project-rules.md`.
 
 ### Common Mocking Patterns
+
 ```typescript
 // Hoisted mocks (configured before imports)
 const { mockFn } = vi.hoisted(() => ({ mockFn: vi.fn() }));

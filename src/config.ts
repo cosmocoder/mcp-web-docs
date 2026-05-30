@@ -47,7 +47,8 @@ export async function loadConfig(): Promise<DocsConfig> {
     const crawleeStorageDir = join(DATA_DIR, 'crawlee');
     process.env.CRAWLEE_STORAGE_DIR = crawleeStorageDir;
     await mkdir(crawleeStorageDir, { recursive: true });
-  } catch (error) {
+  }
+  catch (error) {
     logger.debug('[Config] Error creating data directory:', error);
     throw error;
   }
@@ -127,7 +128,8 @@ export function isValidUrl(urlString: string): boolean {
   try {
     const url = new URL(urlString);
     return url.protocol === 'http:' || url.protocol === 'https:';
-  } catch {
+  }
+  catch {
     return false;
   }
 }
@@ -150,7 +152,8 @@ export function isValidPublicUrl(urlString: string, allowPrivate = false): boole
   try {
     validatePublicUrl(urlString);
     return true;
-  } catch (error) {
+  }
+  catch (error) {
     logger.debug(`[Config] URL blocked by SSRF protection: ${urlString}`, error);
     return false;
   }
@@ -162,7 +165,8 @@ export function normalizeUrl(urlString: string): string {
     const url = new URL(urlString);
     // Remove trailing slash
     return url.toString().replace(/\/$/, '');
-  } catch {
+  }
+  catch {
     throw new Error(`Invalid URL: ${urlString}`);
   }
 }
@@ -172,7 +176,8 @@ export function isGitHubUrl(urlString: string): boolean {
   try {
     const url = new URL(urlString);
     return url.hostname === 'github.com';
-  } catch {
+  }
+  catch {
     return false;
   }
 }

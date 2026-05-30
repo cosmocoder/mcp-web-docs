@@ -37,7 +37,8 @@ function formatArg(arg: unknown): string {
     try {
       const jsonStr = JSON.stringify(arg, null, 2);
       return redactForLogging(jsonStr);
-    } catch {
+    }
+    catch {
       return redactForLogging(String(arg));
     }
   }

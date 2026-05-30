@@ -105,7 +105,8 @@ async function* semanticChunker(
           }
           sentenceChunk = sentence;
           sentenceTokens = nextTokens;
-        } else {
+        }
+        else {
           sentenceChunk += ' ' + sentence;
           sentenceTokens += nextTokens;
         }
@@ -174,11 +175,13 @@ export class WebDocumentProcessor implements DocumentProcessor {
         // Content is already formatted markdown from a custom extractor
         logger.debug(`[WebDocumentProcessor] Using extracted content processor for ${crawlResult.extractorUsed}`);
         processedContent = await processExtractedContent(crawlResult);
-      } else if (isMarkdownPath(crawlResult.path)) {
+      }
+      else if (isMarkdownPath(crawlResult.path)) {
         // Raw markdown file
         logger.debug(`[WebDocumentProcessor] Using markdown processor for ${crawlResult.path}`);
         processedContent = await processMarkdownContent(crawlResult);
-      } else {
+      }
+      else {
         // Raw HTML - needs parsing
         logger.debug(`[WebDocumentProcessor] Using HTML processor for ${crawlResult.path}`);
         processedContent = await processHtmlContent(crawlResult);
@@ -232,7 +235,8 @@ export class WebDocumentProcessor implements DocumentProcessor {
         },
         chunks,
       };
-    } catch (error) {
+    }
+    catch (error) {
       logger.error(`[WebDocumentProcessor] Error processing ${crawlResult.url}:`, error);
       logger.error(`[WebDocumentProcessor] Error details:`, error instanceof Error ? error.stack : error);
       throw error;

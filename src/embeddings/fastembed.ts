@@ -63,7 +63,8 @@ export class FastEmbeddings implements EmbeddingsProvider {
           logger.info('[FastEmbeddings] Model initialized successfully');
           this.modelInitPromise = null;
           return this.model;
-        } catch (initError) {
+        }
+        catch (initError) {
           retries++;
           logger.warn(`[FastEmbeddings] Initialization attempt ${retries}/${MAX_RETRIES} failed: ${initError}`);
 
@@ -77,7 +78,8 @@ export class FastEmbeddings implements EmbeddingsProvider {
       }
 
       throw new Error('Failed to initialize model after max retries');
-    } catch (error) {
+    }
+    catch (error) {
       this.modelInitPromise = null;
       logger.error('[FastEmbeddings] Fatal: Failed to initialize model:', error);
       throw error;
@@ -134,7 +136,8 @@ export class FastEmbeddings implements EmbeddingsProvider {
       }
 
       return embedding;
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[FastEmbeddings] Error generating embedding:', error);
       throw error;
     }
@@ -176,7 +179,8 @@ export class FastEmbeddings implements EmbeddingsProvider {
       this.cache.set(cacheKey, embedding);
 
       return embedding;
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[FastEmbeddings] Error generating query embedding:', error);
       throw error;
     }
@@ -203,7 +207,8 @@ export class FastEmbeddings implements EmbeddingsProvider {
         for (const vec of batch) {
           if (vec && vec.length === this.dimensions) {
             embeddings.push(Array.from(vec));
-          } else {
+          }
+          else {
             logger.warn(`[FastEmbeddings] Invalid batch embedding dimension: ${vec?.length}`);
             embeddings.push(new Array(this.dimensions).fill(0));
           }
@@ -211,7 +216,8 @@ export class FastEmbeddings implements EmbeddingsProvider {
       }
 
       return embeddings;
-    } catch (error) {
+    }
+    catch (error) {
       logger.error('[FastEmbeddings] Error generating batch embeddings:', error);
       throw error;
     }

@@ -149,7 +149,8 @@ class WebDocsServer {
       });
 
       logger.info(`[Progress] Sent notification: ${progressPercent}% - ${message}`);
-    } catch (error) {
+    }
+    catch (error) {
       logger.debug(`[Progress] Failed to send notification:`, error);
     }
 
@@ -649,7 +650,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, AddDocumentationArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -682,13 +684,15 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
             loginTimeoutSecs: authOptions.loginTimeoutSecs,
           });
           logger.info(`[WebDocsServer] Authentication successful for ${normalizedUrl}`);
-        } catch (error) {
+        }
+        catch (error) {
           throw new McpError(
             ErrorCode.InternalError,
             `Authentication failed: ${sanitizeErrorMessage(error)}. Please try using the 'authenticate' tool separately.`
           );
         }
-      } else {
+      }
+      else {
         // Validate that the existing session is still valid before crawling
         logger.info(`[WebDocsServer] Validating existing session for ${normalizedUrl}...`);
         const validation = await this.authManager.validateSession(normalizedUrl);
@@ -785,7 +789,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, SearchDocumentationArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -859,7 +864,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, ReindexDocumentationArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1011,7 +1017,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, AuthenticateArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1084,7 +1091,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           },
         ],
       };
-    } catch (error) {
+    }
+    catch (error) {
       const safeErrorMessage = sanitizeErrorMessage(error);
       logger.error(`[Auth] Authentication failed:`, safeErrorMessage);
 
@@ -1115,7 +1123,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, ClearAuthArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1151,7 +1160,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, DeleteDocumentationArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1196,7 +1206,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
         await dataset.drop();
         deletedItems.push('crawl cache (Crawlee dataset)');
         logger.info(`[WebDocsServer] Deleted Crawlee dataset: ${docId}`);
-      } catch {
+      }
+      catch {
         logger.debug(`[WebDocsServer] No Crawlee dataset to delete for ${docId}`);
       }
 
@@ -1231,7 +1242,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           },
         ],
       };
-    } catch (error) {
+    }
+    catch (error) {
       const safeErrorMessage = sanitizeErrorMessage(error);
       logger.error(`[WebDocsServer] Error deleting documentation:`, safeErrorMessage);
 
@@ -1263,7 +1275,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, SetTagsArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1294,7 +1307,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           },
         ],
       };
-    } catch (error) {
+    }
+    catch (error) {
       const safeErrorMessage = sanitizeErrorMessage(error);
 
       // Check for "Documentation not found" error
@@ -1338,7 +1352,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, CreateCollectionArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1366,7 +1381,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           },
         ],
       };
-    } catch (error) {
+    }
+    catch (error) {
       const safeMessage = sanitizeErrorMessage(error);
       if (safeMessage.includes('already exists')) {
         throw new McpError(ErrorCode.InvalidParams, safeMessage);
@@ -1382,7 +1398,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, DeleteCollectionArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1406,7 +1423,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           },
         ],
       };
-    } catch (error) {
+    }
+    catch (error) {
       const safeMessage = sanitizeErrorMessage(error);
       if (safeMessage.includes('not found')) {
         throw new McpError(ErrorCode.InvalidParams, safeMessage);
@@ -1422,7 +1440,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, UpdateCollectionArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1455,7 +1474,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           },
         ],
       };
-    } catch (error) {
+    }
+    catch (error) {
       const safeMessage = sanitizeErrorMessage(error);
       if (safeMessage.includes('not found') || safeMessage.includes('already exists')) {
         throw new McpError(ErrorCode.InvalidParams, safeMessage);
@@ -1494,7 +1514,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, GetCollectionArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1522,7 +1543,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, AddToCollectionArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1550,7 +1572,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           },
         ],
       };
-    } catch (error) {
+    }
+    catch (error) {
       const safeMessage = sanitizeErrorMessage(error);
       if (safeMessage.includes('not found')) {
         throw new McpError(ErrorCode.InvalidParams, safeMessage);
@@ -1566,7 +1589,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, RemoveFromCollectionArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1594,7 +1618,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           },
         ],
       };
-    } catch (error) {
+    }
+    catch (error) {
       const safeMessage = sanitizeErrorMessage(error);
       if (safeMessage.includes('not found')) {
         throw new McpError(ErrorCode.InvalidParams, safeMessage);
@@ -1610,7 +1635,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     let validatedArgs;
     try {
       validatedArgs = validateToolArgs(args, SearchCollectionArgsSchema);
-    } catch (error) {
+    }
+    catch (error) {
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
@@ -1742,7 +1768,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           return;
         }
         logger.info(`[WebDocsServer] Will reindex existing document: ${url}`);
-      } else {
+      }
+      else {
         logger.debug(`[WebDocsServer] Document does not exist: ${url}`);
       }
 
@@ -1769,7 +1796,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           // The validated state is structurally compatible with StorageState
           crawler.setStorageState(validatedState as StorageState);
           logger.info(`[WebDocsServer] Using validated authentication session for ${url}`);
-        } catch (e) {
+        }
+        catch (e) {
           logger.warn(`[WebDocsServer] Failed to parse or validate saved session:`, e);
           // Continue without authentication rather than failing
         }
@@ -1842,7 +1870,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
             pagesProcessed: i + 1,
             chunksCreated: chunks.length,
           });
-        } catch (error) {
+        }
+        catch (error) {
           logger.error(`[WebDocsServer] Error processing page ${page.path}:`, error);
         }
 
@@ -1916,7 +1945,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       await this.store.setTags(url, tags || []);
       if (tags && tags.length > 0) {
         logger.info(`[WebDocsServer] Tags set for ${url}:`, tags);
-      } else {
+      }
+      else {
         logger.debug(`[WebDocsServer] Tags cleared for ${url}`);
       }
 
@@ -1932,7 +1962,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       this.store.optimize().catch((err) => {
         logger.warn('[WebDocsServer] Background optimization failed:', err);
       });
-    } catch (error) {
+    }
+    catch (error) {
       // Don't log AbortError as a real error
       if (error instanceof Error && error.name === 'AbortError') {
         logger.info(`[WebDocsServer] Indexing cancelled for ${url}`);
@@ -1983,7 +2014,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       try {
         await this.store.addDocument(doc);
         return;
-      } catch (error) {
+      }
+      catch (error) {
         const isConflict = error instanceof Error && error.message?.includes('Commit conflict');
         if (isConflict && attempt < maxRetries) {
           logger.warn(`[WebDocsServer] Database conflict, retrying (${attempt}/${maxRetries})...`);

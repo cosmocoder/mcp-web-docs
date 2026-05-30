@@ -35,7 +35,8 @@ export class IndexingQueueManager {
           existing.promise,
           new Promise((_, reject) => setTimeout(() => reject(new Error('Cancellation timeout')), 5000)),
         ]);
-      } catch (e) {
+      }
+      catch (e) {
         // Expected - operation was cancelled or timed out
         logger.debug(`[IndexingQueue] Previous operation ended: ${e instanceof Error ? e.message : 'cancelled'}`);
       }

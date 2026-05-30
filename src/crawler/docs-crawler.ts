@@ -51,11 +51,14 @@ export class DocsCrawler implements WebCrawler {
 
       try {
         for await (const page of githubCrawler.crawl(url)) {
-          if (this.isAborting) break;
+          if (this.isAborting) {
+            break;
+          }
           yield page;
         }
         return 'github';
-      } catch (e) {
+      }
+      catch (e) {
         logger.debug('[DocsCrawler] GitHub crawler failed:', e);
         // Don't fall through to other crawlers for GitHub URLs
         throw e;
@@ -80,18 +83,22 @@ export class DocsCrawler implements WebCrawler {
 
     try {
       for await (const page of crawleeCrawler.crawl(url)) {
-        if (this.isAborting) break;
+        if (this.isAborting) {
+          break;
+        }
         pageCount++;
         yield page;
       }
 
       if (pageCount === 0) {
         logger.warn(`[DocsCrawler] Crawlee crawler found no pages for ${url}`);
-      } else {
+      }
+      else {
         logger.debug(`[DocsCrawler] Crawlee crawler completed (${pageCount} pages)`);
       }
       return 'crawlee';
-    } catch (e) {
+    }
+    catch (e) {
       logger.debug('[DocsCrawler] Crawlee crawler failed:', e);
       throw e;
     }
