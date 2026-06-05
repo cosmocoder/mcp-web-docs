@@ -17,13 +17,32 @@ jobs:
         with:
           github-token: '${{ secrets.GITHUB_TOKEN }}'
 
+      # Generated unconditionally so the security-advisory lookup below can use it.
       - name: Generate GitHub App token
         id: app-token
-        if: steps.metadata.outputs.update-type == 'version-update:semver-minor' || steps.metadata.outputs.update-type == 'version-update:semver-patch'
         uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      # Resolve the GHSA advisory behind security updates so they can be labelled.
+      # alert-lookup requires the App to have "Dependabot alerts: Read"; the default
+      # GITHUB_TOKEN cannot read alerts. continue-on-error keeps auto-merge working
+      # even if that permission is missing (ghsa-id is simply empty -> no label).
+      - name: Look up security advisory
+        id: security
+        continue-on-error: true
+        uses: dependabot/fetch-metadata@v3
+        with:
+          alert-lookup: true
+          github-token: ${{ steps.app-token.outputs.token }}
+
+      - name: Label security updates
+        if: steps.security.outputs.ghsa-id != ''
+        run: gh pr edit "$PR_URL" --add-label security
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Approve the PR
         if: steps.metadata.outputs.update-type == 'version-update:semver-minor' || steps.metadata.outputs.update-type == 'version-update:semver-patch'
