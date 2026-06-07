@@ -17,7 +17,7 @@ MCP Web Docs is a self-hosted MCP server that crawls, indexes, and searches docu
 
 ## Tech Stack
 
-- **Runtime**: Node.js >= 22.19.0
+- **Runtime**: Node.js >= 24, npm >= 11
 - **Language**: TypeScript (ES2022, NodeNext modules)
 - **Testing**: Vitest
 - **Storage**: SQLite (metadata) + LanceDB (vectors)

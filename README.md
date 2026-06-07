@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@cosmocoder/mcp-web-docs.svg)](https://www.npmjs.com/package/@cosmocoder/mcp-web-docs)
 [![npm downloads](https://img.shields.io/npm/dm/@cosmocoder/mcp-web-docs.svg)](https://www.npmjs.com/package/@cosmocoder/mcp-web-docs)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D22.19.0-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D24-brightgreen.svg)](https://nodejs.org/)
 [![CI](https://github.com/cosmocoder/mcp-web-docs/actions/workflows/release.yml/badge.svg)](https://github.com/cosmocoder/mcp-web-docs/actions/workflows/release.yml)
 
 **Index Any Documentation. Search Locally. Stay Private.**
@@ -53,7 +53,8 @@ AI assistants struggle with documentation:
 
 ### Prerequisites
 
-- Node.js >= 22.19.0
+- Node.js >= 24
+- npm >= 11
 
 ### Option 1: Install from NPM (Recommended)
 

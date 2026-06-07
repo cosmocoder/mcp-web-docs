@@ -10,7 +10,7 @@ For comprehensive guidelines, see **AGENTS.md** in the project root.
 
 - **Type**: MCP Server (stdio-based JSON-RPC)
 - **Language**: TypeScript with ES2022/NodeNext modules
-- **Runtime**: Node.js >= 22.19.0
+- **Runtime**: Node.js >= 24, npm >= 11
 - **Testing**: Vitest with global test APIs
 
 ## Essential Rules
