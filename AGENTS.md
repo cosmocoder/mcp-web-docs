@@ -14,7 +14,7 @@ This document provides comprehensive guidance for AI coding agents working on th
 
 ### Tech Stack
 
-- **Runtime**: Node.js >= 22.19.0
+- **Runtime**: Node.js >= 24, npm >= 11
 - **Language**: TypeScript (ES2022, NodeNext modules)
 - **Testing**: Vitest with coverage
 - **Linting**: ESLint with TypeScript support

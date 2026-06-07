@@ -43,7 +43,8 @@ Thank you for your interest in contributing to MCP Web Docs! This document provi
 
 ### Prerequisites
 
-- Node.js >= 22.19.0
+- Node.js >= 24
+- npm >= 11
 
 ### Key Commands
 
