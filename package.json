@@ -97,7 +97,7 @@
     "jiti": "2.7.0",
     "lint-staged": "16.4.0",
     "prettier": "3.8.5",
-    "prettier-plugin-brace-style": "0.10.2",
+    "prettier-plugin-brace-style": "0.10.3",
     "typescript-eslint": "8.62.1",
     "vitest": "4.1.10",
     "vitest-fetch-mock": "0.4.5"
