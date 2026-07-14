@@ -84,6 +84,8 @@ export class DocumentStore implements StorageProvider {
   private lanceTable?: LanceDBTable;
   private readonly searchCache: QuickLRU<string, SearchResult[]>;
   private ftsIndexCreated = false;
+  // ponytail: one per-store FIFO; split only if mutation throughput becomes a measured bottleneck.
+  private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly dbPath: string,
@@ -97,6 +99,15 @@ export class DocumentStore implements StorageProvider {
       maxCacheSize,
     });
     this.searchCache = new QuickLRU({ maxSize: maxCacheSize });
+  }
+
+  private runMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    const result = this.mutationTail.then(mutation);
+    this.mutationTail = result.then(
+      () => undefined,
+      () => undefined
+    );
+    return result;
   }
 
   async initialize(): Promise<void> {
@@ -356,7 +367,11 @@ export class DocumentStore implements StorageProvider {
     }
   }
 
-  async addDocument(doc: ProcessedDocument): Promise<void> {
+  addDocument(doc: ProcessedDocument): Promise<void> {
+    return this.runMutation(() => this.addDocumentUnlocked(doc));
+  }
+
+  private async addDocumentUnlocked(doc: ProcessedDocument): Promise<void> {
     logger.debug(`[DocumentStore] Starting addDocument for:`, {
       url: doc.metadata.url,
       title: doc.metadata.title,
@@ -947,7 +962,11 @@ export class DocumentStore implements StorageProvider {
     return tagsMap;
   }
 
-  async deleteDocument(url: string): Promise<void> {
+  deleteDocument(url: string): Promise<void> {
+    return this.runMutation(() => this.deleteDocumentUnlocked(url));
+  }
+
+  private async deleteDocumentUnlocked(url: string): Promise<void> {
     if (!this.sqliteDb || !this.lanceTable) {
       throw new Error('Storage not initialized');
     }
@@ -1055,7 +1074,11 @@ export class DocumentStore implements StorageProvider {
    * @param url - The URL of the documentation site
    * @param tags - Array of tags to assign (empty array removes all tags)
    */
-  async setTags(url: string, tags: string[]): Promise<void> {
+  setTags(url: string, tags: string[]): Promise<void> {
+    return this.runMutation(() => this.setTagsUnlocked(url, tags));
+  }
+
+  private async setTagsUnlocked(url: string, tags: string[]): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1177,7 +1200,11 @@ export class DocumentStore implements StorageProvider {
    * @param description - Optional description
    * @throws Error if collection already exists
    */
-  async createCollection(name: string, description?: string): Promise<void> {
+  createCollection(name: string, description?: string): Promise<void> {
+    return this.runMutation(() => this.createCollectionUnlocked(name, description));
+  }
+
+  private async createCollectionUnlocked(name: string, description?: string): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1211,7 +1238,11 @@ export class DocumentStore implements StorageProvider {
    * @param name - Name of the collection to delete
    * @throws Error if collection doesn't exist
    */
-  async deleteCollection(name: string): Promise<void> {
+  deleteCollection(name: string): Promise<void> {
+    return this.runMutation(() => this.deleteCollectionUnlocked(name));
+  }
+
+  private async deleteCollectionUnlocked(name: string): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1235,7 +1266,11 @@ export class DocumentStore implements StorageProvider {
    * @param updates - Fields to update
    * @throws Error if collection doesn't exist
    */
-  async updateCollection(name: string, updates: { newName?: string; description?: string }): Promise<void> {
+  updateCollection(name: string, updates: { newName?: string; description?: string }): Promise<void> {
+    return this.runMutation(() => this.updateCollectionUnlocked(name, updates));
+  }
+
+  private async updateCollectionUnlocked(name: string, updates: { newName?: string; description?: string }): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1445,7 +1480,14 @@ export class DocumentStore implements StorageProvider {
    * @param urls - URLs of documents to add
    * @throws Error if collection doesn't exist
    */
-  async addToCollection(name: string, urls: string[]): Promise<{ added: string[]; notFound: string[]; alreadyInCollection: string[] }> {
+  addToCollection(name: string, urls: string[]): Promise<{ added: string[]; notFound: string[]; alreadyInCollection: string[] }> {
+    return this.runMutation(() => this.addToCollectionUnlocked(name, urls));
+  }
+
+  private async addToCollectionUnlocked(
+    name: string,
+    urls: string[]
+  ): Promise<{ added: string[]; notFound: string[]; alreadyInCollection: string[] }> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1525,7 +1567,11 @@ export class DocumentStore implements StorageProvider {
    * @param urls - URLs of documents to remove
    * @throws Error if collection doesn't exist
    */
-  async removeFromCollection(name: string, urls: string[]): Promise<{ removed: string[]; notInCollection: string[] }> {
+  removeFromCollection(name: string, urls: string[]): Promise<{ removed: string[]; notInCollection: string[] }> {
+    return this.runMutation(() => this.removeFromCollectionUnlocked(name, urls));
+  }
+
+  private async removeFromCollectionUnlocked(name: string, urls: string[]): Promise<{ removed: string[]; notInCollection: string[] }> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1683,7 +1729,11 @@ export class DocumentStore implements StorageProvider {
    *
    * @returns Promise with optimization statistics
    */
-  async optimize(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }> {
+  optimize(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }> {
+    return this.runMutation(() => this.optimizeUnlocked());
+  }
+
+  private async optimizeUnlocked(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }> {
     if (!this.lanceTable) {
       logger.debug('[DocumentStore] Cannot optimize: Storage not initialized');
       return { compacted: false, cleanedUp: false, error: 'Storage not initialized' };
