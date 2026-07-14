@@ -2,21 +2,25 @@ import type { CrawlResult } from '../types.js';
 import { DocsCrawler } from './docs-crawler.js';
 
 const mockGitHubCrawl = vi.fn();
+const mockGitHubAbort = vi.fn();
 vi.mock('./github.js', () => ({
   GitHubCrawler: function () {
     return {
       crawl: mockGitHubCrawl,
+      abort: mockGitHubAbort,
     };
   },
 }));
 
 const mockCrawleeCrawl = vi.fn();
+const mockCrawleeAbort = vi.fn();
 const mockSetStorageState = vi.fn();
 const mockSetPathPrefix = vi.fn();
 vi.mock('./crawlee-crawler.js', () => ({
   CrawleeCrawler: function () {
     return {
       crawl: mockCrawleeCrawl,
+      abort: mockCrawleeAbort,
       setStorageState: mockSetStorageState,
       setPathPrefix: mockSetPathPrefix,
     };
@@ -158,6 +162,37 @@ describe('DocsCrawler', () => {
     });
 
     describe('abort', () => {
+      it.each([
+        {
+          name: 'GitHub',
+          url: 'https://github.com/owner/repo',
+          crawl: mockGitHubCrawl,
+          abort: mockGitHubAbort,
+        },
+        {
+          name: 'Crawlee',
+          url: 'https://example.com',
+          crawl: mockCrawleeCrawl,
+          abort: mockCrawleeAbort,
+        },
+      ])('delegates to the active $name crawler before its first page', async ({ url, crawl, abort }) => {
+        const entered = Promise.withResolvers<void>();
+        const released = Promise.withResolvers<void>();
+        crawl.mockImplementation(async function* () {
+          entered.resolve();
+          await released.promise;
+          yield { url, path: '/', content: 'Page', title: 'Page' };
+        });
+
+        const next = crawler.crawl(url).next();
+        await entered.promise;
+        crawler.abort();
+
+        expect(abort).toHaveBeenCalledOnce();
+        released.resolve();
+        await expect(next).resolves.toMatchObject({ done: true });
+      });
+
       it('should stop crawling when aborted', async () => {
         mockCrawleeCrawl.mockImplementation(async function* () {
           yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };

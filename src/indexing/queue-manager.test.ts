@@ -1,335 +1,175 @@
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { IndexingQueueManager } from './queue-manager.js';
 
 describe('IndexingQueueManager', () => {
-  let queue: IndexingQueueManager;
+  it('registers before running and removes the same completed operation', async () => {
+    const queue = new IndexingQueueManager();
+    const started = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
 
-  beforeEach(() => {
-    queue = new IndexingQueueManager();
+    const handle = await queue.runLatest('https://example.com/', async () => {
+      started.resolve();
+      await released.promise;
+    });
+    await started.promise;
+
+    expect(handle.replacedExisting).toBe(false);
+    released.resolve();
+    await handle.completion;
   });
 
-  describe('startOperation', () => {
-    it('should return an AbortController for new operations', async () => {
-      const controller = await queue.startOperation('https://example.com');
-
-      expect(controller).toBeDefined();
-      expect(controller).toBeInstanceOf(AbortController);
-      expect(controller.signal.aborted).toBe(false);
+  it('rejects a replacement when its aborted predecessor does not stop in time', async () => {
+    const queue = new IndexingQueueManager(10);
+    const firstStarted = Promise.withResolvers<void>();
+    const firstReleased = Promise.withResolvers<void>();
+    let firstSignal!: AbortSignal;
+    let replacementStarted = false;
+    const first = await queue.runLatest('https://example.com', async (signal) => {
+      firstSignal = signal;
+      firstStarted.resolve();
+      await firstReleased.promise;
     });
+    await firstStarted.promise;
 
-    it('should normalize URLs when starting operations', async () => {
-      const controller = await queue.startOperation('https://example.com/');
+    await expect(
+      queue.runLatest('https://example.com/', async () => {
+        replacementStarted = true;
+      })
+    ).rejects.toThrow('Timed out cancelling');
 
-      // Register the operation to verify normalization works
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example.com/', controller, mockPromise);
+    expect(firstSignal.aborted).toBe(true);
+    expect(replacementStarted).toBe(false);
+    firstReleased.resolve();
+    await first.completion;
+  });
 
-      // Should find it with or without trailing slash
-      expect(queue.isIndexing('https://example.com')).toBe(true);
-      expect(queue.isIndexing('https://example.com/')).toBe(true);
+  it('keeps same-URL transitions ordered while a different URL starts independently', async () => {
+    const queue = new IndexingQueueManager(1_000);
+    const firstStarted = Promise.withResolvers<void>();
+    const firstReleased = Promise.withResolvers<void>();
+    const secondStarted = Promise.withResolvers<void>();
+    const secondReleased = Promise.withResolvers<void>();
+    const thirdStarted = Promise.withResolvers<void>();
+    const thirdReleased = Promise.withResolvers<void>();
+    const otherStarted = Promise.withResolvers<void>();
+    const otherReleased = Promise.withResolvers<void>();
+    const order: string[] = [];
+    let firstSignal!: AbortSignal;
+    let secondSignal!: AbortSignal;
 
-      queue.completeOperation('https://example.com');
+    const first = await queue.runLatest('https://example.com', async (signal) => {
+      firstSignal = signal;
+      order.push('first');
+      firstStarted.resolve();
+      await firstReleased.promise;
     });
+    await firstStarted.promise;
 
-    it('should cancel existing operation when starting new one for same URL', async () => {
-      // Start first operation
-      const controller1 = await queue.startOperation('https://example.com');
-      const mockPromise1 = new Promise<void>((_resolve, reject) => {
-        controller1.signal.addEventListener('abort', () => reject(new Error('Aborted')));
+    const secondStart = queue.runLatest('https://example.com', async (signal) => {
+      secondSignal = signal;
+      order.push('second');
+      secondStarted.resolve();
+      await secondReleased.promise;
+    });
+    const thirdStart = queue.runLatest('https://example.com', async () => {
+      order.push('third');
+      thirdStarted.resolve();
+      await thirdReleased.promise;
+    });
+    const other = await queue.runLatest('https://other.com', async () => {
+      order.push('other');
+      otherStarted.resolve();
+      await otherReleased.promise;
+    });
+    await otherStarted.promise;
+
+    expect(order).toEqual(['first', 'other']);
+    expect(firstSignal.aborted).toBe(true);
+    firstReleased.resolve();
+    const second = await secondStart;
+    await secondStarted.promise;
+    await first.completion;
+    await nextTurn();
+    expect(secondSignal.aborted).toBe(true);
+    expect(order).toEqual(['first', 'other', 'second']);
+
+    secondReleased.resolve();
+    const third = await thirdStart;
+    await thirdStarted.promise;
+    expect(order).toEqual(['first', 'other', 'second', 'third']);
+
+    thirdReleased.resolve();
+    otherReleased.resolve();
+    await Promise.all([second.completion, third.completion, other.completion]);
+  });
+
+  it('continues after a cancelled predecessor rejects', async () => {
+    const queue = new IndexingQueueManager();
+    const firstStarted = Promise.withResolvers<void>();
+    const first = await queue.runLatest('https://example.com', async (signal) => {
+      firstStarted.resolve();
+      await new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true });
       });
-      queue.registerOperation('https://example.com', controller1, mockPromise1);
-
-      // Start second operation for same URL - should cancel first
-      const controller2 = await queue.startOperation('https://example.com');
-
-      expect(controller1.signal.aborted).toBe(true);
-      expect(controller2.signal.aborted).toBe(false);
-
-      queue.completeOperation('https://example.com');
     });
+    const firstCompletion = first.completion.catch(() => {});
+    await firstStarted.promise;
 
-    it('should not affect operations for different URLs', async () => {
-      const controller1 = await queue.startOperation('https://example.com');
-      const mockPromise1 = new Promise<void>((resolve) => setTimeout(resolve, 1000));
-      queue.registerOperation('https://example.com', controller1, mockPromise1);
-
-      const controller2 = await queue.startOperation('https://other.com');
-      const mockPromise2 = new Promise<void>((resolve) => setTimeout(resolve, 1000));
-      queue.registerOperation('https://other.com', controller2, mockPromise2);
-
-      // Both should be active
-      expect(controller1.signal.aborted).toBe(false);
-      expect(controller2.signal.aborted).toBe(false);
-      expect(queue.isIndexing('https://example.com')).toBe(true);
-      expect(queue.isIndexing('https://other.com')).toBe(true);
-
-      queue.completeOperation('https://example.com');
-      queue.completeOperation('https://other.com');
-    });
-
-    it('should handle cancellation timeout gracefully', async () => {
-      vi.useFakeTimers();
-
-      // Start operation that never resolves
-      const controller1 = await queue.startOperation('https://example.com');
-      const neverResolves = new Promise<void>(() => {
-        // This promise never resolves
-      });
-      queue.registerOperation('https://example.com', controller1, neverResolves);
-
-      // Start new operation - should timeout waiting for cancellation
-      const startPromise = queue.startOperation('https://example.com');
-
-      // Advance timers past the 5000ms timeout
-      await vi.advanceTimersByTimeAsync(5100);
-
-      const controller2 = await startPromise;
-
-      // Should have returned a new controller after timeout
-      expect(controller2).toBeDefined();
-      expect(controller2.signal.aborted).toBe(false);
-
-      queue.completeOperation('https://example.com');
-      vi.useRealTimers();
-    });
+    const second = await queue.runLatest('https://example.com', async () => {});
+    expect(second.replacedExisting).toBe(true);
+    await Promise.all([firstCompletion, second.completion]);
   });
 
-  describe('registerOperation', () => {
-    it('should register an operation', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
+  it('cancelAll drains pending transitions and rejects starts until its shared barrier completes', async () => {
+    const queue = new IndexingQueueManager();
+    const firstStarted = Promise.withResolvers<void>();
+    const firstReleased = Promise.withResolvers<void>();
+    let firstSignal!: AbortSignal;
+    let secondStarted = false;
 
-      queue.registerOperation('https://example.com', controller, mockPromise);
+    const first = await queue.runLatest('https://example.com', async (signal) => {
+      firstSignal = signal;
+      firstStarted.resolve();
+      await firstReleased.promise;
+    });
+    await firstStarted.promise;
 
-      expect(queue.isIndexing('https://example.com')).toBe(true);
+    const secondStart = queue.runLatest('https://example.com', async () => {
+      secondStarted = true;
+    });
+    const secondResult = expect(secondStart).rejects.toThrow('being cancelled');
+    await nextTurn();
 
-      queue.completeOperation('https://example.com');
+    let cancellationFinished = false;
+    const cancellation = queue.cancelAll();
+    expect(queue.cancelAll()).toBe(cancellation);
+    void cancellation.then(() => {
+      cancellationFinished = true;
     });
 
-    it('should store operation with correct metadata', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
+    let duringCancellationStarted = false;
+    await expect(
+      queue.runLatest('https://other.com', async () => {
+        duringCancellationStarted = true;
+      })
+    ).rejects.toThrow('being cancelled');
+    await nextTurn();
 
-      const beforeRegister = new Date();
-      queue.registerOperation('https://example.com', controller, mockPromise);
-      const afterRegister = new Date();
+    expect(firstSignal.aborted).toBe(true);
+    expect(duringCancellationStarted).toBe(false);
+    expect(cancellationFinished).toBe(false);
 
-      const operations = queue.getActiveOperations();
-      expect(operations).toHaveLength(1);
-      expect(operations[0].url).toBe('https://example.com');
-      expect(operations[0].startedAt.getTime()).toBeGreaterThanOrEqual(beforeRegister.getTime());
-      expect(operations[0].startedAt.getTime()).toBeLessThanOrEqual(afterRegister.getTime());
+    firstReleased.resolve();
+    await Promise.all([first.completion, secondResult, cancellation]);
 
-      queue.completeOperation('https://example.com');
+    expect(secondStarted).toBe(false);
+    expect(cancellationFinished).toBe(true);
+
+    let afterCancellationStarted = false;
+    const afterCancellation = await queue.runLatest('https://example.com', async () => {
+      afterCancellationStarted = true;
     });
-
-    it('should normalize URL when registering', async () => {
-      const controller = await queue.startOperation('https://example.com/');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-
-      queue.registerOperation('https://example.com/', controller, mockPromise);
-
-      // Should be findable with normalized URL
-      expect(queue.isIndexing('https://example.com')).toBe(true);
-
-      queue.completeOperation('https://example.com');
-    });
-  });
-
-  describe('completeOperation', () => {
-    it('should remove operation from active map', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example.com', controller, mockPromise);
-
-      expect(queue.isIndexing('https://example.com')).toBe(true);
-
-      queue.completeOperation('https://example.com');
-
-      expect(queue.isIndexing('https://example.com')).toBe(false);
-    });
-
-    it('should handle completing non-existent operation gracefully', () => {
-      // Should not throw
-      expect(() => queue.completeOperation('https://nonexistent.com')).not.toThrow();
-    });
-
-    it('should normalize URL when completing', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example.com', controller, mockPromise);
-
-      // Complete with trailing slash
-      queue.completeOperation('https://example.com/');
-
-      expect(queue.isIndexing('https://example.com')).toBe(false);
-    });
-  });
-
-  describe('cancelAll', () => {
-    it('should cancel all active operations', async () => {
-      const controller1 = await queue.startOperation('https://example1.com');
-      const mockPromise1 = new Promise<void>((resolve) => {
-        controller1.signal.addEventListener('abort', () => resolve());
-      });
-      queue.registerOperation('https://example1.com', controller1, mockPromise1);
-
-      const controller2 = await queue.startOperation('https://example2.com');
-      const mockPromise2 = new Promise<void>((resolve) => {
-        controller2.signal.addEventListener('abort', () => resolve());
-      });
-      queue.registerOperation('https://example2.com', controller2, mockPromise2);
-
-      expect(queue.getActiveOperations()).toHaveLength(2);
-
-      await queue.cancelAll();
-
-      expect(controller1.signal.aborted).toBe(true);
-      expect(controller2.signal.aborted).toBe(true);
-      expect(queue.getActiveOperations()).toHaveLength(0);
-    });
-
-    it('should handle empty queue', async () => {
-      await expect(queue.cancelAll()).resolves.not.toThrow();
-      expect(queue.getActiveOperations()).toHaveLength(0);
-    });
-
-    it('should handle operations that reject on cancel', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((_, reject) => {
-        controller.signal.addEventListener('abort', () => reject(new Error('Cancelled')));
-      });
-      queue.registerOperation('https://example.com', controller, mockPromise);
-
-      // Should not throw even if promises reject
-      await expect(queue.cancelAll()).resolves.not.toThrow();
-      expect(queue.getActiveOperations()).toHaveLength(0);
-    });
-  });
-
-  describe('isIndexing', () => {
-    it('should return false for URLs not being indexed', () => {
-      expect(queue.isIndexing('https://example.com')).toBe(false);
-    });
-
-    it('should return true for URLs being indexed', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example.com', controller, mockPromise);
-
-      expect(queue.isIndexing('https://example.com')).toBe(true);
-
-      queue.completeOperation('https://example.com');
-    });
-
-    it('should return false after operation completes', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example.com', controller, mockPromise);
-      queue.completeOperation('https://example.com');
-
-      expect(queue.isIndexing('https://example.com')).toBe(false);
-    });
-
-    it('should normalize URL when checking', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example.com', controller, mockPromise);
-
-      // Check with trailing slash
-      expect(queue.isIndexing('https://example.com/')).toBe(true);
-
-      queue.completeOperation('https://example.com');
-    });
-  });
-
-  describe('getActiveOperations', () => {
-    it('should return empty array when no operations', () => {
-      expect(queue.getActiveOperations()).toEqual([]);
-    });
-
-    it('should return all active operations', async () => {
-      const controller1 = await queue.startOperation('https://example1.com');
-      const mockPromise1 = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example1.com', controller1, mockPromise1);
-
-      const controller2 = await queue.startOperation('https://example2.com');
-      const mockPromise2 = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example2.com', controller2, mockPromise2);
-
-      const operations = queue.getActiveOperations();
-      expect(operations).toHaveLength(2);
-
-      const urls = operations.map((op) => op.url);
-      expect(urls).toContain('https://example1.com');
-      expect(urls).toContain('https://example2.com');
-
-      queue.completeOperation('https://example1.com');
-      queue.completeOperation('https://example2.com');
-    });
-
-    it('should return operation metadata', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example.com', controller, mockPromise);
-
-      const operations = queue.getActiveOperations();
-      expect(operations[0]).toHaveProperty('url');
-      expect(operations[0]).toHaveProperty('startedAt');
-      expect(operations[0].startedAt).toBeInstanceOf(Date);
-
-      queue.completeOperation('https://example.com');
-    });
-
-    it('should not include completed operations', async () => {
-      const controller = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example.com', controller, mockPromise);
-      queue.completeOperation('https://example.com');
-
-      expect(queue.getActiveOperations()).toHaveLength(0);
-    });
-  });
-
-  describe('concurrent operations', () => {
-    it('should handle multiple concurrent operations for different URLs', async () => {
-      const urls = ['https://a.com', 'https://b.com', 'https://c.com'];
-      const controllers: AbortController[] = [];
-
-      for (const url of urls) {
-        const controller = await queue.startOperation(url);
-        const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-        queue.registerOperation(url, controller, mockPromise);
-        controllers.push(controller);
-      }
-
-      expect(queue.getActiveOperations()).toHaveLength(3);
-
-      // All should be active
-      for (const controller of controllers) {
-        expect(controller.signal.aborted).toBe(false);
-      }
-
-      // Complete one
-      queue.completeOperation('https://b.com');
-      expect(queue.getActiveOperations()).toHaveLength(2);
-      expect(queue.isIndexing('https://a.com')).toBe(true);
-      expect(queue.isIndexing('https://b.com')).toBe(false);
-      expect(queue.isIndexing('https://c.com')).toBe(true);
-
-      queue.completeOperation('https://a.com');
-      queue.completeOperation('https://c.com');
-    });
-
-    it('should handle rapid start/complete cycles', async () => {
-      for (let i = 0; i < 10; i++) {
-        const controller = await queue.startOperation('https://example.com');
-        const mockPromise = Promise.resolve();
-        queue.registerOperation('https://example.com', controller, mockPromise);
-        queue.completeOperation('https://example.com');
-      }
-
-      expect(queue.isIndexing('https://example.com')).toBe(false);
-      expect(queue.getActiveOperations()).toHaveLength(0);
-    });
+    await afterCancellation.completion;
+    expect(afterCancellationStarted).toBe(true);
   });
 });
