@@ -16,7 +16,9 @@ import {
   SessionExpiredError,
   type ValidatedStoredSession,
   type LoginPageDetectionResult,
+  validatePublicUrl,
 } from '../util/security.js';
+import { getOutboundProxyUrl, resolvePublicTarget } from '../util/outbound-request.js';
 
 /** Supported browser types */
 export type BrowserType = 'chromium' | 'chrome' | 'firefox' | 'webkit' | 'edge';
@@ -360,7 +362,10 @@ export class AuthManager {
       });
 
       const storageState = JSON.parse(storageStateJson);
-      context = await browser.newContext({ storageState });
+      context = await browser.newContext({
+        storageState,
+        proxy: { server: await getOutboundProxyUrl(), bypass: '<-loopback>' },
+      });
 
       const page = await context.newPage();
 
@@ -530,6 +535,15 @@ export class AuthManager {
       loginTimeoutSecs = 300, // 5 minutes default
     } = options;
     let browserType = initialBrowserType;
+    const targetUrl = loginUrl || url;
+    const validationSignal = AbortSignal.timeout(loginTimeoutSecs * 1000);
+
+    await Promise.all(
+      [url, targetUrl].map((candidate) => {
+        const validated = validatePublicUrl(candidate);
+        return resolvePublicTarget(validated.hostname, undefined, validationSignal);
+      })
+    );
 
     logger.info(`[AuthManager] === Starting Interactive Login ===`);
     logger.info(`[AuthManager] Target URL: ${url}`);
@@ -545,8 +559,6 @@ export class AuthManager {
     logger.info(`[AuthManager] Using browser type: ${browserType}`);
 
     const domain = new URL(url).hostname;
-    const targetUrl = loginUrl || url;
-
     logger.info(`[AuthManager] Will open ${browserType} browser for authentication to ${domain}`);
     logger.info(`[AuthManager] Please login in the browser window. You have ${loginTimeoutSecs} seconds.`);
     logger.info(`[AuthManager] NOTE: This is a fresh browser - you will need to login manually.`);
@@ -590,6 +602,7 @@ export class AuthManager {
 
       this.activeContext = await this.activeBrowser.newContext({
         viewport: { width: 1280, height: 800 },
+        proxy: { server: await getOutboundProxyUrl(), bypass: '<-loopback>' },
       });
       logger.debug(`[AuthManager] ✓ Browser context created`);
 
@@ -848,6 +861,9 @@ export class AuthManager {
       return null;
     }
 
+    const validatedUrl = validatePublicUrl(url);
+    await resolvePublicTarget(validatedUrl.hostname, undefined, AbortSignal.timeout(30000));
+
     const launcher = this.getBrowserLauncher(browserType);
     const launchOptions = this.getLaunchOptions(browserType);
 
@@ -857,7 +873,10 @@ export class AuthManager {
     });
 
     const storageState = JSON.parse(storageStateJson);
-    const context = await browser.newContext({ storageState });
+    const context = await browser.newContext({
+      storageState,
+      proxy: { server: await getOutboundProxyUrl(), bypass: '<-loopback>' },
+    });
 
     return { browser, context };
   }

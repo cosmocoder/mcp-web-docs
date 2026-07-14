@@ -1,5 +1,8 @@
-import { detectDefaultBrowser, AuthManager, type BrowserType } from './auth.js';
+import { lookup } from 'node:dns/promises';
+import type { Mock } from 'vitest';
+
 import { encryptData } from '../util/security.js';
+import { detectDefaultBrowser, AuthManager, type BrowserType } from './auth.js';
 
 const { mockDefaultBrowser, mockMkdir, mockReadFile, mockWriteFile, mockAccess, mockChmod, mockUnlink, mockChromiumLaunch } = vi.hoisted(
   () => ({
@@ -96,11 +99,15 @@ function setupBrowserMock(options: BrowserMockOptions = {}) {
     url: vi.fn().mockReturnValue(url),
     waitForLoadState: vi.fn().mockResolvedValue(undefined),
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
+    waitForURL: vi.fn().mockResolvedValue(undefined),
     content: vi.fn().mockResolvedValue(content),
     evaluate: vi.fn().mockResolvedValue(bodyText),
   };
   const mockContext = {
     newPage: vi.fn().mockResolvedValue(mockPage),
+    route: vi.fn().mockResolvedValue(undefined),
+    routeWebSocket: vi.fn().mockResolvedValue(undefined),
+    storageState: vi.fn().mockResolvedValue({ cookies: [], origins: [] }),
     close: vi.fn().mockResolvedValue(undefined),
   };
   const mockBrowser = {
@@ -220,6 +227,61 @@ describe('Auth Module', () => {
       });
     });
 
+    describe('createAuthenticatedContext', () => {
+      it('returns null without DNS or browser setup when no saved session exists', async () => {
+        mockReadFile.mockRejectedValue(new Error('ENOENT'));
+
+        await expect(authManager.createAuthenticatedContext('https://example.com')).resolves.toBeNull();
+
+        expect(lookup).not.toHaveBeenCalled();
+        expect(mockChromiumLaunch).not.toHaveBeenCalled();
+      });
+
+      it('uses the pinned proxy without changing service workers or registering routes', async () => {
+        mockStoredSession([]);
+        const { mockBrowser, mockContext } = setupBrowserMock();
+
+        await expect(authManager.createAuthenticatedContext('https://example.com')).resolves.toEqual({
+          browser: mockBrowser,
+          context: mockContext,
+        });
+
+        expect(mockBrowser.newContext).toHaveBeenCalledWith(
+          expect.objectContaining({
+            proxy: {
+              server: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
+              bypass: '<-loopback>',
+            },
+          })
+        );
+        expect(mockBrowser.newContext.mock.calls[0][0]).not.toHaveProperty('serviceWorkers');
+        expect(mockContext.route).not.toHaveBeenCalled();
+        expect(mockContext.routeWebSocket).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('performInteractiveLogin', () => {
+      it('uses the pinned proxy without changing service workers or registering routes', async () => {
+        const { mockBrowser, mockContext } = setupBrowserMock();
+
+        await authManager.performInteractiveLogin('https://example.com', {
+          browser: 'chromium',
+          loginSuccessPattern: 'example',
+        });
+
+        expect(mockBrowser.newContext).toHaveBeenCalledWith({
+          viewport: { width: 1280, height: 800 },
+          proxy: {
+            server: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
+            bypass: '<-loopback>',
+          },
+        });
+        expect(mockBrowser.newContext.mock.calls[0][0]).not.toHaveProperty('serviceWorkers');
+        expect(mockContext.route).not.toHaveBeenCalled();
+        expect(mockContext.routeWebSocket).not.toHaveBeenCalled();
+      });
+    });
+
     describe('clearSession', () => {
       it('should delete session file', async () => {
         mockUnlink.mockResolvedValue(undefined);
@@ -278,6 +340,18 @@ describe('Auth Module', () => {
         expect(typeof type).toBe('string');
       });
     });
+  });
+
+  it('rejects a custom login URL that DNS resolves to a private address before launching a browser', async () => {
+    const authManager = new AuthManager('/tmp/test-data');
+    const mockLookup = lookup as Mock;
+    mockLookup.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }]);
+    mockLookup.mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }]);
+
+    await expect(
+      authManager.performInteractiveLogin('https://example.com', { loginUrl: 'https://login.example.com/login' })
+    ).rejects.toThrow('non-public');
+    expect(mockChromiumLaunch).not.toHaveBeenCalled();
   });
 
   describe('validateSession', () => {
@@ -435,11 +509,22 @@ describe('Auth Module', () => {
       });
 
       it('should consider session valid when page loads successfully', async () => {
-        setupBrowserMock();
+        const { mockContext, mockBrowser } = setupBrowserMock();
 
         const result = await authManager.validateSession('https://example.com');
 
         expect(result.isValid).toBe(true);
+        expect(mockBrowser.newContext).toHaveBeenCalledWith(
+          expect.objectContaining({
+            proxy: {
+              server: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
+              bypass: '<-loopback>',
+            },
+          })
+        );
+        expect(mockBrowser.newContext.mock.calls[0][0]).not.toHaveProperty('serviceWorkers');
+        expect(mockContext.route).not.toHaveBeenCalled();
+        expect(mockContext.routeWebSocket).not.toHaveBeenCalled();
       });
     });
   });

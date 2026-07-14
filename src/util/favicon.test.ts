@@ -153,6 +153,16 @@ describe('Favicon Utilities', () => {
       expect(fetchMock).toHaveBeenCalledWith('https://example.com/assets/favicon.png', expect.any(Object));
     });
 
+    it('should not fetch a page-supplied favicon from a private address', async () => {
+      fetchMock.mockResponseOnce('', { status: 404 });
+      fetchMock.mockResponseOnce('<html><head><link rel="icon" href="http://127.0.0.1/admin?token=secret"></head></html>');
+
+      const result = await fetchFavicon(new URL('https://example.com'));
+
+      expect(result).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
     it('should return undefined when icon from meta tag fails to load', async () => {
       fetchMock.mockResponseOnce('', { status: 404 });
       fetchMock.mockResponseOnce('<html><head><link rel="icon" href="/icon.png"></head></html>');

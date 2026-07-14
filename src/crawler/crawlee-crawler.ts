@@ -326,7 +326,7 @@ export class CrawleeCrawler extends BaseCrawler {
     await this.queueManager.seedFromLlmsTxt(url);
 
     // Build crawler options with optional authentication
-    const crawlerOptions = getBrowserConfig(this.queueManager.getRequestQueue() ?? undefined);
+    const crawlerOptions = await getBrowserConfig(this.queueManager.getRequestQueue() ?? undefined);
 
     // If we have storage state (auth cookies), configure the browser to use them
     if (this.storageState) {
