@@ -78,6 +78,33 @@ function preprocessQuery(query: string): ProcessedQuery {
   return result;
 }
 
+function buildExactUrlCondition(urls: string[]): string {
+  return `url IN (${urls.map((url) => `'${escapeFilterValue(url)}'`).join(', ')})`;
+}
+
+function buildSearchWhereClause(
+  options: Pick<SearchOptions, 'filterByType' | 'filterUrl' | 'filterUrls'>,
+  tagFilteredUrls?: string[]
+): string | undefined {
+  const conditions: string[] = [];
+
+  if (options.filterByType) {
+    conditions.push(`type = '${escapeFilterValue(options.filterByType)}'`);
+  }
+  if (options.filterUrl) {
+    const escapedUrl = escapeFilterValue(options.filterUrl).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+    conditions.push(`url LIKE '${escapedUrl}%'`);
+  }
+  if (options.filterUrls) {
+    conditions.push(buildExactUrlCondition(options.filterUrls));
+  }
+  if (tagFilteredUrls) {
+    conditions.push(buildExactUrlCondition(tagFilteredUrls));
+  }
+
+  return conditions.length > 0 ? conditions.join(' AND ') : undefined;
+}
+
 export class DocumentStore implements StorageProvider {
   private sqliteDb?: Database;
   private lanceConn?: LanceDBConnection;
@@ -458,16 +485,21 @@ export class DocumentStore implements StorageProvider {
       throw new Error('Storage not initialized');
     }
 
-    const { limit = 10, includeVectors = false, filterByType, filterByTags, textQuery } = options;
+    const { limit = 10, includeVectors = false, filterByType, filterUrls, filterByTags, textQuery } = options;
 
     logger.debug(`[DocumentStore] Searching documents with vector:`, {
       dimensions: queryVector.length,
       limit,
       includeVectors,
       filterByType,
+      filterUrls,
       filterByTags,
       hasTextQuery: !!textQuery,
     });
+
+    if (filterUrls?.length === 0) {
+      return [];
+    }
 
     // Add validation for query vector
     if (queryVector.length === 0 && !textQuery) {
@@ -526,17 +558,9 @@ export class DocumentStore implements StorageProvider {
       // Create search query
       let query = this.lanceTable.search(queryVector).limit(limit);
 
-      // Build WHERE conditions
-      const conditions: string[] = [];
-      if (filterByType) {
-        conditions.push(`type = '${escapeFilterValue(filterByType)}'`);
-      }
-      if (tagFilteredUrls && tagFilteredUrls.length > 0) {
-        const urlConditions = tagFilteredUrls.map((u) => `url = '${escapeFilterValue(u)}'`).join(' OR ');
-        conditions.push(`(${urlConditions})`);
-      }
-      if (conditions.length > 0) {
-        query = query.where(conditions.join(' AND '));
+      const whereClause = buildSearchWhereClause(options, tagFilteredUrls);
+      if (whereClause) {
+        query = query.where(whereClause);
       }
 
       const results = await query.toArray();
@@ -649,7 +673,13 @@ export class DocumentStore implements StorageProvider {
       return cached;
     }
 
-    const { limit = 10, filterByType, filterUrl, filterByTags } = options;
+    const { limit = 10, filterUrls, filterByTags } = options;
+
+    if (filterUrls?.length === 0) {
+      const emptyResults: SearchResult[] = [];
+      this.searchCache.set(cacheKey, emptyResults);
+      return emptyResults;
+    }
 
     // If filtering by tags, get the list of URLs that have all those tags
     let tagFilteredUrls: string[] | undefined;
@@ -665,27 +695,7 @@ export class DocumentStore implements StorageProvider {
       logger.debug(`[DocumentStore] Tag filter matched ${tagFilteredUrls.length} documents`);
     }
 
-    // Build WHERE clause for filtering (using escaped values to prevent injection)
-    const buildWhereClause = (): string | undefined => {
-      const conditions: string[] = [];
-      if (filterByType) {
-        conditions.push(`type = '${escapeFilterValue(filterByType)}'`);
-      }
-      if (filterUrl) {
-        // Filter by base URL - use LIKE to match URLs that start with the base URL
-        // Escape the filterUrl and also escape LIKE wildcards within the value
-        const escapedUrl = escapeFilterValue(filterUrl).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-        conditions.push(`url LIKE '${escapedUrl}%'`);
-      }
-      if (tagFilteredUrls && tagFilteredUrls.length > 0) {
-        // Filter to only include URLs that match the tag filter
-        const urlConditions = tagFilteredUrls.map((u) => `url = '${escapeFilterValue(u)}'`).join(' OR ');
-        conditions.push(`(${urlConditions})`);
-      }
-      return conditions.length > 0 ? conditions.join(' AND ') : undefined;
-    };
-
-    const whereClause = buildWhereClause();
+    const whereClause = buildSearchWhereClause(options, tagFilteredUrls);
 
     try {
       if (!this.lanceTable) {

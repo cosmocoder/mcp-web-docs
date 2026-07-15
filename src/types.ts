@@ -105,6 +105,8 @@ export interface SearchOptions {
   textQuery?: string;
   /** Filter results to a specific documentation site by its base URL */
   filterUrl?: string;
+  /** Restrict results to this exact set of document URLs; an empty list matches nothing */
+  filterUrls?: string[];
   /** Filter results to documentation sites that have ALL of the specified tags */
   filterByTags?: string[];
 }
