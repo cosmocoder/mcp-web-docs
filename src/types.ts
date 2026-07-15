@@ -26,6 +26,8 @@ export interface DocumentMetadata {
   tags?: string[];
   /** Version of the documentation (e.g., "18", "v6.4", "3.11") for versioned packages */
   version?: string;
+  /** Optional URL path restriction used when crawling this documentation site */
+  pathPrefix?: string;
 }
 
 export interface DocumentChunk {

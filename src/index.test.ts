@@ -15,15 +15,32 @@ import { IndexingStatusTracker } from './indexing/status.js';
 import { IndexingQueueManager } from './indexing/queue-manager.js';
 import type { DocumentMetadata, SearchResult } from './types.js';
 
+const reindexMocks = vi.hoisted(() => ({
+  handlers: [] as Array<(request: { params: { name: string; arguments?: Record<string, unknown> } }) => Promise<unknown>>,
+  storeInitialize: vi.fn().mockResolvedValue(undefined),
+  storeGetDocument: vi.fn(),
+  storeAddDocument: vi.fn().mockResolvedValue(undefined),
+  storeDeleteDocument: vi.fn().mockResolvedValue(undefined),
+  storeSetTags: vi.fn().mockResolvedValue(undefined),
+  storeOptimize: vi.fn().mockResolvedValue({ compacted: false, cleanedUp: false }),
+  crawlerSetPathPrefix: vi.fn(),
+}));
+
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
-  McpServer: vi.fn().mockImplementation(() => ({
-    server: {
-      setRequestHandler: vi.fn(),
-      notification: vi.fn().mockResolvedValue(undefined),
-      onerror: null,
-    },
-    connect: vi.fn().mockResolvedValue(undefined),
-  })),
+  McpServer: vi.fn().mockImplementation(function MockMcpServer() {
+    return {
+      server: {
+        setRequestHandler: vi.fn(
+          (_schema: unknown, handler: (request: { params: { name: string; arguments?: Record<string, unknown> } }) => Promise<unknown>) => {
+            reindexMocks.handlers.push(handler);
+          }
+        ),
+        notification: vi.fn().mockResolvedValue(undefined),
+        onerror: null,
+      },
+      connect: vi.fn().mockResolvedValue(undefined),
+    };
+  }),
 }));
 
 vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
@@ -31,53 +48,76 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
 }));
 
 vi.mock('./storage/storage.js', () => ({
-  DocumentStore: vi.fn().mockImplementation(() => ({
-    initialize: vi.fn().mockResolvedValue(undefined),
-    listDocuments: vi.fn().mockResolvedValue([]),
-    getDocument: vi.fn().mockResolvedValue(null),
-    searchByText: vi.fn().mockResolvedValue([]),
-    addDocument: vi.fn().mockResolvedValue(undefined),
-    deleteDocument: vi.fn().mockResolvedValue(undefined),
-    setTags: vi.fn().mockResolvedValue(undefined),
-    listAllTags: vi.fn().mockResolvedValue([]),
-  })),
+  DocumentStore: vi.fn().mockImplementation(function MockDocumentStore() {
+    return {
+      initialize: reindexMocks.storeInitialize,
+      listDocuments: vi.fn().mockResolvedValue([]),
+      getDocument: reindexMocks.storeGetDocument,
+      searchByText: vi.fn().mockResolvedValue([]),
+      addDocument: reindexMocks.storeAddDocument,
+      deleteDocument: reindexMocks.storeDeleteDocument,
+      setTags: reindexMocks.storeSetTags,
+      listAllTags: vi.fn().mockResolvedValue([]),
+      optimize: reindexMocks.storeOptimize,
+    };
+  }),
 }));
 
 vi.mock('./embeddings/fastembed.js', () => ({
-  FastEmbeddings: vi.fn().mockImplementation(() => ({
-    dimensions: 384,
-    embed: vi.fn().mockResolvedValue(new Array(384).fill(0)),
-  })),
+  FastEmbeddings: vi.fn().mockImplementation(function MockFastEmbeddings() {
+    return {
+      dimensions: 384,
+      embed: vi.fn().mockResolvedValue(new Array(384).fill(0)),
+    };
+  }),
 }));
 
 vi.mock('./processor/processor.js', () => ({
-  WebDocumentProcessor: vi.fn().mockImplementation(() => ({
-    process: vi.fn().mockResolvedValue({
-      metadata: { url: 'https://example.com', title: 'Test', lastIndexed: new Date() },
-      chunks: [],
-    }),
-  })),
+  WebDocumentProcessor: vi.fn().mockImplementation(function MockWebDocumentProcessor() {
+    return {
+      process: vi.fn().mockResolvedValue({
+        metadata: { url: 'https://example.com', title: 'Test', lastIndexed: new Date() },
+        chunks: [
+          {
+            content: 'Test content',
+            url: 'https://example.com',
+            title: 'Test',
+            path: '/',
+            startLine: 1,
+            endLine: 1,
+            vector: new Array(384).fill(0),
+            metadata: { type: 'overview' },
+          },
+        ],
+      }),
+    };
+  }),
 }));
 
 vi.mock('./crawler/docs-crawler.js', () => ({
-  DocsCrawler: vi.fn().mockImplementation(() => ({
-    crawl: vi.fn().mockImplementation(async function* () {
-      yield { url: 'https://example.com', path: '/', content: '<h1>Test</h1>', title: 'Test' };
-    }),
-    abort: vi.fn(),
-    setStorageState: vi.fn(),
-  })),
+  DocsCrawler: vi.fn().mockImplementation(function MockDocsCrawler() {
+    return {
+      crawl: vi.fn().mockImplementation(async function* () {
+        yield { url: 'https://example.com', path: '/', content: '<h1>Test</h1>', title: 'Test' };
+      }),
+      abort: vi.fn(),
+      setPathPrefix: reindexMocks.crawlerSetPathPrefix,
+      setStorageState: vi.fn(),
+    };
+  }),
 }));
 
 vi.mock('./crawler/auth.js', () => ({
-  AuthManager: vi.fn().mockImplementation(() => ({
-    initialize: vi.fn().mockResolvedValue(undefined),
-    hasSession: vi.fn().mockResolvedValue(false),
-    loadSession: vi.fn().mockResolvedValue(null),
-    clearSession: vi.fn().mockResolvedValue(undefined),
-    performInteractiveLogin: vi.fn().mockResolvedValue(undefined),
-    validateSession: vi.fn().mockResolvedValue({ isValid: true }),
-  })),
+  AuthManager: vi.fn().mockImplementation(function MockAuthManager() {
+    return {
+      initialize: vi.fn().mockResolvedValue(undefined),
+      hasSession: vi.fn().mockResolvedValue(false),
+      loadSession: vi.fn().mockResolvedValue(null),
+      clearSession: vi.fn().mockResolvedValue(undefined),
+      performInteractiveLogin: vi.fn().mockResolvedValue(undefined),
+      validateSession: vi.fn().mockResolvedValue({ isValid: true }),
+    };
+  }),
 }));
 
 vi.mock('./config.js', () => ({
@@ -751,6 +791,45 @@ describe('WebDocsServer', () => {
 
         expect(authInfo).toBeUndefined();
       });
+    });
+  });
+
+  describe('Reindex crawl restriction', () => {
+    it('should reuse a stored path prefix while leaving legacy documents unrestricted', async () => {
+      const restrictedDoc: DocumentMetadata = {
+        url: 'https://docs.example.com',
+        title: 'Example Docs',
+        lastIndexed: new Date(),
+        pathPrefix: '/api/v2',
+      };
+      (isValidPublicUrl as Mock).mockReturnValue(true);
+      reindexMocks.storeGetDocument.mockResolvedValue(restrictedDoc);
+      reindexMocks.handlers.length = 0;
+
+      await import('./index.js');
+      await vi.waitFor(() => expect(reindexMocks.storeInitialize).toHaveBeenCalled());
+      const callTool = reindexMocks.handlers[1];
+
+      await callTool({ params: { name: 'reindex_documentation', arguments: { url: restrictedDoc.url } } });
+      await vi.waitFor(() => expect(reindexMocks.storeOptimize).toHaveBeenCalledTimes(1));
+
+      expect(reindexMocks.crawlerSetPathPrefix).toHaveBeenCalledWith('/api/v2');
+      expect(reindexMocks.storeAddDocument).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: '/api/v2' }) })
+      );
+
+      reindexMocks.crawlerSetPathPrefix.mockClear();
+      reindexMocks.storeAddDocument.mockClear();
+      reindexMocks.storeOptimize.mockClear();
+      reindexMocks.storeGetDocument.mockResolvedValue({ ...restrictedDoc, pathPrefix: undefined });
+
+      await callTool({ params: { name: 'reindex_documentation', arguments: { url: restrictedDoc.url } } });
+      await vi.waitFor(() => expect(reindexMocks.storeOptimize).toHaveBeenCalledTimes(1));
+
+      expect(reindexMocks.crawlerSetPathPrefix).not.toHaveBeenCalled();
+      expect(reindexMocks.storeAddDocument).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: undefined }) })
+      );
     });
   });
 });

@@ -282,6 +282,13 @@ export class DocumentStore implements StorageProvider {
         CREATE INDEX IF NOT EXISTS idx_collection_documents_url ON collection_documents(url);
       `,
     },
+    {
+      version: 6,
+      description: 'Persist crawl path prefix',
+      sql: `
+        ALTER TABLE documents ADD COLUMN path_prefix TEXT;
+      `,
+    },
   ];
 
   /**
@@ -391,7 +398,7 @@ export class DocumentStore implements StorageProvider {
 
       // Add metadata to SQLite
       await this.sqliteDb.run(
-        'INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        'INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         [
           doc.metadata.url,
           doc.metadata.title,
@@ -400,6 +407,7 @@ export class DocumentStore implements StorageProvider {
           doc.metadata.requiresAuth ? 1 : 0,
           doc.metadata.authDomain || null,
           doc.metadata.version || null,
+          doc.metadata.pathPrefix || null,
         ]
       );
       logger.debug(
@@ -902,8 +910,11 @@ export class DocumentStore implements StorageProvider {
           requires_auth: number | null;
           auth_domain: string | null;
           version: string | null;
+          path_prefix: string | null;
         }>
-      >('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain, version FROM documents ORDER BY last_indexed DESC');
+      >(
+        'SELECT url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix FROM documents ORDER BY last_indexed DESC'
+      );
 
       logger.debug(`[DocumentStore] Found ${rows.length} documents`);
 
@@ -919,6 +930,7 @@ export class DocumentStore implements StorageProvider {
         authDomain: row.auth_domain ?? undefined,
         tags: tagsMap.get(row.url) || [],
         version: row.version ?? undefined,
+        pathPrefix: row.path_prefix ?? undefined,
       }));
     }
     catch (error) {
@@ -1002,7 +1014,8 @@ export class DocumentStore implements StorageProvider {
         requires_auth: number | null;
         auth_domain: string | null;
         version: string | null;
-      }>('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain, version FROM documents WHERE url = ?', [url]);
+        path_prefix: string | null;
+      }>('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix FROM documents WHERE url = ?', [url]);
 
       if (!row) {
         logger.debug(`[DocumentStore] Document not found in SQLite: ${url}`);
@@ -1029,6 +1042,7 @@ export class DocumentStore implements StorageProvider {
         authDomain: row.auth_domain ?? undefined,
         tags,
         version: row.version ?? undefined,
+        pathPrefix: row.path_prefix ?? undefined,
       };
     }
     catch (error) {
@@ -1401,10 +1415,11 @@ export class DocumentStore implements StorageProvider {
         requires_auth: number | null;
         auth_domain: string | null;
         version: string | null;
+        path_prefix: string | null;
       }>
     >(
       `
-      SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version
+      SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version, d.path_prefix
       FROM documents d
       INNER JOIN collection_documents cd ON d.url = cd.url
       WHERE cd.collection_name = ?
@@ -1425,6 +1440,7 @@ export class DocumentStore implements StorageProvider {
       authDomain: doc.auth_domain ?? undefined,
       tags: tagsMap.get(doc.url) || [],
       version: doc.version ?? undefined,
+      pathPrefix: doc.path_prefix ?? undefined,
     }));
 
     logger.debug(`[DocumentStore] Collection "${normalizedName}" has ${documents.length} documents`);

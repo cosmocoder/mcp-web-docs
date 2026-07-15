@@ -919,7 +919,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
         }
       : undefined;
 
-    // Preserve existing tags and version during reindex
+    // Preserve existing crawl settings during reindex
     const existingTags = doc.tags;
     const existingVersion = doc.version;
 
@@ -944,7 +944,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       doc.title,
       true,
       controller.signal,
-      undefined,
+      doc.pathPrefix,
       authInfo,
       existingTags,
       existingVersion
@@ -1934,6 +1934,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           requiresAuth: authInfo?.requiresAuth,
           authDomain: authInfo?.authDomain,
           version,
+          pathPrefix,
         },
         chunks: chunks.map((chunk, i) => ({
           ...chunk,
@@ -2005,6 +2006,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
         requiresAuth?: boolean;
         authDomain?: string;
         version?: string;
+        pathPrefix?: string;
       };
       chunks: DocumentChunk[];
     },
