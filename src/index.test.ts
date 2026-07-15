@@ -1,5 +1,6 @@
 import { type Mock } from 'vitest';
 import { setImmediate as nextTurn } from 'node:timers/promises';
+import type { ProgressToken } from '@modelcontextprotocol/sdk/types.js';
 import { isValidPublicUrl } from './config.js';
 import {
   validateToolArgs,
@@ -16,7 +17,9 @@ import { generateDocId } from './util/docs.js';
 import { IndexingStatusTracker } from './indexing/status.js';
 import type { DocumentChunk, DocumentMetadata, SearchResult } from './types.js';
 
-type ToolHandler = (request: { params: { name: string; arguments?: Record<string, unknown> } }) => Promise<unknown>;
+type ToolHandler = (request: {
+  params: { name: string; arguments?: Record<string, unknown>; _meta?: { progressToken?: ProgressToken } };
+}) => Promise<unknown>;
 
 const {
   mockCrawlerAbort,
@@ -209,6 +212,38 @@ describe('WebDocsServer', () => {
       toolHandler = requestHandlers.at(-1)!;
     });
 
+    it.each([
+      { progressToken: 0, url: 'https://progress-zero.example.com' },
+      { progressToken: '', url: 'https://progress-empty.example.com' },
+    ])('forwards progress token $progressToken from request metadata', async ({ progressToken, url }) => {
+      const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
+
+      await toolHandler({
+        params: {
+          name: 'add_documentation',
+          arguments: { url },
+          _meta: { progressToken },
+        },
+      });
+
+      await vi.waitFor(() => expect(failIndexing).toHaveBeenCalled());
+      expect(mockNotification).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ progressToken }) }));
+    });
+
+    it('ignores progress metadata inside tool arguments', async () => {
+      const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
+
+      await toolHandler({
+        params: {
+          name: 'add_documentation',
+          arguments: { url: 'https://argument-metadata.example.com', _meta: { progressToken: 'argument-token' } },
+        },
+      });
+
+      await vi.waitFor(() => expect(failIndexing).toHaveBeenCalled());
+      expect(mockNotification).not.toHaveBeenCalled();
+    });
+
     it('does not start or notify a rejected operation before admitting its tokenless successor', async () => {
       const startIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'startIndexing');
       let successorCompletion!: Promise<void>;
@@ -224,7 +259,8 @@ describe('WebDocsServer', () => {
           toolHandler({
             params: {
               name: 'add_documentation',
-              arguments: { url: 'https://example.com', _meta: { progressToken: 'rejected-token' } },
+              arguments: { url: 'https://example.com' },
+              _meta: { progressToken: 'rejected-token' },
             },
           })
         ).rejects.toThrow('replacement cancellation timed out');
@@ -293,7 +329,8 @@ describe('WebDocsServer', () => {
         await toolHandler({
           params: {
             name: 'add_documentation',
-            arguments: { url: 'https://example.com', _meta: { progressToken: firstToken } },
+            arguments: { url: 'https://example.com' },
+            _meta: { progressToken: firstToken },
           },
         });
         await nextTurn();
@@ -302,7 +339,8 @@ describe('WebDocsServer', () => {
         const replacementResponse = toolHandler({
           params: {
             name: 'add_documentation',
-            arguments: secondToken ? { url: 'https://example.com', _meta: { progressToken: secondToken } } : { url: 'https://example.com' },
+            arguments: { url: 'https://example.com' },
+            ...(secondToken !== undefined && { _meta: { progressToken: secondToken } }),
           },
         });
         await nextTurn();
@@ -413,7 +451,8 @@ describe('WebDocsServer', () => {
         await toolHandler({
           params: {
             name: 'add_documentation',
-            arguments: { url: 'https://example.com', _meta: { progressToken: 'expired-session-token' } },
+            arguments: { url: 'https://example.com' },
+            _meta: { progressToken: 'expired-session-token' },
           },
         });
         await clearSessionStarted.promise;
