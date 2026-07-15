@@ -1,0 +1,1738 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { randomUUID } from 'node:crypto';
+import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type ProgressToken } from '@modelcontextprotocol/sdk/types.js';
+import { DocumentStore } from './storage/storage.js';
+import { FastEmbeddings } from './embeddings/fastembed.js';
+import { WebDocumentProcessor } from './processor/processor.js';
+import { IndexingStatusTracker } from './indexing/status.js';
+import { IndexingQueueManager } from './indexing/queue-manager.js';
+import { IndexingWorkflow } from './indexing/workflow.js';
+import { DocsConfig, loadConfig, isValidPublicUrl, normalizeUrl } from './config.js';
+import { AuthManager } from './crawler/auth.js';
+import { fetchFavicon } from './util/favicon.js';
+import { IndexingStatus } from './types.js';
+import { generateCrawlStorageId, generateDocId } from './util/docs.js';
+import { logger } from './util/logger.js';
+import { closeOutboundProxy } from './util/outbound-request.js';
+import {
+  validateToolArgs,
+  sanitizeErrorMessage,
+  detectPromptInjection,
+  wrapExternalContent,
+  addInjectionWarnings,
+  AddDocumentationArgsSchema,
+  AuthenticateArgsSchema,
+  ClearAuthArgsSchema,
+  SearchDocumentationArgsSchema,
+  ReindexDocumentationArgsSchema,
+  DeleteDocumentationArgsSchema,
+  SetTagsArgsSchema,
+  CreateCollectionArgsSchema,
+  DeleteCollectionArgsSchema,
+  UpdateCollectionArgsSchema,
+  GetCollectionArgsSchema,
+  AddToCollectionArgsSchema,
+  RemoveFromCollectionArgsSchema,
+  SearchCollectionArgsSchema,
+} from './util/security.js';
+
+export class WebDocsServer {
+  private server: McpServer;
+  private config!: DocsConfig;
+  private store!: DocumentStore;
+  private processor!: WebDocumentProcessor;
+  private statusTracker: IndexingStatusTracker;
+  private indexingQueue: IndexingQueueManager;
+  private authManager!: AuthManager;
+  private indexingWorkflow!: IndexingWorkflow;
+  private runPromise?: Promise<void>;
+  private closePromise?: Promise<void>;
+  private activeToolCalls = new Set<Promise<unknown>>();
+  /** Maps operation ID to progress token for MCP notifications */
+  private progressTokens: Map<string, { token: ProgressToken }> = new Map();
+  /** Tracks last notified progress to throttle notifications */
+  private lastNotifiedProgress: Map<string, number> = new Map();
+
+  constructor() {
+    // Initialize basic components that don't need async initialization
+    this.statusTracker = new IndexingStatusTracker();
+    this.indexingQueue = new IndexingQueueManager();
+
+    // Set up status change listener for MCP progress notifications
+    this.statusTracker.addStatusListener((status) => {
+      this.sendProgressNotification(status);
+    });
+
+    // Initialize MCP server
+    this.server = new McpServer(
+      {
+        name: 'mcp-web-docs',
+        version: '1.0.0',
+      },
+      {
+        capabilities: {
+          tools: {},
+        },
+      }
+    );
+
+    // Set up tool handlers
+    this.setupToolHandlers();
+
+    // Handle errors
+    this.server.server.onerror = (error: Error) => logger.error('[MCP Error]', error);
+  }
+
+  /**
+   * Send MCP progress notification to client.
+   * Only sends if the client provided a progressToken in the original request.
+   * Throttled to avoid flooding - sends on 5% increments or status changes.
+   */
+  private async sendProgressNotification(status: IndexingStatus): Promise<void> {
+    const registration = this.progressTokens.get(status.operationId);
+
+    // Only send if we have a progress token from the client
+    if (!registration) {
+      logger.debug(`[Progress] No token for ${status.operationId}, skipping notification`);
+      return;
+    }
+    const { token: progressToken } = registration;
+
+    const progressPercent = Math.round(status.progress * 100);
+    const lastProgress = this.lastNotifiedProgress.get(status.operationId) ?? -1;
+
+    // Only notify on significant progress (5% increments) or status changes
+    const isStatusChange = status.status === 'complete' || status.status === 'failed' || status.status === 'cancelled';
+    const isSignificantProgress = progressPercent - lastProgress >= 5;
+
+    if (!isStatusChange && !isSignificantProgress) {
+      return;
+    }
+
+    this.lastNotifiedProgress.set(status.operationId, progressPercent);
+
+    // Build human-readable message
+    let message = status.description;
+    if (status.pagesProcessed !== undefined && status.pagesFound !== undefined) {
+      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages)`;
+    }
+
+    try {
+      // Send MCP progress notification per spec:
+      // https://modelcontextprotocol.io/specification/2025-03-26/basic/utilities/progress
+      await this.server.server.notification({
+        method: 'notifications/progress',
+        params: {
+          progressToken,
+          progress: progressPercent,
+          total: 100,
+          message,
+        },
+      });
+
+      logger.info(`[Progress] Sent notification: ${progressPercent}% - ${message}`);
+    }
+    catch (error) {
+      logger.debug(`[Progress] Failed to send notification:`, error);
+    }
+
+    // Clean up tracking for completed operations
+    if (isStatusChange && this.progressTokens.get(status.operationId) === registration) {
+      this.lastNotifiedProgress.delete(status.operationId);
+      this.progressTokens.delete(status.operationId);
+    }
+  }
+
+  private async initialize() {
+    // Load configuration
+    this.config = await loadConfig();
+
+    // Initialize components that need config
+    const embeddings = new FastEmbeddings();
+    this.store = new DocumentStore(this.config.dbPath, this.config.vectorDbPath, embeddings, this.config.cacheSize);
+    this.processor = new WebDocumentProcessor(embeddings, this.config.maxChunkSize);
+
+    // Initialize auth manager for handling authenticated crawls
+    this.authManager = new AuthManager(this.config.dataDir);
+    await this.authManager.initialize();
+
+    const { DocsCrawler } = await import('./crawler/docs-crawler.js');
+    this.indexingWorkflow = new IndexingWorkflow({
+      store: this.store,
+      processor: this.processor,
+      statusTracker: this.statusTracker,
+      authManager: this.authManager,
+      createCrawler: () => new DocsCrawler(this.config.githubToken),
+      fetchFavicon,
+    });
+
+    // Initialize storage
+    await this.store.initialize();
+  }
+
+  private setupToolHandlers(): void {
+    // List available tools
+    this.server.server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: [
+        {
+          name: 'add_documentation',
+          description: `Add new documentation site for indexing. Supports authenticated sites via the auth options.
+
+IMPORTANT: Before calling this tool, ask the user if they want to restrict crawling to a specific path prefix. For example, if indexing https://docs.example.com/api/v2/overview, the user might want to restrict to '/api/v2' to avoid crawling unrelated sections of the site.
+
+VERSIONING: If the user is indexing documentation for a versioned software package/library (e.g., React, Vue, Python, a database, an SDK), ask what version they want to associate with this documentation. Many packages have multiple versions with different APIs.
+
+Do NOT ask about versioning for:
+- Internal company documentation (wikis, best practices, runbooks)
+- Single-version products or services
+- Documentation the user indicates should always reflect "latest"
+
+Examples where version matters: "React 18", "Python 3.11", "PostgreSQL 15", "Next.js 14"
+Examples where version doesn't matter: "Company engineering handbook", "AWS console docs", "Confluence spaces"`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the documentation site',
+              },
+              title: {
+                type: 'string',
+                description: 'Optional title for the documentation',
+              },
+              id: {
+                type: 'string',
+                description:
+                  'Optional document ID returned for display and compatibility. If not provided, an ID is auto-generated from the URL.',
+              },
+              pathPrefix: {
+                type: 'string',
+                description:
+                  "Optional path prefix to restrict crawling. Only pages whose URL path starts with this prefix will be indexed. Must start with '/'. Example: '/api/v2' would only crawl pages under that path.",
+              },
+              tags: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Optional tags to categorize the documentation (e.g., ["frontend", "mycompany"]). Tags help filter search results across multiple documentation sites.',
+              },
+              version: {
+                type: 'string',
+                description:
+                  'Optional version identifier for versioned package documentation (e.g., "18", "v6.4", "3.11", "latest"). Helps distinguish between multiple versions of the same package.',
+              },
+              auth: {
+                type: 'object',
+                description: 'Authentication options for protected documentation sites',
+                properties: {
+                  requiresAuth: {
+                    type: 'boolean',
+                    description: 'Set to true to open a browser for interactive login before crawling',
+                  },
+                  browser: {
+                    type: 'string',
+                    enum: ['chromium', 'chrome', 'firefox', 'webkit', 'edge'],
+                    description:
+                      "Optional. If omitted, the user's default browser is automatically detected from OS settings. Only specify to override.",
+                  },
+                  loginUrl: {
+                    type: 'string',
+                    description: 'Login page URL if different from main URL',
+                  },
+                  loginSuccessPattern: {
+                    type: 'string',
+                    description: 'URL regex pattern that indicates successful login',
+                  },
+                  loginSuccessSelector: {
+                    type: 'string',
+                    description: 'CSS selector that appears after successful login',
+                  },
+                  loginTimeoutSecs: {
+                    type: 'number',
+                    description: 'Timeout for login in seconds (default: 300)',
+                  },
+                },
+              },
+            },
+            required: ['url'],
+          },
+        },
+        {
+          name: 'authenticate',
+          description:
+            "Open a browser window for interactive login to a protected site. The session will be saved and reused for future crawls. Use this before add_documentation for sites that require login. The user's default browser is automatically detected from OS settings - do NOT specify a browser unless the user explicitly requests a specific one.",
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the site to authenticate to',
+              },
+              browser: {
+                type: 'string',
+                enum: ['chromium', 'chrome', 'firefox', 'webkit', 'edge'],
+                description:
+                  "Optional. If omitted, the user's default browser is automatically detected from OS settings. Only specify this to override auto-detection with a specific browser.",
+              },
+              loginUrl: {
+                type: 'string',
+                description: 'Login page URL if different from main URL',
+              },
+              loginTimeoutSecs: {
+                type: 'number',
+                description: 'Timeout for login in seconds (default: 300 = 5 minutes)',
+              },
+            },
+            required: ['url'],
+          },
+        },
+        {
+          name: 'clear_auth',
+          description: 'Clear saved authentication session for a domain',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the site to clear authentication for',
+              },
+            },
+            required: ['url'],
+          },
+        },
+        {
+          name: 'list_documentation',
+          description:
+            'List all indexed documentation sites with their metadata including tags. Use this to see what documentation is available and what tags are assigned to each site. Each doc shows: url, title, tags[], lastIndexed, requiresAuth.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+        },
+        {
+          name: 'search_documentation',
+          description: `Search through indexed documentation using hybrid search (full-text + semantic).
+
+## Query Tips for Best Results
+
+1. **Be specific** - Include unique terms from what you're looking for
+   - Instead of: "Button props"
+   - Try: "Button props onClick disabled loading"
+
+2. **Use exact phrases** - Wrap in quotes for exact matching
+   - "authentication middleware" finds that exact phrase
+   - authentication middleware finds pages with either word
+
+3. **Include context** - Add related terms to narrow results
+   - API docs: "GET /users endpoint authentication headers"
+   - Config: "webpack config entry output plugins"
+   - Functions: "parseJSON function parameters return type"
+
+4. **Combine concepts** - More terms = more precise results
+   - "Card component status primary negative props table"
+   - "database connection pool maxConnections timeout"
+
+## Filtering Options
+
+- **url**: Filter to a specific documentation site by URL
+- **tags**: Filter to docs with specific tags. Use when user mentions a category, project, or team name (e.g., tags: ["frontend", "jimdo"] to search only frontend Jimdo docs)
+
+## How Search Works
+- Full-text search with stemming (run → runs, running)
+- Fuzzy matching for typos (authetication → authentication)
+- Semantic similarity for conceptual matches
+- Results ranked by relevance combining all signals`,
+          inputSchema: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description:
+                  'Search query - be specific and include unique terms. Use quotes for exact phrases. Example: "Card component props headline status" or "REST API authentication Bearer token"',
+              },
+              url: {
+                type: 'string',
+                description:
+                  'Optional: Filter results to a specific documentation site by its URL. If not provided, searches all indexed docs.',
+              },
+              limit: {
+                type: 'number',
+                description: 'Maximum number of results (default: 10)',
+              },
+              tags: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Optional: Filter to docs with ALL specified tags. Use when user mentions a category, project, or team (e.g., ["frontend", "mycompany"]). See list_tags for available tags.',
+              },
+            },
+            required: ['query'],
+          },
+        },
+        {
+          name: 'reindex_documentation',
+          description: 'Re-index a specific documentation site',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the documentation to re-index',
+              },
+            },
+            required: ['url'],
+          },
+        },
+        {
+          name: 'get_indexing_status',
+          description: 'Get current indexing status',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+        },
+        {
+          name: 'delete_documentation',
+          description:
+            'Delete an indexed documentation site and all its data (vectors, metadata, cached crawl data, and optionally auth session)',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the documentation site to delete',
+              },
+              clearAuth: {
+                type: 'boolean',
+                description: 'Also clear saved authentication session for this domain (default: false)',
+              },
+            },
+            required: ['url'],
+          },
+        },
+        {
+          name: 'set_tags',
+          description:
+            'Set tags for a documentation site to enable tag-based filtering in searches. Tags categorize docs by project, team, or type (e.g., "frontend", "backend", "mycompany", "jimdo"). Replaces any existing tags. Use an empty array to remove all tags.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              url: {
+                type: 'string',
+                description: 'URL of the documentation site',
+              },
+              tags: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'Array of tags to assign. Tags are case-insensitive and must contain only alphanumeric characters, hyphens, or underscores. Example: ["frontend", "mycompany", "react"]',
+              },
+            },
+            required: ['url', 'tags'],
+          },
+        },
+        {
+          name: 'list_tags',
+          description:
+            'List all available tags with usage counts. Use this to discover what tags exist when you need to filter searches but are unsure of the exact tag names. Returns tags sorted by usage count.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+        },
+        // ============ Collection Tools ============
+        {
+          name: 'create_collection',
+          description:
+            'Create a new collection to group related documentation sites. Collections help organize docs by project or context (e.g., "My React Project" with React + Next.js + TypeScript docs).',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Unique name for the collection (e.g., "My React Project", "Backend APIs")',
+              },
+              description: {
+                type: 'string',
+                description: 'Optional description of what this collection contains',
+              },
+            },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'delete_collection',
+          description: 'Delete a collection. The documentation sites in the collection are NOT deleted, only the collection grouping.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection to delete',
+              },
+            },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'update_collection',
+          description: "Update a collection's name or description.",
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Current name of the collection',
+              },
+              newName: {
+                type: 'string',
+                description: 'Optional new name for the collection',
+              },
+              description: {
+                type: 'string',
+                description: 'Optional new description for the collection',
+              },
+            },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'list_collections',
+          description: 'List all collections with their document counts. Use this to see available collections for context switching.',
+          inputSchema: {
+            type: 'object',
+            properties: {},
+          },
+        },
+        {
+          name: 'get_collection',
+          description: 'Get details of a specific collection including all its documentation sites.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection',
+              },
+            },
+            required: ['name'],
+          },
+        },
+        {
+          name: 'add_to_collection',
+          description: 'Add one or more documentation sites to a collection. Sites must already be indexed.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection',
+              },
+              urls: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'URLs of indexed documentation sites to add (max 50)',
+              },
+            },
+            required: ['name', 'urls'],
+          },
+        },
+        {
+          name: 'remove_from_collection',
+          description:
+            'Remove one or more documentation sites from a collection. The sites remain indexed, just removed from the collection.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection',
+              },
+              urls: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'URLs of documentation sites to remove from the collection',
+              },
+            },
+            required: ['name', 'urls'],
+          },
+        },
+        {
+          name: 'search_collection',
+          description:
+            'Search for documentation within a specific collection. This is useful for focused searches within a project context. Uses the same hybrid search (full-text + semantic) as search_documentation.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              name: {
+                type: 'string',
+                description: 'Name of the collection to search in',
+              },
+              query: {
+                type: 'string',
+                description: 'Search query - be specific and include unique terms',
+              },
+              limit: {
+                type: 'number',
+                description: 'Maximum number of results (default: 10)',
+              },
+            },
+            required: ['name', 'query'],
+          },
+        },
+      ],
+    }));
+
+    // Handle tool calls
+    this.server.server.setRequestHandler(CallToolRequestSchema, (request) => {
+      const call = (async () => {
+        const progressToken = request.params._meta?.progressToken;
+
+        switch (request.params.name) {
+          case 'add_documentation':
+            return this.handleAddDocumentation(request.params.arguments, progressToken);
+          case 'list_documentation':
+            return this.handleListDocumentation();
+          case 'search_documentation':
+            return this.handleSearchDocumentation(request.params.arguments);
+          case 'reindex_documentation':
+            return this.handleReindexDocumentation(request.params.arguments, progressToken);
+          case 'get_indexing_status':
+            return this.handleGetIndexingStatus();
+          case 'authenticate':
+            return this.handleAuthenticate(request.params.arguments);
+          case 'clear_auth':
+            return this.handleClearAuth(request.params.arguments);
+          case 'delete_documentation':
+            return this.handleDeleteDocumentation(request.params.arguments);
+          case 'set_tags':
+            return this.handleSetTags(request.params.arguments);
+          case 'list_tags':
+            return this.handleListTags();
+          case 'create_collection':
+            return this.handleCreateCollection(request.params.arguments);
+          case 'delete_collection':
+            return this.handleDeleteCollection(request.params.arguments);
+          case 'update_collection':
+            return this.handleUpdateCollection(request.params.arguments);
+          case 'list_collections':
+            return this.handleListCollections();
+          case 'get_collection':
+            return this.handleGetCollection(request.params.arguments);
+          case 'add_to_collection':
+            return this.handleAddToCollection(request.params.arguments);
+          case 'remove_from_collection':
+            return this.handleRemoveFromCollection(request.params.arguments);
+          case 'search_collection':
+            return this.handleSearchCollection(request.params.arguments);
+          default:
+            throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
+        }
+      })();
+
+      this.activeToolCalls.add(call);
+      return call.finally(() => this.activeToolCalls.delete(call));
+    });
+  }
+
+  private async handleAddDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, AddDocumentationArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { url, title, id, pathPrefix, tags, version, auth: authOptions } = validatedArgs;
+
+    // Additional SSRF protection check
+    if (!isValidPublicUrl(url)) {
+      throw new McpError(ErrorCode.InvalidParams, 'Access to private networks is blocked');
+    }
+
+    const normalizedUrl = normalizeUrl(url);
+    const docTitle = title || new URL(normalizedUrl).hostname;
+    // Use custom ID if provided, otherwise auto-generate
+    const docId = id || generateDocId(normalizedUrl, docTitle);
+
+    // Log path prefix if provided
+    if (pathPrefix) {
+      logger.info(`[WebDocsServer] Path prefix restriction: ${pathPrefix}`);
+    }
+    if (authOptions?.requiresAuth) {
+      const hasExistingSession = await this.authManager.hasSession(normalizedUrl);
+      if (!hasExistingSession) {
+        logger.info(`[WebDocsServer] auth.requiresAuth=true, starting interactive login for ${normalizedUrl}`);
+        try {
+          await this.authManager.performInteractiveLogin(normalizedUrl, {
+            browser: authOptions.browser,
+            loginUrl: authOptions.loginUrl,
+            loginSuccessPattern: authOptions.loginSuccessPattern,
+            loginSuccessSelector: authOptions.loginSuccessSelector,
+            loginTimeoutSecs: authOptions.loginTimeoutSecs,
+          });
+          logger.info(`[WebDocsServer] Authentication successful for ${normalizedUrl}`);
+        }
+        catch (error) {
+          throw new McpError(
+            ErrorCode.InternalError,
+            `Authentication failed: ${sanitizeErrorMessage(error)}. Please try using the 'authenticate' tool separately.`
+          );
+        }
+      }
+      else {
+        // Validate that the existing session is still valid before crawling
+        logger.info(`[WebDocsServer] Validating existing session for ${normalizedUrl}...`);
+        const validation = await this.authManager.validateSession(normalizedUrl);
+        if (!validation.isValid) {
+          logger.warn(`[WebDocsServer] Session expired for ${normalizedUrl}: ${validation.reason}`);
+          // Clear the expired session
+          await this.authManager.clearSession(normalizedUrl);
+          throw new McpError(
+            ErrorCode.InvalidParams,
+            `Authentication session has expired (${validation.reason}). Please use the 'authenticate' tool to log in again.`
+          );
+        }
+        logger.info(`[WebDocsServer] ✓ Session validated for ${normalizedUrl}`);
+      }
+    }
+
+    // Prepare auth info to store with the document
+    // If auth was explicitly requested OR if there's an existing session for this URL,
+    // mark the document as requiring auth (handles case where user called authenticate separately)
+    const hasExistingSession = await this.authManager.hasSession(normalizedUrl);
+    const requiresAuth = authOptions?.requiresAuth || hasExistingSession;
+
+    const authInfo = requiresAuth
+      ? {
+          requiresAuth: true,
+          authDomain: new URL(normalizedUrl).hostname, // Session is stored under target URL's domain
+        }
+      : undefined;
+
+    if (hasExistingSession && !authOptions?.requiresAuth) {
+      logger.info(`[WebDocsServer] Found existing auth session for ${normalizedUrl}, marking document as requiring auth`);
+    }
+
+    const operationId = randomUUID();
+    const operation = await this.indexingQueue.runLatest(normalizedUrl, async (signal) => {
+      if (progressToken !== undefined) {
+        this.progressTokens.set(operationId, { token: progressToken });
+        logger.info(`[Progress] Registered token for ${operationId}: ${progressToken}`);
+      }
+      this.statusTracker.startIndexing(operationId, docId, normalizedUrl, docTitle);
+      await this.indexingWorkflow.run({ operationId, url: normalizedUrl, title: docTitle, pathPrefix, authInfo, tags, version }, signal);
+    });
+    void operation.completion.catch((error) => {
+      const err = error as Error;
+      if (err?.name !== 'AbortError') {
+        logger.error('[WebDocsServer] Background indexing failed:', error);
+      }
+    });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              status: 'started',
+              message: `Started indexing ${normalizedUrl}`,
+              docId,
+              operationId,
+              instruction:
+                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.',
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+
+  private async handleListDocumentation() {
+    const docs = await this.store.listDocuments();
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(docs, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleSearchDocumentation(args: Record<string, unknown> | undefined) {
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, SearchDocumentationArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { query, url, limit = 10, tags } = validatedArgs;
+
+    // Normalize URL if provided for filtering
+    const filterUrl = url ? normalizeUrl(url) : undefined;
+
+    const results = await this.store.searchByText(query, { limit, filterUrl, filterByTags: tags });
+
+    // Apply prompt injection detection and filter/process results
+    let blockedCount = 0;
+    const safeResults = results
+      .map((result) => {
+        // Detect prompt injection patterns in the content
+        // Note: detectPromptInjection strips code blocks before scanning,
+        // so legitimate code examples won't trigger false positives
+        const injectionResult = detectPromptInjection(result.content);
+
+        // SECURITY: Block results with high-severity injection patterns
+        // These could manipulate the LLM if returned
+        if (injectionResult.maxSeverity === 'high') {
+          blockedCount++;
+          logger.debug(
+            `[Security] Blocked search result from ${result.url} due to high-severity injection pattern: ${injectionResult.detections[0]?.description}`
+          );
+          return null; // Will be filtered out
+        }
+
+        // For medium/low severity, add warnings but still return
+        let safeContent = addInjectionWarnings(result.content, injectionResult);
+
+        // Wrap with external content markers
+        safeContent = wrapExternalContent(safeContent, result.url);
+
+        return {
+          ...result,
+          content: safeContent,
+          // Include security metadata
+          security: {
+            isExternalContent: true,
+            injectionDetected: injectionResult.hasInjection,
+            injectionSeverity: injectionResult.maxSeverity,
+            detectionCount: injectionResult.detections.length,
+          },
+        };
+      })
+      .filter((result): result is NonNullable<typeof result> => result !== null);
+
+    // Build response with security notice if content was blocked
+    const response: { results: typeof safeResults; securityNotice?: string } = {
+      results: safeResults,
+    };
+
+    if (blockedCount > 0) {
+      response.securityNotice = `${blockedCount} result(s) were blocked due to high-severity prompt injection patterns detected in the content. This protects against potentially malicious content that could manipulate AI behavior.`;
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(response, null, 2),
+        },
+      ],
+    };
+  }
+
+  private async handleReindexDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, ReindexDocumentationArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { url } = validatedArgs;
+
+    // Additional SSRF protection check
+    if (!isValidPublicUrl(url)) {
+      throw new McpError(ErrorCode.InvalidParams, 'Access to private networks is blocked');
+    }
+
+    const normalizedUrl = normalizeUrl(url as string);
+    const doc = await this.store.getDocument(normalizedUrl);
+    if (!doc) {
+      throw new McpError(ErrorCode.InvalidParams, 'Documentation not found');
+    }
+
+    // Check if this site was originally indexed with authentication
+    // If so, we MUST have a valid session to reindex
+    if (doc.requiresAuth) {
+      const authDomain = doc.authDomain || new URL(normalizedUrl).hostname;
+      logger.info(`[WebDocsServer] Site requires auth (authDomain: ${authDomain}). Validating session...`);
+
+      // Check if we have a session for this auth domain
+      const hasSession = await this.authManager.hasSession(normalizedUrl);
+      if (!hasSession) {
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `This documentation site requires authentication but no session was found. Please use the 'authenticate' tool to log in before re-indexing.`
+        );
+      }
+
+      // Validate the session is still valid
+      const validation = await this.authManager.validateSession(normalizedUrl);
+      if (!validation.isValid) {
+        logger.warn(`[WebDocsServer] Session expired for ${normalizedUrl}: ${validation.reason}`);
+        // Clear the expired session
+        await this.authManager.clearSession(normalizedUrl);
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Authentication session has expired (${validation.reason}). Please use the 'authenticate' tool to log in again before re-indexing.`
+        );
+      }
+      logger.info(`[WebDocsServer] ✓ Session validated for ${normalizedUrl}`);
+    }
+
+    // Prepare auth info to preserve with reindexed document
+    const authInfo = doc.requiresAuth
+      ? {
+          requiresAuth: true,
+          authDomain: doc.authDomain || new URL(normalizedUrl).hostname,
+        }
+      : undefined;
+
+    // Preserve existing crawl settings during reindex
+    const existingTags = doc.tags;
+    const existingVersion = doc.version;
+
+    const docId = generateDocId(normalizedUrl, doc.title);
+
+    const operationId = randomUUID();
+    const operation = await this.indexingQueue.runLatest(normalizedUrl, async (signal) => {
+      if (progressToken !== undefined) {
+        this.progressTokens.set(operationId, { token: progressToken });
+        logger.info(`[Progress] Registered token for ${operationId}: ${progressToken}`);
+      }
+      this.statusTracker.startIndexing(operationId, docId, normalizedUrl, doc.title);
+      await this.indexingWorkflow.run(
+        {
+          operationId,
+          url: normalizedUrl,
+          title: doc.title,
+          reIndex: true,
+          pathPrefix: doc.pathPrefix,
+          authInfo,
+          tags: existingTags,
+          version: existingVersion,
+        },
+        signal
+      );
+    });
+    void operation.completion.catch((error) => {
+      const err = error as Error;
+      if (err?.name !== 'AbortError') {
+        logger.error('[WebDocsServer] Background reindexing failed:', error);
+      }
+    });
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              status: 'started',
+              message: operation.replacedExisting
+                ? `Started re-indexing ${normalizedUrl}. Previous operation was cancelled.`
+                : `Started re-indexing ${normalizedUrl}`,
+              docId,
+              operationId,
+              instruction:
+                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.',
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+
+  private handleGetIndexingStatus() {
+    // Get only active operations and recently completed ones (auto-cleans old statuses)
+    const statuses = this.statusTracker.getActiveStatuses();
+
+    // Check if any operations are still in progress
+    const hasActiveOperations = statuses.some((s) => s.status === 'indexing');
+
+    // Add instruction for agent
+    const response = {
+      statuses,
+      instruction: hasActiveOperations
+        ? 'Operations still in progress. Call get_indexing_status again in a few seconds to check progress.'
+        : 'All operations complete. No need to poll again.',
+    };
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(response, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Handle interactive authentication request.
+   * Opens a visible browser for the user to login manually.
+   */
+  private async handleAuthenticate(args: Record<string, unknown> | undefined) {
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, AuthenticateArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { url, browser, loginUrl, loginTimeoutSecs = 300 } = validatedArgs;
+
+    // Additional SSRF protection check
+    if (!isValidPublicUrl(url)) {
+      throw new McpError(ErrorCode.InvalidParams, 'Access to private networks is blocked');
+    }
+
+    const normalizedUrl = normalizeUrl(url);
+    const domain = new URL(normalizedUrl).hostname;
+
+    // Check if we already have a session and validate it
+    const hasSession = await this.authManager.hasSession(normalizedUrl);
+    if (hasSession) {
+      // Validate that the existing session is still valid
+      logger.info(`[Auth] Validating existing session for ${domain}...`);
+      const validation = await this.authManager.validateSession(normalizedUrl);
+
+      if (validation.isValid) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                {
+                  status: 'existing_session',
+                  message: `Already have a valid saved session for ${domain}. Use clear_auth first if you need to re-authenticate.`,
+                  domain,
+                  sessionValid: true,
+                },
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+
+      // Session is expired - clear it and proceed with new login
+      logger.info(`[Auth] Existing session for ${domain} has expired (${validation.reason}). Proceeding with new login.`);
+      await this.authManager.clearSession(normalizedUrl);
+    }
+
+    try {
+      logger.info(`[Auth] Opening ${browser || 'auto-detected'} browser for authentication to ${domain}`);
+
+      // Perform interactive login
+      await this.authManager.performInteractiveLogin(normalizedUrl, {
+        browser,
+        loginUrl,
+        loginTimeoutSecs,
+      });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Successfully authenticated to ${domain}. Session saved for future crawls.`,
+                domain,
+                instruction: 'You can now use add_documentation to crawl this site. The saved session will be used automatically.',
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+    catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error);
+      logger.error(`[Auth] Authentication failed:`, safeErrorMessage);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'failed',
+                message: `Authentication failed: ${safeErrorMessage}`,
+                domain,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  }
+
+  /**
+   * Handle clearing saved authentication for a domain
+   */
+  private async handleClearAuth(args: Record<string, unknown> | undefined) {
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, ClearAuthArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { url } = validatedArgs;
+    const normalizedUrl = normalizeUrl(url);
+    const domain = new URL(normalizedUrl).hostname;
+
+    await this.authManager.clearSession(normalizedUrl);
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              status: 'success',
+              message: `Cleared saved authentication for ${domain}`,
+              domain,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Handle deleting an indexed documentation site and all its data
+   */
+  private async handleDeleteDocumentation(args: Record<string, unknown> | undefined) {
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, DeleteDocumentationArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { url, clearAuth = false } = validatedArgs;
+    const normalizedUrl = normalizeUrl(url);
+    const domain = new URL(normalizedUrl).hostname;
+
+    // Check if document exists
+    const doc = await this.store.getDocument(normalizedUrl);
+    if (!doc) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'not_found',
+                message: `No indexed documentation found for ${normalizedUrl}`,
+                url: normalizedUrl,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    const deletedItems: string[] = [];
+
+    try {
+      // 1. Delete from SQLite and LanceDB (via store)
+      await this.store.deleteDocument(normalizedUrl);
+      deletedItems.push('document metadata (SQLite)', 'vector chunks (LanceDB)');
+      logger.info(`[WebDocsServer] Deleted document from store: ${normalizedUrl}`);
+
+      // 2. Delete both current and historical Crawlee datasets
+      const datasetIds = [generateCrawlStorageId(normalizedUrl), generateDocId(normalizedUrl, domain)];
+      const { Dataset } = await import('crawlee');
+      const cleanupResults = await Promise.allSettled(
+        datasetIds.map(async (datasetId) => {
+          const dataset = await Dataset.open(datasetId);
+          await dataset.drop();
+          logger.info(`[WebDocsServer] Deleted Crawlee dataset: ${datasetId}`);
+        })
+      );
+      if (cleanupResults.some((result) => result.status === 'fulfilled')) {
+        deletedItems.push('crawl cache (Crawlee dataset)');
+      }
+      if (cleanupResults.some((result) => result.status === 'rejected')) {
+        logger.debug(`[WebDocsServer] Some Crawlee datasets could not be deleted`);
+      }
+
+      // 3. Optionally clear auth session
+      if (clearAuth as boolean) {
+        await this.authManager.clearSession(normalizedUrl);
+        deletedItems.push('authentication session');
+        logger.info(`[WebDocsServer] Cleared auth session for ${domain}`);
+      }
+
+      // Optimize storage after deletion to reclaim space
+      // This runs in the background and doesn't block the response
+      this.store.optimize().catch((err) => {
+        logger.warn('[WebDocsServer] Background optimization after delete failed:', err);
+      });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Successfully deleted documentation for ${normalizedUrl}`,
+                url: normalizedUrl,
+                title: doc.title,
+                deletedItems,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+    catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error);
+      logger.error(`[WebDocsServer] Error deleting documentation:`, safeErrorMessage);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'error',
+                message: `Failed to delete documentation: ${safeErrorMessage}`,
+                url: normalizedUrl,
+                deletedItems,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+  }
+
+  /**
+   * Handle setting tags for a documentation site
+   */
+  private async handleSetTags(args: Record<string, unknown> | undefined) {
+    // Validate arguments with schema
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, SetTagsArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { url, tags } = validatedArgs;
+    const normalizedUrl = normalizeUrl(url);
+
+    try {
+      await this.store.setTags(normalizedUrl, tags);
+
+      // Get the updated document to return current state
+      const doc = await this.store.getDocument(normalizedUrl);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Successfully updated tags for ${normalizedUrl}`,
+                url: normalizedUrl,
+                title: doc?.title,
+                tags: doc?.tags || [],
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+    catch (error) {
+      const safeErrorMessage = sanitizeErrorMessage(error);
+
+      // Check for "Documentation not found" error
+      if (safeErrorMessage.includes('Documentation not found')) {
+        throw new McpError(ErrorCode.InvalidParams, `Documentation not found for URL: ${normalizedUrl}`);
+      }
+
+      throw new McpError(ErrorCode.InternalError, `Failed to set tags: ${safeErrorMessage}`);
+    }
+  }
+
+  /**
+   * Handle listing all tags with usage counts
+   */
+  private async handleListTags() {
+    const tags = await this.store.listAllTags();
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              tags,
+              total: tags.length,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+
+  // ============ Collection Handlers ============
+
+  /**
+   * Handle creating a new collection
+   */
+  private async handleCreateCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, CreateCollectionArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, description } = validatedArgs;
+
+    try {
+      await this.store.createCollection(name, description);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Collection "${name}" created successfully`,
+                collection: {
+                  name,
+                  description,
+                },
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+    catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('already exists')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to create collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle deleting a collection
+   */
+  private async handleDeleteCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, DeleteCollectionArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name } = validatedArgs;
+
+    try {
+      await this.store.deleteCollection(name);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Collection "${name}" deleted. Documentation sites remain indexed.`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+    catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('not found')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to delete collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle updating a collection's metadata
+   */
+  private async handleUpdateCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, UpdateCollectionArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, newName, description } = validatedArgs;
+
+    // Must provide at least one field to update
+    if (newName === undefined && description === undefined) {
+      throw new McpError(ErrorCode.InvalidParams, 'Must provide newName or description to update');
+    }
+
+    try {
+      await this.store.updateCollection(name, { newName, description });
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Collection updated successfully`,
+                collection: {
+                  name: newName ?? name,
+                  description,
+                },
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+    catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('not found') || safeMessage.includes('already exists')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to update collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle listing all collections
+   */
+  private async handleListCollections() {
+    const collections = await this.store.listCollections();
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(
+            {
+              collections,
+              total: collections.length,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Handle getting a specific collection with its documents
+   */
+  private async handleGetCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, GetCollectionArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name } = validatedArgs;
+
+    const collection = await this.store.getCollection(name);
+    if (!collection) {
+      throw new McpError(ErrorCode.InvalidParams, `Collection "${name}" not found`);
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(collection, null, 2),
+        },
+      ],
+    };
+  }
+
+  /**
+   * Handle adding documents to a collection
+   */
+  private async handleAddToCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, AddToCollectionArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, urls } = validatedArgs;
+
+    // Normalize URLs
+    const normalizedUrls = urls.map((url) => normalizeUrl(url));
+
+    try {
+      const result = await this.store.addToCollection(name, normalizedUrls);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Added ${result.added.length} document(s) to collection "${name}"`,
+                ...result,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+    catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('not found')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to add to collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle removing documents from a collection
+   */
+  private async handleRemoveFromCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, RemoveFromCollectionArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, urls } = validatedArgs;
+
+    // Normalize URLs
+    const normalizedUrls = urls.map((url) => normalizeUrl(url));
+
+    try {
+      const result = await this.store.removeFromCollection(name, normalizedUrls);
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                status: 'success',
+                message: `Removed ${result.removed.length} document(s) from collection "${name}"`,
+                ...result,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+    catch (error) {
+      const safeMessage = sanitizeErrorMessage(error);
+      if (safeMessage.includes('not found')) {
+        throw new McpError(ErrorCode.InvalidParams, safeMessage);
+      }
+      throw new McpError(ErrorCode.InternalError, `Failed to remove from collection: ${safeMessage}`);
+    }
+  }
+
+  /**
+   * Handle searching within a collection
+   */
+  private async handleSearchCollection(args: Record<string, unknown> | undefined) {
+    let validatedArgs;
+    try {
+      validatedArgs = validateToolArgs(args, SearchCollectionArgsSchema);
+    }
+    catch (error) {
+      throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
+    }
+
+    const { name, query, limit = 10 } = validatedArgs;
+
+    // Get URLs in the collection
+    const collectionUrls = await this.store.getCollectionUrls(name);
+
+    if (collectionUrls.length === 0) {
+      // Check if collection exists but is empty
+      const collection = await this.store.getCollection(name);
+      if (!collection) {
+        throw new McpError(ErrorCode.InvalidParams, `Collection "${name}" not found`);
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(
+              {
+                results: [],
+                message: `Collection "${name}" is empty. Add documentation sites to search.`,
+              },
+              null,
+              2
+            ),
+          },
+        ],
+      };
+    }
+
+    const collectionResults = await this.store.searchByText(query, { limit, filterUrls: collectionUrls });
+
+    // Apply prompt injection detection and filter/process results (same as handleSearchDocumentation)
+    let blockedCount = 0;
+    const safeResults = collectionResults
+      .map((result) => {
+        const injectionResult = detectPromptInjection(result.content);
+
+        if (injectionResult.maxSeverity === 'high') {
+          blockedCount++;
+          logger.debug(
+            `[Security] Blocked search result from ${result.url} due to high-severity injection pattern: ${injectionResult.detections[0]?.description}`
+          );
+          return null;
+        }
+
+        let safeContent = addInjectionWarnings(result.content, injectionResult);
+        safeContent = wrapExternalContent(safeContent, result.url);
+
+        return {
+          ...result,
+          content: safeContent,
+          security: {
+            isExternalContent: true,
+            injectionDetected: injectionResult.hasInjection,
+            injectionSeverity: injectionResult.maxSeverity,
+            detectionCount: injectionResult.detections.length,
+          },
+        };
+      })
+      .filter((result): result is NonNullable<typeof result> => result !== null);
+
+    const response: { results: typeof safeResults; collection: string; securityNotice?: string } = {
+      results: safeResults,
+      collection: name,
+    };
+
+    if (blockedCount > 0) {
+      response.securityNotice = `${blockedCount} result(s) were blocked due to high-severity prompt injection patterns.`;
+    }
+
+    return {
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify(response, null, 2),
+        },
+      ],
+    };
+  }
+
+  run(): Promise<void> {
+    return (this.runPromise ??= this.start());
+  }
+
+  private async start(): Promise<void> {
+    await this.initialize();
+    if (this.closePromise) {
+      return;
+    }
+
+    await this.server.connect(new StdioServerTransport());
+    logger.info('Web Docs MCP server running on stdio');
+  }
+
+  close(): Promise<void> {
+    return (this.closePromise ??= this.closeResources());
+  }
+
+  private async closeResources(): Promise<void> {
+    await this.runPromise?.catch(() => undefined);
+    const serverClose = Promise.resolve().then(() => this.server.close());
+
+    const results = await Promise.allSettled([
+      serverClose,
+      serverClose.catch(() => undefined).then(() => Promise.allSettled([...this.activeToolCalls])),
+      Promise.resolve().then(() => this.indexingQueue.cancelAll()),
+      Promise.resolve().then(() => this.statusTracker.stop()),
+      Promise.resolve().then(() => this.authManager?.cleanup()),
+      Promise.resolve().then(() => closeOutboundProxy()),
+    ]);
+    const errors = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Failed to shut down cleanly');
+    }
+  }
+}
