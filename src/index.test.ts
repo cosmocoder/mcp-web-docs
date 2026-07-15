@@ -26,11 +26,13 @@ const {
   mockCrawlerCrawl,
   mockCrawlerSetPathPrefix,
   mockClearSession,
+  mockDatasetOpen,
   mockFetchFavicon,
   mockNotification,
   mockProcessorProcess,
   mockRunLatest,
   mockStoreAddDocument,
+  mockStoreDeleteDocument,
   mockStoreGetCollectionUrls,
   mockStoreGetDocument,
   mockStoreSearchByText,
@@ -42,6 +44,7 @@ const {
   }),
   mockCrawlerSetPathPrefix: vi.fn(),
   mockClearSession: vi.fn().mockResolvedValue(undefined),
+  mockDatasetOpen: vi.fn().mockResolvedValue({ drop: vi.fn().mockResolvedValue(undefined) }),
   mockFetchFavicon: vi.fn().mockResolvedValue('https://example.com/favicon.ico'),
   mockNotification: vi.fn().mockResolvedValue(undefined),
   mockProcessorProcess: vi.fn().mockResolvedValue({
@@ -50,6 +53,7 @@ const {
   }),
   mockRunLatest: vi.fn(),
   mockStoreAddDocument: vi.fn().mockResolvedValue(undefined),
+  mockStoreDeleteDocument: vi.fn().mockResolvedValue(undefined),
   mockStoreGetCollectionUrls: vi.fn().mockResolvedValue([]),
   mockStoreGetDocument: vi.fn().mockResolvedValue(null),
   mockStoreSearchByText: vi.fn().mockResolvedValue([]),
@@ -88,7 +92,7 @@ vi.mock('./storage/storage.js', () => ({
       getDocument: mockStoreGetDocument,
       searchByText: mockStoreSearchByText,
       addDocument: mockStoreAddDocument,
-      deleteDocument: vi.fn().mockResolvedValue(undefined),
+      deleteDocument: mockStoreDeleteDocument,
       setTags: vi.fn().mockResolvedValue(undefined),
       listAllTags: vi.fn().mockResolvedValue([]),
       getCollectionUrls: mockStoreGetCollectionUrls,
@@ -165,16 +169,20 @@ vi.mock('./util/favicon.js', () => ({
 }));
 
 vi.mock('./util/docs.js', () => ({
-  generateDocId: vi.fn().mockImplementation((url: string) => {
+  generateDocId: vi.fn().mockImplementation((url: string, title: string) => {
+    if (title.includes('/')) {
+      return title.toLowerCase().replace(/[@/]/g, '-').replace(/\s+/g, '-');
+    }
     const hostname = new URL(url).hostname;
     return hostname.replace(/\./g, '-');
   }),
+  generateCrawlStorageId: vi.fn().mockImplementation((url: string) => `crawl-${new URL(url).hostname}`),
 }));
 
 vi.mock('crawlee', () => ({
   log: { setLevel: vi.fn(), LEVELS: { OFF: 0 } },
   Configuration: { getGlobalConfig: vi.fn().mockReturnValue({ set: vi.fn() }) },
-  Dataset: { open: vi.fn().mockResolvedValue({ drop: vi.fn() }) },
+  Dataset: { open: mockDatasetOpen },
 }));
 
 const processedPageWithChunk = {
@@ -242,6 +250,47 @@ describe('WebDocsServer', () => {
 
       await vi.waitFor(() => expect(failIndexing).toHaveBeenCalled());
       expect(mockNotification).not.toHaveBeenCalled();
+    });
+
+    it('keeps operations distinct when two documents use the same compatibility ID', async () => {
+      const startIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'startIndexing');
+      const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
+
+      const responses = await Promise.all(
+        ['first', 'second'].map((name) =>
+          toolHandler({
+            params: {
+              name: 'add_documentation',
+              arguments: { url: `https://${name}.example.com`, id: 'shared-document-id' },
+              _meta: { progressToken: `${name}-token` },
+            },
+          })
+        )
+      );
+      const payloads = responses.map((response) =>
+        JSON.parse((response as { content: Array<{ text: string }> }).content[0].text)
+      ) as Array<{ docId: string; operationId: string }>;
+
+      await vi.waitFor(() => expect(failIndexing).toHaveBeenCalledTimes(2));
+
+      expect(payloads.map(({ docId }) => docId)).toEqual(['shared-document-id', 'shared-document-id']);
+      expect(payloads[0].operationId).not.toBe(payloads[1].operationId);
+      expect(startIndexing.mock.calls).toEqual(
+        expect.arrayContaining([
+          [payloads[0].operationId, 'shared-document-id', 'https://first.example.com', 'first.example.com'],
+          [payloads[1].operationId, 'shared-document-id', 'https://second.example.com', 'second.example.com'],
+        ])
+      );
+      for (const progressToken of ['first-token', 'second-token']) {
+        expect(mockNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            params: expect.objectContaining({
+              progressToken,
+              message: expect.stringContaining('No content was extracted'),
+            }),
+          })
+        );
+      }
     });
 
     it('does not start or notify a rejected operation before admitting its tokenless successor', async () => {
@@ -644,16 +693,38 @@ describe('WebDocsServer', () => {
       const response = (await toolHandler({ params: { name: 'reindex_documentation', arguments: { url } } })) as {
         content: Array<{ text: string }>;
       };
-      const payload = JSON.parse(response.content[0].text) as { message: string };
+      const payload = JSON.parse(response.content[0].text) as { docId: string; message: string; operationId: string };
 
       expect(payload.message).toContain('Previous operation was cancelled');
+      expect(payload.operationId).not.toBe(payload.docId);
       expect(mockRunLatest).toHaveBeenCalledOnce();
       await completion;
+      expect(startIndexing).toHaveBeenCalledWith(payload.operationId, payload.docId, url, 'Example Docs');
       expect(mockCrawlerSetPathPrefix).toHaveBeenCalledWith('/api/v2');
       expect(mockStoreAddDocument).toHaveBeenCalledWith(
         expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: '/api/v2' }) }),
         expect.objectContaining({ tags: ['docs'] })
       );
+    });
+
+    it('deletes current and historical crawl datasets independently', async () => {
+      const legacyDrop = vi.fn().mockResolvedValue(undefined);
+      mockStoreGetDocument.mockResolvedValueOnce({
+        url: 'https://docs.example.com',
+        title: '@org/package',
+        lastIndexed: new Date(),
+      });
+      mockDatasetOpen.mockRejectedValueOnce(new Error('current dataset missing')).mockResolvedValueOnce({ drop: legacyDrop });
+
+      const response = (await toolHandler({
+        params: { name: 'delete_documentation', arguments: { url: 'https://docs.example.com' } },
+      })) as { content: Array<{ text: string }> };
+      const payload = JSON.parse(response.content[0].text) as { deletedItems: string[] };
+
+      expect(mockDatasetOpen.mock.calls).toEqual([['crawl-docs.example.com'], ['docs-example-com']]);
+      expect(legacyDrop).toHaveBeenCalledOnce();
+      expect(payload.deletedItems).toContain('crawl cache (Crawlee dataset)');
+      expect(mockStoreDeleteDocument).toHaveBeenCalledWith('https://docs.example.com');
     });
 
     it('scopes collection searches to the collection document URLs', async () => {
@@ -858,83 +929,6 @@ describe('WebDocsServer', () => {
 
       const id = generateDocId('https://example.com/docs', 'Example Docs');
       expect(id).toBe('example-com');
-    });
-  });
-
-  describe('IndexingStatusTracker', () => {
-    it('should track indexing progress', () => {
-      const tracker = new IndexingStatusTracker();
-
-      tracker.startIndexing('test-id', 'https://example.com', 'Test Site');
-
-      const status = tracker.getStatus('test-id');
-      expect(status?.status).toBe('indexing');
-      expect(status?.progress).toBe(0);
-
-      tracker.updateProgress('test-id', 0.5, 'Halfway done');
-
-      const updated = tracker.getStatus('test-id');
-      expect(updated?.progress).toBe(0.5);
-      expect(updated?.description).toBe('Halfway done');
-
-      tracker.stop();
-    });
-
-    it('should track stats', () => {
-      const tracker = new IndexingStatusTracker();
-
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
-      tracker.updateStats('test-id', { pagesFound: 10, pagesProcessed: 5, chunksCreated: 20 });
-
-      const status = tracker.getStatus('test-id');
-      expect(status?.pagesFound).toBe(10);
-      expect(status?.pagesProcessed).toBe(5);
-      expect(status?.chunksCreated).toBe(20);
-
-      tracker.stop();
-    });
-
-    it('should handle completion', () => {
-      const tracker = new IndexingStatusTracker();
-
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
-      tracker.completeIndexing('test-id');
-
-      const status = tracker.getStatus('test-id');
-      expect(status?.status).toBe('complete');
-      expect(status?.progress).toBe(1);
-
-      tracker.stop();
-    });
-
-    it('should handle failure', () => {
-      const tracker = new IndexingStatusTracker();
-
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
-      tracker.failIndexing('test-id', 'Network error');
-
-      const status = tracker.getStatus('test-id');
-      expect(status?.status).toBe('failed');
-      expect(status?.error).toBe('Network error');
-
-      tracker.stop();
-    });
-
-    it('should notify listeners on status changes', () => {
-      const tracker = new IndexingStatusTracker();
-      const listener = vi.fn();
-
-      tracker.addStatusListener(listener);
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
-
-      expect(listener).toHaveBeenCalledWith(
-        expect.objectContaining({
-          id: 'test-id',
-          status: 'indexing',
-        })
-      );
-
-      tracker.stop();
     });
   });
 

@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 export function generateDocId(url: string, title: string): string {
   const urlObj = new URL(url);
   const pathParts = urlObj.pathname.split('/').filter(Boolean);
@@ -26,6 +28,14 @@ export function generateDocId(url: string, title: string): string {
   }
 
   return urlObj.hostname;
+}
+
+export function generateCrawlStorageId(url: string): string {
+  const canonicalUrl = new URL(url);
+  canonicalUrl.hash = '';
+  canonicalUrl.pathname = canonicalUrl.pathname.replace(/\/$/, '') || '/';
+  const normalizedUrl = canonicalUrl.toString();
+  return `crawl-${createHash('sha256').update(normalizedUrl).digest('hex')}`;
 }
 
 /**
