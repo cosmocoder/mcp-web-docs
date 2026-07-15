@@ -74,6 +74,8 @@ describe('StorybookExtractor', () => {
 
       const result = await extractor.extractContent(doc);
 
+      expect(result.contentFormat).toBe('markdown');
+      expect(result.title).toBe('Button Component');
       expect(result.content).toContain('# Button Component');
       expect(result.metadata.pattern?.name).toBe('Button Component');
     });

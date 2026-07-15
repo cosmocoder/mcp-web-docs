@@ -7,6 +7,7 @@ describe('Markdown Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/docs/guide.md',
         path: '/docs/guide.md',
+        contentFormat: 'markdown',
         title: 'Guide',
         content: `# Introduction
 
@@ -40,6 +41,7 @@ npm install our-library
       const page: CrawlResult = {
         url: 'https://example.com/docs/page.md',
         path: '/docs/page.md',
+        contentFormat: 'markdown',
         title: 'Page',
         content: `---
 title: Custom Title
@@ -62,6 +64,7 @@ Content here.
       const page: CrawlResult = {
         url: 'https://example.com/docs/code.md',
         path: '/docs/code.md',
+        contentFormat: 'markdown',
         title: 'Code Examples',
         content: `# Code Examples
 
@@ -94,6 +97,7 @@ def hello():
       const page: CrawlResult = {
         url: 'https://example.com/docs/simple.md',
         path: '/docs/simple.md',
+        contentFormat: 'markdown',
         title: 'Simple Page',
         content: `This is just a simple paragraph.
 
@@ -107,12 +111,43 @@ And a final one.
 
       expect(result).toBeDefined();
       expect(result?.article.components.length).toBeGreaterThan(0);
+      expect(result?.article.title).toBe('Simple Page');
+    });
+
+    it('should preserve heading-only markdown', async () => {
+      const page: CrawlResult = {
+        url: 'https://storybook.example.com/button',
+        path: '/button',
+        contentFormat: 'markdown',
+        title: '',
+        content: '# Button Component',
+      };
+
+      const result = await processMarkdownContent(page);
+
+      expect(result?.article.title).toBe('Button Component');
+      expect(result?.article.components).toEqual([{ title: 'Button Component', body: '' }]);
+    });
+
+    it('should preserve the supplied page title when its H1 differs', async () => {
+      const page: CrawlResult = {
+        url: 'https://example.com/docs/guide.md',
+        path: '/docs/guide.md',
+        contentFormat: 'markdown',
+        title: 'Crawled Title',
+        content: 'Introductory preamble.\n\n# Real Guide\n\nGuide body.',
+      };
+
+      const result = await processMarkdownContent(page);
+
+      expect(result?.article.title).toBe('Crawled Title');
     });
 
     it('should return undefined for empty content', async () => {
       const page: CrawlResult = {
         url: 'https://example.com/docs/empty.md',
         path: '/docs/empty.md',
+        contentFormat: 'markdown',
         title: 'Empty',
         content: '',
       };
@@ -125,6 +160,7 @@ And a final one.
       const page: CrawlResult = {
         url: 'https://example.com/docs/whitespace.md',
         path: '/docs/whitespace.md',
+        contentFormat: 'markdown',
         title: 'Whitespace',
         content: '   \n\n   \n   ',
       };
@@ -137,6 +173,7 @@ And a final one.
       const page: CrawlResult = {
         url: 'https://example.com/docs/nested.md',
         path: '/docs/nested.md',
+        contentFormat: 'markdown',
         title: 'Nested',
         content: `# Top Level
 
@@ -166,6 +203,7 @@ Deep content.
       const page: CrawlResult = {
         url: 'https://example.com/docs/docusaurus.md',
         path: '/docs/docusaurus.md',
+        contentFormat: 'markdown',
         title: 'Docusaurus Page',
         content: `# Main Title
 
@@ -191,6 +229,7 @@ Here is an example.
       const page: CrawlResult = {
         url: 'https://example.com/docs/special.md',
         path: '/docs/special.md',
+        contentFormat: 'markdown',
         title: 'Special Characters',
         content: `# Special Characters
 
@@ -220,6 +259,7 @@ Here are some special characters: < > & " ' \` * _ [] () {}
       const page: CrawlResult = {
         url: 'https://example.com/component',
         path: '/component',
+        contentFormat: 'text',
         title: 'Button Component',
         content: `# Button
 
@@ -252,6 +292,7 @@ A versatile button component.
       const page: CrawlResult = {
         url: 'https://example.com/simple',
         path: '/simple',
+        contentFormat: 'text',
         title: 'Simple Page',
         content: `Just some plain text content without any headers or structure.
 
@@ -270,6 +311,7 @@ This is another paragraph.`,
       const page: CrawlResult = {
         url: 'https://example.com/empty',
         path: '/empty',
+        contentFormat: 'text',
         title: 'Empty',
         content: '',
         extractorUsed: 'StorybookExtractor',
@@ -283,6 +325,7 @@ This is another paragraph.`,
       const page: CrawlResult = {
         url: 'https://example.com/formatted',
         path: '/formatted',
+        contentFormat: 'text',
         title: 'Formatted',
         content: `# Formatted Content
 
@@ -311,6 +354,7 @@ And some \`inline code\` too.
       const page: CrawlResult = {
         url: 'https://example.com/notitle',
         path: '/notitle',
+        contentFormat: 'text',
         title: 'Page Title from Crawl',
         content: `## Only H2 Headers
 
@@ -341,6 +385,7 @@ ${Array(100)
       const page: CrawlResult = {
         url: 'https://example.com/long',
         path: '/long',
+        contentFormat: 'text',
         title: 'Long Document',
         content: longContent,
         extractorUsed: 'DefaultExtractor',

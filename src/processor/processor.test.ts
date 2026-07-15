@@ -1,7 +1,10 @@
+import { JSDOM } from 'jsdom';
 import { WebDocumentProcessor } from './processor.js';
 import { createMockEmbeddings, createFailingEmbeddings } from '../__mocks__/embeddings.js';
 import type { CrawlResult } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
+import { contentExtractors } from '../crawler/content-extractors.js';
+import { CrawleeCrawler } from '../crawler/crawlee-crawler.js';
 
 describe('WebDocumentProcessor', () => {
   let processor: WebDocumentProcessor;
@@ -16,7 +19,8 @@ describe('WebDocumentProcessor', () => {
     it('should process HTML content', async () => {
       const crawlResult: CrawlResult = {
         url: 'https://example.com/docs/page',
-        path: '/docs/page',
+        path: '/docs/page.md',
+        contentFormat: 'html',
         title: 'Test Page',
         content: `
           <html>
@@ -45,7 +49,8 @@ describe('WebDocumentProcessor', () => {
     it('should process markdown content', async () => {
       const crawlResult: CrawlResult = {
         url: 'https://example.com/docs/readme.md',
-        path: '/docs/readme.md',
+        path: '/docs/readme.html',
+        contentFormat: 'markdown',
         title: 'README',
         content: `# Project README
 
@@ -73,63 +78,124 @@ Here's how to use the package.
       expect(result.chunks.length).toBeGreaterThan(0);
     });
 
-    it('should process pre-extracted content from Storybook', async () => {
-      const crawlResult: CrawlResult = {
-        url: 'https://storybook.example.com/button',
-        path: '/button',
-        title: 'Button',
-        content: `# Button Component
-
-A versatile button component.
-
-## Props
-
-| Prop | Type |
-|------|------|
-| variant | string |
-
-## Example
-
-\`\`\`jsx
-<Button variant="primary">Click</Button>
-\`\`\`
-`,
-        extractorUsed: 'StorybookExtractor',
+    it('should treat extractorUsed as diagnostic-only', async () => {
+      const input: CrawlResult = {
+        url: 'https://example.com/guide',
+        path: '/guide.html',
+        contentFormat: 'markdown',
+        title: 'Guide',
+        content: '# Explicit Markdown\n\n## Section\n\nBody',
+        extractorUsed: 'FirstExtractor',
       };
 
-      const result = await processor.process(crawlResult);
+      const first = await processor.process(input);
+      const second = await processor.process({ ...input, extractorUsed: 'RenamedExtractor' });
 
-      expect(result).toBeDefined();
-      expect(result.metadata.title).toBe('Button Component');
-      expect(result.chunks.length).toBeGreaterThan(0);
+      expect(second.metadata.title).toBe(first.metadata.title);
+      expect(second.chunks.map(({ content, title }) => ({ content, title }))).toEqual(
+        first.chunks.map(({ content, title }) => ({ content, title }))
+      );
     });
 
-    it('should process pre-extracted content from GitHub Pages', async () => {
-      const crawlResult: CrawlResult = {
-        url: 'https://user.github.io/repo/',
-        path: '/',
-        title: 'GitHub Pages',
-        content: `# Welcome to GitHub Pages
+    it('should process actual registered extractor and Crawlee fallback outputs', async () => {
+      const originalWindow = globalThis.window;
+      const storybookWindow = new JSDOM(`<main class="sbdocs-content">
+        <h1>Button Component</h1>
+        <table class="docblock-argstable">
+          <tr><th>Name</th><th>Type</th><th>Default</th></tr>
+          <tr><td>variant</td><td>string</td><td>primary</td></tr>
+        </table>
+      </main>`).window;
+      const storybookDocument = storybookWindow.document;
+      globalThis.window = storybookWindow as unknown as typeof globalThis.window;
+      storybookWindow.getComputedStyle = vi.fn().mockReturnValue({
+        display: 'block',
+        visibility: 'visible',
+        opacity: '1',
+      }) as unknown as typeof storybookWindow.getComputedStyle;
 
-This is documentation hosted on GitHub Pages.
-
-## Getting Started
-
-Follow these steps to get started.
-`,
-        extractorUsed: 'GithubPagesExtractor',
+      const storybook = contentExtractors.storybook as unknown as {
+        extractContent(document: Document): Promise<{ content: string; contentFormat: 'markdown'; title?: string }>;
+        expandAllTypeValues(table: Element): Promise<void>;
+        waitForStorybookAPI(): Promise<void>;
+        waitForStorybookContent(document: Document): Promise<Element | null>;
       };
+      const expandSpy = vi.spyOn(storybook, 'expandAllTypeValues').mockResolvedValue(undefined);
+      const apiSpy = vi.spyOn(storybook, 'waitForStorybookAPI').mockResolvedValue(undefined);
+      const contentSpy = vi.spyOn(storybook, 'waitForStorybookContent').mockResolvedValue(storybookDocument.querySelector('main'));
 
-      const result = await processor.process(crawlResult);
+      try {
+        const storybookContent = await storybook.extractContent(storybookDocument);
+        const storybookResult = await processor.process({
+          url: 'https://storybook.example.com/button',
+          path: '/button',
+          extractorUsed: contentExtractors.storybook.constructor.name,
+          ...storybookContent,
+          title: storybookContent.title || 'Button',
+        });
+        expect(storybookResult.metadata.title).toBe('Button Component');
+        expect(storybookResult.chunks[0].content).toContain('Button Component');
+        const propsChunk = storybookResult.chunks.find((chunk) => chunk.metadata.props?.length);
+        expect(propsChunk?.content).toContain('| variant | string | primary |');
+        expect(propsChunk?.metadata.props).toContainEqual(
+          expect.objectContaining({ name: 'variant', type: 'string', defaultValue: 'primary' })
+        );
 
-      expect(result).toBeDefined();
-      expect(result.chunks.length).toBeGreaterThan(0);
+        for (const [extractor, html, expected] of [
+          [contentExtractors.github, '<main><h1>GitHub Guide</h1><p>GitHub Pages documentation.</p></main>', 'GitHub Guide'],
+          [contentExtractors.default, '<main><h1>Default Guide</h1><p>Default documentation.</p></main>', 'Default Guide'],
+        ] as const) {
+          const extracted = await extractor.extractContent(new JSDOM(html).window.document);
+          const result = await processor.process({
+            url: `https://example.com/${expected}`,
+            path: `/${expected}`,
+            title: expected,
+            extractorUsed: extractor.constructor.name,
+            ...extracted,
+          });
+          expect(result.chunks[0].content).toContain(expected);
+          expect(result.metadata.title).toBe(expected);
+        }
+
+        const crawler = new CrawleeCrawler();
+        const extractContent = (
+          crawler as unknown as {
+            extractContent(
+              page: { evaluate: ReturnType<typeof vi.fn> },
+              siteType: string,
+              extractor: typeof contentExtractors.default
+            ): Promise<{ content: string; contentFormat: 'text'; extractorUsed: string; title?: string }>;
+          }
+        ).extractContent.bind(crawler);
+        const fallback = await extractContent(
+          {
+            evaluate: vi.fn().mockRejectedValueOnce(new Error('extractor failed')).mockResolvedValueOnce('Plain fallback content'),
+          },
+          'default',
+          contentExtractors.default
+        );
+        const fallbackResult = await processor.process({
+          url: 'https://example.com/fallback',
+          path: '/fallback',
+          ...fallback,
+          title: fallback.title || 'Fallback',
+        });
+        expect(fallbackResult.chunks[0].content).toContain('Plain fallback content');
+        expect(fallbackResult.metadata.title).toBe('Fallback');
+      }
+      finally {
+        contentSpy.mockRestore();
+        apiSpy.mockRestore();
+        expandSpy.mockRestore();
+        globalThis.window = originalWindow;
+      }
     });
 
     it('should create chunks with proper metadata', async () => {
       const crawlResult: CrawlResult = {
         url: 'https://example.com/api',
         path: '/api',
+        contentFormat: 'html',
         title: 'API',
         content: `
           <html>
@@ -176,6 +242,7 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/long',
         path: '/long',
+        contentFormat: 'html',
         title: 'Long Document',
         content: `
           <html>
@@ -199,6 +266,7 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/empty',
         path: '/empty',
+        contentFormat: 'html',
         title: 'Empty',
         content: '', // Empty content
       };
@@ -210,6 +278,7 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/whitespace',
         path: '/whitespace',
+        contentFormat: 'html',
         title: 'Whitespace',
         content: '   \n\n   ',
       };
@@ -224,6 +293,7 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/test',
         path: '/test',
+        contentFormat: 'html',
         title: 'Test',
         content: `
           <html>
@@ -244,6 +314,7 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/dated',
         path: '/dated',
+        contentFormat: 'html',
         title: 'Dated',
         content: `
           <html>
@@ -271,6 +342,7 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/chunks',
         path: '/chunks',
+        contentFormat: 'html',
         title: 'Chunks',
         content: `
           <html>
@@ -295,6 +367,7 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/docs/component.mdx',
         path: '/docs/component.mdx',
+        contentFormat: 'markdown',
         title: 'MDX Component',
         content: `# MDX Component
 
@@ -322,6 +395,7 @@ import { MyComponent } from 'library';
       const crawlResult: CrawlResult = {
         url: 'https://example.com/default',
         path: '/default',
+        contentFormat: 'text',
         title: 'Default Extracted',
         content: `Page Title
 
@@ -344,6 +418,7 @@ Another section of content here.`,
       const crawlResult: CrawlResult = {
         url: 'https://example.com/api-ref',
         path: '/api-ref',
+        contentFormat: 'html',
         title: 'API Reference',
         content: `
           <html>
@@ -374,6 +449,7 @@ Another section of content here.`,
       const crawlResult: CrawlResult = {
         url: 'https://example.com/examples',
         path: '/examples',
+        contentFormat: 'html',
         title: 'Examples',
         content: `
           <html>

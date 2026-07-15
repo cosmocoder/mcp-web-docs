@@ -117,6 +117,7 @@ export class GitHubCrawler extends BaseCrawler {
               url: this.constructGitHubUrl(repoInfo, item.path),
               path: item.path,
               content,
+              contentFormat: 'markdown',
               title: this.extractTitleFromPath(item.path),
             };
           }

@@ -31,7 +31,7 @@ vi.mock('./site-rules.js', () => ({
     {
       type: 'default',
       extractor: {
-        extractContent: vi.fn().mockResolvedValue({ content: 'Extracted content', metadata: {} }),
+        extractContent: vi.fn().mockResolvedValue({ content: 'Extracted content', contentFormat: 'text', metadata: {} }),
       },
       detect: vi.fn().mockResolvedValue(true),
     },
@@ -112,6 +112,68 @@ describe('CrawleeCrawler', () => {
   });
 
   describe('crawl', () => {
+    it('should carry the extractor content format and mark error fallbacks as text', async () => {
+      class MarkdownExtractor {
+        async extractContent(): Promise<{ content: string; contentFormat: 'markdown'; title: string; metadata: { type: 'overview' } }> {
+          return { content: '# Guide', contentFormat: 'markdown', title: 'Guide', metadata: { type: 'overview' } };
+        }
+      }
+
+      const extractContent = (
+        crawler as unknown as {
+          extractContent(
+            page: { evaluate: ReturnType<typeof vi.fn> },
+            siteType: string,
+            extractor: MarkdownExtractor
+          ): Promise<{ content: string; contentFormat: string; extractorUsed: string; title?: string }>;
+        }
+      ).extractContent.bind(crawler);
+      const successPage = {
+        evaluate: vi.fn().mockResolvedValue({ content: '# Guide', contentFormat: 'markdown', title: 'Guide' }),
+      };
+
+      await expect(extractContent(successPage, 'default', new MarkdownExtractor())).resolves.toMatchObject({
+        content: '# Guide',
+        contentFormat: 'markdown',
+        extractorUsed: 'MarkdownExtractor',
+        title: 'Guide',
+      });
+
+      const fallbackPage = {
+        evaluate: vi.fn().mockRejectedValueOnce(new Error('extractor failed')).mockResolvedValueOnce('Plain fallback'),
+      };
+      await expect(extractContent(fallbackPage, 'default', new MarkdownExtractor())).resolves.toMatchObject({
+        content: 'Plain fallback',
+        contentFormat: 'text',
+        extractorUsed: 'ErrorFallback',
+      });
+
+      const findContentFrameSpy = vi
+        .spyOn(
+          crawler as unknown as {
+            findContentFrame(page: unknown): Promise<{ evaluate: ReturnType<typeof vi.fn> }>;
+          },
+          'findContentFrame'
+        )
+        .mockResolvedValue({
+          evaluate: vi.fn().mockResolvedValue({ content: '', contentFormat: 'markdown', title: 'Stale Storybook Title' }),
+        });
+      try {
+        const storybookFallbackPage = {
+          evaluate: vi.fn().mockRejectedValueOnce(new Error('main extraction failed')).mockResolvedValueOnce('Storybook fallback text'),
+        };
+        await expect(extractContent(storybookFallbackPage, 'storybook', new MarkdownExtractor())).resolves.toEqual({
+          content: 'Storybook fallback text',
+          contentFormat: 'text',
+          extractorUsed: 'ErrorFallback',
+          title: undefined,
+        });
+      }
+      finally {
+        findContentFrameSpy.mockRestore();
+      }
+    });
+
     it('should initialize queue manager with URL', async () => {
       // Set up processBatch to return results immediately to end the crawl
       mockCrawlerRun.mockResolvedValueOnce(undefined);
@@ -127,8 +189,8 @@ describe('CrawleeCrawler', () => {
 
     it('should yield results from queue manager', async () => {
       const mockResults: CrawlResult[] = [
-        { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' },
-        { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', title: 'Page 2' },
+        { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'html', title: 'Page 1' },
+        { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'html', title: 'Page 2' },
       ];
 
       // Since hasEnoughResults returns false, processBatch is only called once
@@ -153,7 +215,9 @@ describe('CrawleeCrawler', () => {
     });
 
     it('should process batch when enough results accumulated', async () => {
-      const mockResults: CrawlResult[] = [{ url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' }];
+      const mockResults: CrawlResult[] = [
+        { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'html', title: 'Page 1' },
+      ];
 
       mockQueueManager.hasEnoughResults.mockReturnValueOnce(true).mockReturnValue(false);
       mockQueueManager.processBatch.mockResolvedValueOnce(mockResults).mockResolvedValueOnce([]);

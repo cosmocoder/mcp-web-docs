@@ -7,6 +7,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/docs/page',
         path: '/docs/page',
+        contentFormat: 'html',
         title: 'Documentation Page',
         content: `
           <!DOCTYPE html>
@@ -35,6 +36,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/blog/post',
         path: '/blog/post',
+        contentFormat: 'html',
         title: 'Blog Post',
         content: `
           <html>
@@ -64,6 +66,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/docs',
         path: '/docs',
+        contentFormat: 'html',
         title: 'Docs',
         content: `
           <html>
@@ -88,6 +91,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/code',
         path: '/code',
+        contentFormat: 'html',
         title: 'Code',
         content: `
           <html>
@@ -113,6 +117,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/list',
         path: '/list',
+        contentFormat: 'html',
         title: 'List',
         content: `
           <html>
@@ -141,6 +146,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/table',
         path: '/table',
+        contentFormat: 'html',
         title: 'Table',
         content: `
           <html>
@@ -169,6 +175,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/scripts',
         path: '/scripts',
+        contentFormat: 'html',
         title: 'Scripts',
         content: `
           <html>
@@ -199,6 +206,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/blog',
         path: '/blog',
+        contentFormat: 'html',
         title: 'Blog',
         content: `
           <html>
@@ -226,6 +234,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/empty',
         path: '/empty',
+        contentFormat: 'html',
         title: 'Empty',
         content: `
           <html>
@@ -247,6 +256,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://storybook.example.com/docs',
         path: '/docs',
+        contentFormat: 'html',
         title: 'Storybook',
         content: `
           <html>
@@ -274,6 +284,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/react-app',
         path: '/react-app',
+        contentFormat: 'html',
         title: 'React App',
         content: `
           <html>
@@ -299,6 +310,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/nextjs',
         path: '/nextjs',
+        contentFormat: 'html',
         title: 'Next.js',
         content: `
           <html>
@@ -324,6 +336,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/headings',
         path: '/headings',
+        contentFormat: 'html',
         title: 'Headings',
         content: `
           <html>
@@ -355,6 +368,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/malformed',
         path: '/malformed',
+        contentFormat: 'html',
         title: 'Malformed',
         content: `
           <html>
@@ -382,6 +396,7 @@ describe('HTML Content Processor', () => {
       const page: CrawlResult = {
         url: 'https://example.com/whitespace',
         path: '/whitespace',
+        contentFormat: 'html',
         title: 'Whitespace',
         content: `
           <html>

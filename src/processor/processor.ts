@@ -2,17 +2,8 @@ import { CrawlResult, DocumentChunk, DocumentProcessor, ProcessedDocument } from
 import { EmbeddingsProvider } from '../embeddings/types.js';
 import { processHtmlContent } from './content.js';
 import { processMarkdownContent, processExtractedContent } from './markdown.js';
-import { isMarkdownPath } from '../config.js';
 import { logger } from '../util/logger.js';
 import { parseMetadata } from './metadata-parser.js';
-
-// Extractors that return already-formatted or plain text content (not raw HTML)
-const FORMATTED_CONTENT_EXTRACTORS = [
-  'StorybookExtractor',
-  'GithubPagesExtractor',
-  'DefaultExtractor', // Crawlee's default extractor returns plain text, not HTML
-  // Add more extractors here as they're implemented
-];
 
 /**
  * Create a DocumentChunk with parsed metadata from the content
@@ -165,26 +156,18 @@ export class WebDocumentProcessor implements DocumentProcessor {
     logger.debug(`[WebDocumentProcessor] Extractor used: ${crawlResult.extractorUsed || 'unknown'}`);
 
     try {
-      // Determine content type and process accordingly
+      logger.debug(`[WebDocumentProcessor] Using ${crawlResult.contentFormat} processor for ${crawlResult.path}`);
       let processedContent;
-
-      // Check if content was extracted by a formatter that outputs markdown
-      const isFormattedContent = crawlResult.extractorUsed && FORMATTED_CONTENT_EXTRACTORS.includes(crawlResult.extractorUsed);
-
-      if (isFormattedContent) {
-        // Content is already formatted markdown from a custom extractor
-        logger.debug(`[WebDocumentProcessor] Using extracted content processor for ${crawlResult.extractorUsed}`);
-        processedContent = await processExtractedContent(crawlResult);
-      }
-      else if (isMarkdownPath(crawlResult.path)) {
-        // Raw markdown file
-        logger.debug(`[WebDocumentProcessor] Using markdown processor for ${crawlResult.path}`);
-        processedContent = await processMarkdownContent(crawlResult);
-      }
-      else {
-        // Raw HTML - needs parsing
-        logger.debug(`[WebDocumentProcessor] Using HTML processor for ${crawlResult.path}`);
-        processedContent = await processHtmlContent(crawlResult);
+      switch (crawlResult.contentFormat) {
+        case 'html':
+          processedContent = await processHtmlContent(crawlResult);
+          break;
+        case 'markdown':
+          processedContent = await processMarkdownContent(crawlResult);
+          break;
+        case 'text':
+          processedContent = await processExtractedContent(crawlResult);
+          break;
       }
 
       if (!processedContent) {

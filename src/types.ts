@@ -56,10 +56,13 @@ export interface DocumentChunk {
   };
 }
 
+export type ContentFormat = 'html' | 'markdown' | 'text';
+
 export interface CrawlResult {
   url: string;
   path: string;
   content: string;
+  contentFormat: ContentFormat;
   title: string;
   extractorUsed?: string; // Optional field to track which extractor was used
 }

@@ -2,15 +2,9 @@ import { CrawlResult } from '../types.js';
 import { Article, ArticleComponent, ProcessedContent } from './content.js';
 import { logger } from '../util/logger.js';
 
-function cleanText(text: string): string {
-  return text
-    .replace(/\s+/g, ' ')
-    .replace(/\n\s*\n/g, '\n\n')
-    .trim();
-}
-
 interface MarkdownSection {
   level: number;
+  isHeading: boolean;
   title: string;
   content: string;
   startLine: number;
@@ -127,6 +121,7 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
       // Start new section
       currentSection = {
         level: headerInfo.level,
+        isHeading: true,
         title: headerInfo.title,
         content: '',
         startLine: startLine + i,
@@ -145,6 +140,7 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
       if (!sections.length) {
         currentSection = {
           level: 1,
+          isHeading: false,
           title: 'Content',
           content: line,
           startLine,
@@ -163,23 +159,6 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
   return sections;
 }
 
-function processCodeBlocks(content: string): string {
-  // Preserve code blocks by replacing them with placeholders
-  const codeBlocks: string[] = [];
-  let processedContent = content.replace(/```[\s\S]*?```/g, (match) => {
-    codeBlocks.push(match);
-    return `CODE_BLOCK_${codeBlocks.length - 1}`;
-  });
-
-  // Clean the text
-  processedContent = cleanText(processedContent);
-
-  // Restore code blocks
-  processedContent = processedContent.replace(/CODE_BLOCK_(\d+)/g, (_, index) => codeBlocks[parseInt(index)]);
-
-  return processedContent;
-}
-
 export async function processMarkdownContent(page: CrawlResult): Promise<ProcessedContent | undefined> {
   try {
     logger.debug(`[MarkdownProcessor] Processing content for ${page.url}`);
@@ -193,11 +172,11 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
     // Process sections into components
     const components: ArticleComponent[] = sections.map((section) => ({
       title: section.title,
-      body: processCodeBlocks(section.content),
+      body: section.content.trim(),
     }));
 
-    // Filter out empty components
-    const validComponents = components.filter((comp) => comp.body.length > 0);
+    // Keep heading-only sections produced by extractors such as Storybook.
+    const validComponents = components.filter((comp, index) => comp.body.length > 0 || sections[index].isHeading);
 
     if (validComponents.length === 0) {
       logger.debug(`[MarkdownProcessor] No valid content sections found in ${page.url}`);
@@ -227,11 +206,7 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
 }
 
 /**
- * Process content that was already extracted and formatted by a custom extractor
- * (e.g., StorybookExtractor, GithubPagesExtractor).
- *
- * These extractors output markdown-formatted content, so we don't need to
- * parse HTML - we just need to structure the content into sections.
+ * Process plain text that was already extracted from a page.
  */
 export async function processExtractedContent(page: CrawlResult): Promise<ProcessedContent | undefined> {
   try {
@@ -245,12 +220,12 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
       return undefined;
     }
 
-    // Parse markdown sections - the content is already in markdown format
+    // Reuse the section parser; plain text without headings becomes one section.
     const sections = parseMarkdownSections(content, 0);
 
     logger.debug(`[ExtractedContentProcessor] Found ${sections.length} sections`);
 
-    // Convert sections to components, preserving the markdown content as-is
+    // Convert sections to components, preserving the extracted content as-is.
     const components: ArticleComponent[] = sections.map((section) => ({
       title: section.title,
       // Don't over-process - just trim and normalize whitespace
@@ -284,7 +259,7 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
 
     // Extract title from first H1 if present, otherwise use page title
     let title = page.title;
-    const firstH1Section = sections.find((s) => s.level === 1);
+    const firstH1Section = sections.find((s) => s.level === 1 && s.isHeading);
     if (firstH1Section) {
       title = firstH1Section.title;
     }

@@ -15,6 +15,7 @@ export class DefaultExtractor implements ContentExtractor {
 
     return {
       content: contentElement.textContent?.trim() || '',
+      contentFormat: 'text',
       metadata: {
         type: 'overview',
         pattern: {
