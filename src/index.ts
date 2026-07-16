@@ -67,6 +67,9 @@ class WebDocsServer {
   private statusTracker: IndexingStatusTracker;
   private indexingQueue: IndexingQueueManager;
   private authManager!: AuthManager;
+  private runPromise?: Promise<void>;
+  private closePromise?: Promise<void>;
+  private activeToolCalls = new Set<Promise<unknown>>();
   /** Maps operation ID to progress token for MCP notifications */
   private progressTokens: Map<string, { token: ProgressToken }> = new Map();
   /** Tracks last notified progress to throttle notifications */
@@ -593,50 +596,55 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     }));
 
     // Handle tool calls
-    this.server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const progressToken = request.params._meta?.progressToken;
+    this.server.server.setRequestHandler(CallToolRequestSchema, (request) => {
+      const call = (async () => {
+        const progressToken = request.params._meta?.progressToken;
 
-      switch (request.params.name) {
-        case 'add_documentation':
-          return this.handleAddDocumentation(request.params.arguments, progressToken);
-        case 'list_documentation':
-          return this.handleListDocumentation();
-        case 'search_documentation':
-          return this.handleSearchDocumentation(request.params.arguments);
-        case 'reindex_documentation':
-          return this.handleReindexDocumentation(request.params.arguments, progressToken);
-        case 'get_indexing_status':
-          return this.handleGetIndexingStatus();
-        case 'authenticate':
-          return this.handleAuthenticate(request.params.arguments);
-        case 'clear_auth':
-          return this.handleClearAuth(request.params.arguments);
-        case 'delete_documentation':
-          return this.handleDeleteDocumentation(request.params.arguments);
-        case 'set_tags':
-          return this.handleSetTags(request.params.arguments);
-        case 'list_tags':
-          return this.handleListTags();
-        // Collection handlers
-        case 'create_collection':
-          return this.handleCreateCollection(request.params.arguments);
-        case 'delete_collection':
-          return this.handleDeleteCollection(request.params.arguments);
-        case 'update_collection':
-          return this.handleUpdateCollection(request.params.arguments);
-        case 'list_collections':
-          return this.handleListCollections();
-        case 'get_collection':
-          return this.handleGetCollection(request.params.arguments);
-        case 'add_to_collection':
-          return this.handleAddToCollection(request.params.arguments);
-        case 'remove_from_collection':
-          return this.handleRemoveFromCollection(request.params.arguments);
-        case 'search_collection':
-          return this.handleSearchCollection(request.params.arguments);
-        default:
-          throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
-      }
+        switch (request.params.name) {
+          case 'add_documentation':
+            return this.handleAddDocumentation(request.params.arguments, progressToken);
+          case 'list_documentation':
+            return this.handleListDocumentation();
+          case 'search_documentation':
+            return this.handleSearchDocumentation(request.params.arguments);
+          case 'reindex_documentation':
+            return this.handleReindexDocumentation(request.params.arguments, progressToken);
+          case 'get_indexing_status':
+            return this.handleGetIndexingStatus();
+          case 'authenticate':
+            return this.handleAuthenticate(request.params.arguments);
+          case 'clear_auth':
+            return this.handleClearAuth(request.params.arguments);
+          case 'delete_documentation':
+            return this.handleDeleteDocumentation(request.params.arguments);
+          case 'set_tags':
+            return this.handleSetTags(request.params.arguments);
+          case 'list_tags':
+            return this.handleListTags();
+          // Collection handlers
+          case 'create_collection':
+            return this.handleCreateCollection(request.params.arguments);
+          case 'delete_collection':
+            return this.handleDeleteCollection(request.params.arguments);
+          case 'update_collection':
+            return this.handleUpdateCollection(request.params.arguments);
+          case 'list_collections':
+            return this.handleListCollections();
+          case 'get_collection':
+            return this.handleGetCollection(request.params.arguments);
+          case 'add_to_collection':
+            return this.handleAddToCollection(request.params.arguments);
+          case 'remove_from_collection':
+            return this.handleRemoveFromCollection(request.params.arguments);
+          case 'search_collection':
+            return this.handleSearchCollection(request.params.arguments);
+          default:
+            throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
+        }
+      })();
+
+      this.activeToolCalls.add(call);
+      return call.finally(() => this.activeToolCalls.delete(call));
     });
   }
 
@@ -1997,19 +2005,41 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     }
   }
 
-  async run() {
-    // Initialize components
+  run(): Promise<void> {
+    return (this.runPromise ??= this.start());
+  }
+
+  private async start(): Promise<void> {
     await this.initialize();
+    if (this.closePromise) {
+      return;
+    }
 
-    // Connect to stdio transport
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-
+    await this.server.connect(new StdioServerTransport());
     logger.info('Web Docs MCP server running on stdio');
   }
 
-  cancelOperations(): Promise<void> {
-    return this.indexingQueue.cancelAll();
+  close(): Promise<void> {
+    return (this.closePromise ??= this.closeResources());
+  }
+
+  private async closeResources(): Promise<void> {
+    await this.runPromise?.catch(() => undefined);
+    const serverClose = Promise.resolve().then(() => this.server.close());
+
+    const results = await Promise.allSettled([
+      serverClose,
+      serverClose.catch(() => undefined).then(() => Promise.allSettled([...this.activeToolCalls])),
+      Promise.resolve().then(() => this.indexingQueue.cancelAll()),
+      Promise.resolve().then(() => this.statusTracker.stop()),
+      Promise.resolve().then(() => this.authManager?.cleanup()),
+      Promise.resolve().then(() => closeOutboundProxy()),
+    ]);
+    const errors = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Failed to shut down cleanly');
+    }
   }
 }
 
@@ -2017,17 +2047,36 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 const server = new WebDocsServer();
 server.run().catch((err) => logger.error('Server failed to start:', err));
 
-async function shutdown(signal: 'SIGINT' | 'SIGTERM'): Promise<void> {
-  logger.info(`Received ${signal}, cancelling operations and shutting down...`);
-  try {
-    await Promise.allSettled([server.cancelOperations(), closeOutboundProxy()]);
-  }
-  finally {
-    process.exit(0);
-  }
+let shutdownPromise: Promise<void> | undefined;
+
+function handleShutdown(signal: NodeJS.Signals): Promise<void> {
+  return (shutdownPromise ??= (async () => {
+    logger.info(`Received ${signal}, cancelling operations and shutting down...`);
+
+    let exited = false;
+    const exit = (code: number): void => {
+      if (!exited) {
+        exited = true;
+        clearTimeout(timeout);
+        process.exit(code);
+      }
+    };
+    const timeout = setTimeout(() => {
+      logger.error('Shutdown timed out after 5 seconds');
+      exit(1);
+    }, 5_000);
+
+    try {
+      await server.close();
+      exit(0);
+    }
+    catch (error) {
+      logger.error('Failed to shut down cleanly:', error);
+      exit(1);
+    }
+  })());
 }
 
-// Handle process signals - cancel all operations before shutdown
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.once(signal, () => void shutdown(signal));
+  process.once(signal, () => void handleShutdown(signal));
 }

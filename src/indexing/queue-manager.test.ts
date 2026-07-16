@@ -120,7 +120,7 @@ describe('IndexingQueueManager', () => {
     await Promise.all([firstCompletion, second.completion]);
   });
 
-  it('cancelAll drains pending transitions and rejects starts until its shared barrier completes', async () => {
+  it('cancelAll terminally closes the queue and drains pending transitions', async () => {
     const queue = new IndexingQueueManager();
     const firstStarted = Promise.withResolvers<void>();
     const firstReleased = Promise.withResolvers<void>();
@@ -137,7 +137,7 @@ describe('IndexingQueueManager', () => {
     const secondStart = queue.runLatest('https://example.com', async () => {
       secondStarted = true;
     });
-    const secondResult = expect(secondStart).rejects.toThrow('being cancelled');
+    const secondResult = expect(secondStart).rejects.toThrow('Indexing queue is closed');
     await nextTurn();
 
     let cancellationFinished = false;
@@ -152,7 +152,7 @@ describe('IndexingQueueManager', () => {
       queue.runLatest('https://other.com', async () => {
         duringCancellationStarted = true;
       })
-    ).rejects.toThrow('being cancelled');
+    ).rejects.toThrow('Indexing queue is closed');
     await nextTurn();
 
     expect(firstSignal.aborted).toBe(true);
@@ -163,14 +163,8 @@ describe('IndexingQueueManager', () => {
     await Promise.all([first.completion, secondResult, cancellation]);
 
     expect(secondStarted).toBe(false);
-    expect(cancellationFinished).toBe(true);
 
-    let afterCancellationStarted = false;
-    const afterCancellation = await queue.runLatest('https://example.com', async () => {
-      afterCancellationStarted = true;
-    });
-    await afterCancellation.completion;
-    expect(afterCancellationStarted).toBe(true);
+    await expect(queue.runLatest('https://example.com', async () => {})).rejects.toThrow('Indexing queue is closed');
   });
 
   it('bounds cancelAll when an operation ignores cancellation', async () => {
@@ -188,8 +182,7 @@ describe('IndexingQueueManager', () => {
     await expect(queue.cancelAll()).rejects.toThrow('Timed out cancelling all indexing operations');
     expect(signal.aborted).toBe(true);
 
-    const next = await queue.runLatest('https://other.com', async () => {});
-    await next.completion;
+    await expect(queue.runLatest('https://other.com', async () => {})).rejects.toThrow('Indexing queue is closed');
 
     released.resolve();
     await operation.completion;
