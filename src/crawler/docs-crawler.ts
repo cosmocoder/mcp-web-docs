@@ -1,10 +1,10 @@
 import { URL } from 'url';
-import { CrawlResult, DocsCrawlerType, WebCrawler } from '../types.js';
+import { CrawlResult } from '../types.js';
 import { CrawleeCrawler, StorageState } from './crawlee-crawler.js';
 import { GitHubCrawler } from './github.js';
 import { logger } from '../util/logger.js';
 
-export class DocsCrawler implements WebCrawler {
+export class DocsCrawler {
   private readonly GITHUB_HOST = 'github.com';
   private isAborting = false;
   private storageState?: StorageState;
@@ -12,8 +12,6 @@ export class DocsCrawler implements WebCrawler {
   private activeCrawler?: { abort(): void };
 
   constructor(
-    private readonly maxDepth: number = 4,
-    private readonly maxRequestsPerCrawl: number = 1000,
     private readonly githubToken?: string,
     private readonly onProgress?: (progress: number, description: string) => void
   ) {}
@@ -36,19 +34,19 @@ export class DocsCrawler implements WebCrawler {
     logger.info(`[DocsCrawler] Set storage state with ${state.cookies?.length || 0} cookies`);
   }
 
-  async *crawl(url: string): AsyncGenerator<CrawlResult, DocsCrawlerType> {
+  async *crawl(url: string): AsyncGenerator<CrawlResult, void, unknown> {
     const startUrl = new URL(url);
     logger.debug(`[DocsCrawler] Starting crawl of ${startUrl}`);
 
     if (this.isAborting) {
       logger.debug('[DocsCrawler] Crawl aborted');
-      return 'crawlee';
+      return;
     }
 
     // Handle GitHub repositories
     if (startUrl.host === this.GITHUB_HOST) {
       logger.debug('[DocsCrawler] Detected GitHub repository');
-      const githubCrawler = new GitHubCrawler(this.maxDepth, this.maxRequestsPerCrawl, this.githubToken, this.onProgress);
+      const githubCrawler = new GitHubCrawler(this.githubToken, this.onProgress);
       this.activeCrawler = githubCrawler;
 
       try {
@@ -58,7 +56,7 @@ export class DocsCrawler implements WebCrawler {
           }
           yield page;
         }
-        return 'github';
+        return;
       }
       catch (e) {
         logger.debug('[DocsCrawler] GitHub crawler failed:', e);
@@ -74,7 +72,7 @@ export class DocsCrawler implements WebCrawler {
 
     // Use Crawlee for all other sites
     logger.debug('[DocsCrawler] Using Crawlee crawler');
-    const crawleeCrawler = new CrawleeCrawler(this.maxDepth, this.maxRequestsPerCrawl, this.onProgress);
+    const crawleeCrawler = new CrawleeCrawler(this.onProgress);
     this.activeCrawler = crawleeCrawler;
 
     // Pass authentication if available
@@ -104,7 +102,6 @@ export class DocsCrawler implements WebCrawler {
       else {
         logger.debug(`[DocsCrawler] Crawlee crawler completed (${pageCount} pages)`);
       }
-      return 'crawlee';
     }
     catch (e) {
       logger.debug('[DocsCrawler] Crawlee crawler failed:', e);

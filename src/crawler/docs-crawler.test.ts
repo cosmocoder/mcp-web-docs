@@ -3,8 +3,10 @@ import { DocsCrawler } from './docs-crawler.js';
 
 const mockGitHubCrawl = vi.fn();
 const mockGitHubAbort = vi.fn();
+const mockGitHubConstructor = vi.fn();
 vi.mock('./github.js', () => ({
-  GitHubCrawler: function () {
+  GitHubCrawler: function (...args: unknown[]) {
+    mockGitHubConstructor(...args);
     return {
       crawl: mockGitHubCrawl,
       abort: mockGitHubAbort,
@@ -14,10 +16,12 @@ vi.mock('./github.js', () => ({
 
 const mockCrawleeCrawl = vi.fn();
 const mockCrawleeAbort = vi.fn();
+const mockCrawleeConstructor = vi.fn();
 const mockSetStorageState = vi.fn();
 const mockSetPathPrefix = vi.fn();
 vi.mock('./crawlee-crawler.js', () => ({
-  CrawleeCrawler: function () {
+  CrawleeCrawler: function (...args: unknown[]) {
+    mockCrawleeConstructor(...args);
     return {
       crawl: mockCrawleeCrawl,
       abort: mockCrawleeAbort,
@@ -35,15 +39,21 @@ describe('DocsCrawler', () => {
     crawler = new DocsCrawler();
   });
 
-  describe('constructor', () => {
-    it('should initialize with default values', () => {
-      expect(crawler).toBeDefined();
+  it('passes the GitHub token and progress callback to the selected crawler', async () => {
+    const progressFn = vi.fn();
+    const configuredCrawler = new DocsCrawler('github_token', progressFn);
+    mockGitHubCrawl.mockImplementation(async function* () {
+      yield* [];
+    });
+    mockCrawleeCrawl.mockImplementation(async function* () {
+      yield* [];
     });
 
-    it('should accept custom parameters', () => {
-      const customCrawler = new DocsCrawler(10, 500, 'github_token', vi.fn());
-      expect(customCrawler).toBeDefined();
-    });
+    await configuredCrawler.crawl('https://github.com/owner/repo').next();
+    await configuredCrawler.crawl('https://example.com').next();
+
+    expect(mockGitHubConstructor).toHaveBeenCalledWith('github_token', progressFn);
+    expect(mockCrawleeConstructor).toHaveBeenCalledWith(progressFn);
   });
 
   describe('crawl', () => {
@@ -74,23 +84,6 @@ describe('DocsCrawler', () => {
 
         expect(results).toHaveLength(1);
         expect(results[0].url).toContain('github.com');
-      });
-
-      it('should return github type for GitHub URLs', async () => {
-        mockGitHubCrawl.mockImplementation(async function* () {
-          yield { url: 'https://github.com/owner/repo', path: '/', content: 'test', contentFormat: 'markdown', title: 'Test' };
-        });
-
-        const generator = crawler.crawl('https://github.com/owner/repo');
-
-        // Manually iterate to capture the return value
-        let result = await generator.next();
-        while (!result.done) {
-          result = await generator.next();
-        }
-        const crawlerType = result.value;
-
-        expect(crawlerType).toBe('github');
       });
 
       it('should propagate errors from GitHubCrawler', async () => {
@@ -129,41 +122,6 @@ describe('DocsCrawler', () => {
         }
 
         expect(results).toHaveLength(2);
-      });
-
-      it('should return crawlee type regardless of page count', async () => {
-        mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
-        });
-
-        const results: CrawlResult[] = [];
-        const generator = crawler.crawl('https://example.com');
-
-        let result = await generator.next();
-        while (!result.done) {
-          results.push(result.value);
-          result = await generator.next();
-        }
-        const crawlerType = result.value;
-
-        expect(results).toHaveLength(1);
-        expect(crawlerType).toBe('crawlee');
-      });
-
-      it('should return crawlee type even with 0 pages found', async () => {
-        mockCrawleeCrawl.mockImplementation(() => ({
-          [Symbol.asyncIterator]: () => ({ next: () => Promise.resolve({ done: true, value: undefined }) }),
-        }));
-
-        const generator = crawler.crawl('https://example.com');
-
-        let result = await generator.next();
-        while (!result.done) {
-          result = await generator.next();
-        }
-        const crawlerType = result.value;
-
-        expect(crawlerType).toBe('crawlee');
       });
     });
 
@@ -211,9 +169,8 @@ describe('DocsCrawler', () => {
         const generator = crawler.crawl('https://example.com');
         const result = await generator.next();
 
-        // Should return immediately with crawlee type when aborted
         expect(result.done).toBe(true);
-        expect(result.value).toBe('crawlee');
+        expect(mockCrawleeCrawl).not.toHaveBeenCalled();
       });
     });
 

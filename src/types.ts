@@ -143,24 +143,6 @@ export interface StorageProvider {
   optimize(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }>;
 }
 
-export type DocsCrawlerType = 'crawlee' | 'github';
-
-export interface CrawlerOptions {
-  maxDepth?: number;
-  maxRequestsPerCrawl?: number;
-  useLocalCrawling?: boolean;
-  githubToken?: string;
-  onProgress?: (progress: number, description: string) => void;
-  experimental?: {
-    useChromiumForDocsCrawling?: boolean;
-  };
-}
-
-export interface WebCrawler {
-  crawl(url: string, maxDepth?: number): AsyncGenerator<CrawlResult, DocsCrawlerType, unknown>;
-  abort(): void;
-}
-
 export interface DocumentProcessor {
   process(crawlResult: CrawlResult, chunkSize?: number): Promise<ProcessedDocument>;
 }

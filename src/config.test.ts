@@ -1,13 +1,4 @@
-import {
-  isValidUrl,
-  isValidPublicUrl,
-  normalizeUrl,
-  isGitHubUrl,
-  IGNORED_PATHS,
-  RATE_LIMIT,
-  QUEUE_OPTIONS,
-  GITHUB_RATE_LIMIT,
-} from './config.js';
+import { isValidUrl, isValidPublicUrl, normalizeUrl, isGitHubUrl, IGNORED_PATHS, RATE_LIMIT } from './config.js';
 
 describe('Configuration Utilities', () => {
   describe('isValidUrl', () => {
@@ -149,25 +140,6 @@ describe('Configuration Utilities', () => {
         expect(RATE_LIMIT.maxRequests).toBeGreaterThan(0);
         expect(RATE_LIMIT.timeWindow).toBeGreaterThan(0);
         expect(RATE_LIMIT.minDelay).toBeGreaterThanOrEqual(0);
-      });
-    });
-
-    describe('QUEUE_OPTIONS', () => {
-      it('should have retry configuration', () => {
-        expect(QUEUE_OPTIONS.maxRequestRetries).toBeGreaterThanOrEqual(0);
-        expect(QUEUE_OPTIONS.retryDelay).toBeGreaterThan(0);
-        expect(QUEUE_OPTIONS.maxRequestsPerCrawl).toBeGreaterThan(0);
-      });
-    });
-
-    describe('GITHUB_RATE_LIMIT', () => {
-      it('should have different limits for authenticated vs unauthenticated', () => {
-        expect(GITHUB_RATE_LIMIT.authenticated.maxRequests).toBeGreaterThan(GITHUB_RATE_LIMIT.unauthenticated.maxRequests);
-      });
-
-      it('should have time windows defined', () => {
-        expect(GITHUB_RATE_LIMIT.authenticated.timeWindow).toBeGreaterThan(0);
-        expect(GITHUB_RATE_LIMIT.unauthenticated.timeWindow).toBeGreaterThan(0);
       });
     });
   });
