@@ -43,7 +43,8 @@ vi.mock('./site-rules.js', () => ({
 }));
 
 // Mock PlaywrightCrawler
-const mockCrawlerRun = vi.fn().mockResolvedValue(undefined);
+const successfulRunStats = { requestsFailed: 0, requestsTotal: 0 };
+const mockCrawlerRun = vi.fn().mockResolvedValue(successfulRunStats);
 const mockCrawlerTeardown = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('crawlee', () => ({
@@ -59,7 +60,7 @@ vi.mock('crawlee', () => ({
     (global as { __errorHandler?: unknown }).__errorHandler = options.errorHandler;
     (global as { __failedRequestHandler?: unknown }).__failedRequestHandler = options.failedRequestHandler;
     return {
-      run: mockCrawlerRun,
+      run: async () => (await mockCrawlerRun()) ?? successfulRunStats,
       teardown: mockCrawlerTeardown,
     };
   },
@@ -379,10 +380,6 @@ describe('CrawleeCrawler', () => {
     });
 
     it('should initialize queue manager with URL', async () => {
-      // Set up processBatch to return results immediately to end the crawl
-      mockCrawlerRun.mockResolvedValueOnce(undefined);
-      mockQueueManager.processBatch.mockResolvedValueOnce([]);
-
       await collect(crawler, 'https://example.com/docs');
 
       expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://example.com/docs', undefined);
@@ -426,8 +423,8 @@ describe('CrawleeCrawler', () => {
   describe('abort', () => {
     it('should stop the crawler', async () => {
       // Make run() hang until we resolve it, so abort() can be called while crawler exists
-      let resolveRun: () => void;
-      const runPromise = new Promise<void>((resolve) => {
+      let resolveRun: (statistics: typeof successfulRunStats) => void;
+      const runPromise = new Promise<typeof successfulRunStats>((resolve) => {
         resolveRun = resolve;
       });
       mockCrawlerRun.mockReturnValueOnce(runPromise);
@@ -448,7 +445,7 @@ describe('CrawleeCrawler', () => {
       abortableCrawler.abort();
 
       // Let the run() complete so the generator can finish
-      resolveRun!();
+      resolveRun!(successfulRunStats);
 
       // Wait for the generator to complete
       await firstResultPromise;
@@ -483,6 +480,32 @@ describe('CrawleeCrawler', () => {
   });
 
   describe('error handling', () => {
+    it('should reject after Crawlee exhausts retries for a request handler error', async () => {
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        try {
+          await runRequestHandler(
+            {
+              mainFrame: vi.fn().mockReturnValue({}),
+              on: vi.fn(),
+              off: vi.fn(),
+              waitForLoadState: vi.fn().mockRejectedValueOnce(new Error('Page load failed')).mockResolvedValue(undefined),
+            },
+            'https://example.com'
+          );
+        }
+        catch {
+          return { requestsFailed: 1, requestsTotal: 1 };
+        }
+
+        return successfulRunStats;
+      });
+
+      await expect(collect(crawler, 'https://example.com')).rejects.toThrow('Crawl failed for 1 of 1 pages after retries');
+
+      expect(mockQueueManager.processBatch).not.toHaveBeenCalled();
+      expect(mockQueueManager.cleanup).toHaveBeenCalled();
+    });
+
     it('should cleanup on error', async () => {
       mockCrawlerRun.mockRejectedValueOnce(new Error('Crawl failed'));
 

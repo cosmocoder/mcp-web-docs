@@ -740,6 +740,38 @@ describe('WebDocsServer', () => {
 
       expect(mockStoreSearchByText).toHaveBeenCalledWith('hooks', { limit: 2, filterUrls: collectionUrls });
     });
+
+    it('fails fast and preserves an existing document when one page fails processing', async () => {
+      const existingDocument = {
+        url: 'https://example.com',
+        title: 'Example Docs',
+        lastIndexed: new Date(),
+        requiresAuth: false,
+        tags: ['existing'],
+      };
+      mockStoreGetDocument.mockResolvedValueOnce(existingDocument).mockResolvedValueOnce(existingDocument);
+      mockCrawlerCrawl.mockImplementationOnce(async function* () {
+        yield { url: 'https://example.com/one', path: '/one', content: 'One', contentFormat: 'text', title: 'One' };
+        yield { url: 'https://example.com/two', path: '/two?token=secret', content: 'Two', contentFormat: 'text', title: 'Two' };
+        yield { url: 'https://example.com/three', path: '/three', content: 'Three', contentFormat: 'text', title: 'Three' };
+      });
+      mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk).mockRejectedValueOnce(new Error('Embedding failed'));
+      const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
+
+      const response = (await toolHandler({
+        params: {
+          name: 'reindex_documentation',
+          arguments: { url: 'https://example.com' },
+        },
+      })) as { content: Array<{ text: string }> };
+      const { operationId } = JSON.parse(response.content[0].text) as { operationId: string };
+
+      await vi.waitFor(() => expect(failIndexing).toHaveBeenCalledWith(operationId, 'Failed to process /two?[REDACTED] Embedding failed'));
+      expect(mockProcessorProcess).toHaveBeenCalledTimes(2);
+      expect(mockFetchFavicon).not.toHaveBeenCalled();
+      expect(mockStoreDeleteDocument).not.toHaveBeenCalled();
+      expect(mockStoreAddDocument).not.toHaveBeenCalled();
+    });
   });
 
   describe('URL Validation', () => {

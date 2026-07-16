@@ -621,13 +621,6 @@ export class CrawleeCrawler extends BaseCrawler {
             }
           }
         }
-        catch (error) {
-          if (error instanceof OutboundRequestFailedError) {
-            throw error;
-          }
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          log.error(`Error processing ${request.url}: ${errorMessage}`);
-        }
         finally {
           page.off('response', trackMainFrameResponse);
           page.off('requestfailed', trackMainFrameFailure);
@@ -650,7 +643,7 @@ export class CrawleeCrawler extends BaseCrawler {
         }
       }
 
-      await crawlerPromise;
+      const finalStatistics = await crawlerPromise;
       if (this.terminalRootFailure) {
         throw this.terminalRootFailure;
       }
@@ -666,6 +659,10 @@ export class CrawleeCrawler extends BaseCrawler {
       // Check if we detected an expired session during crawling
       if (this.sessionExpiredError) {
         throw this.sessionExpiredError;
+      }
+
+      if (finalStatistics.requestsFailed > 0) {
+        throw new Error(`Crawl failed for ${finalStatistics.requestsFailed} of ${finalStatistics.requestsTotal} pages after retries`);
       }
 
       for (const result of await this.queueManager.processBatch()) {
