@@ -2,6 +2,7 @@ import { PlaywrightCrawler } from 'crawlee';
 import { CrawlResult } from '../types.js';
 import { BaseCrawler } from './base.js';
 import { Page, Frame } from 'playwright';
+import type { Request as PlaywrightRequest } from 'playwright';
 import { siteRules } from './site-rules.js';
 import { ContentExtractor } from './content-extractor-types.js';
 import { QueueManager } from './queue-manager.js';
@@ -9,6 +10,33 @@ import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
 import { detectLoginPage, isLoginPageUrl, SessionExpiredError } from '../util/security.js';
+import {
+  BlockedOutboundRequestError,
+  classifyOutboundFailure,
+  getOutboundResponseError,
+  isNavigationCancellationError,
+  OutboundRequestFailedError,
+} from '../util/outbound-request.js';
+
+function normalizeOutboundFailure(error: unknown, seen = new Set<object>()): OutboundRequestFailedError | undefined {
+  if (error instanceof OutboundRequestFailedError) {
+    return error;
+  }
+  if (!error || typeof error !== 'object' || seen.has(error)) {
+    return undefined;
+  }
+  seen.add(error);
+  const value = error as { name?: unknown; message?: unknown; cause?: unknown };
+  if (value.name === 'OutboundRequestFailedError') {
+    return new OutboundRequestFailedError(typeof value.message === 'string' ? value.message : undefined);
+  }
+  return normalizeOutboundFailure(value.cause, seen);
+}
+
+function normalizeQueuedUrl(url: string): string {
+  const parsed = new URL(url);
+  return parsed.origin + parsed.pathname + parsed.search;
+}
 
 /** Storage state for authentication (cookies and localStorage) */
 export interface StorageState {
@@ -41,6 +69,15 @@ export class CrawleeCrawler extends BaseCrawler {
   private skippedExternalPages: number = 0;
   /** Optional path prefix to restrict crawling */
   private pathPrefix?: string;
+  private terminalRootFailure?: OutboundRequestFailedError;
+  private failedNavigationUrls = new WeakMap<object, string>();
+  private outboundFailureClassifications = new WeakMap<object, BlockedOutboundRequestError | OutboundRequestFailedError>();
+  private navigationListenerCleanups = new WeakMap<object, () => void>();
+
+  private cleanupNavigationListener(request: object): void {
+    this.navigationListenerCleanups.get(request)?.();
+    this.navigationListenerCleanups.delete(request);
+  }
 
   /**
    * Set authentication cookies/localStorage to use when crawling
@@ -308,7 +345,11 @@ export class CrawleeCrawler extends BaseCrawler {
     // Reset state for this crawl
     this.isFirstPage = true;
     this.sessionExpiredError = null;
-    this.expectedUrl = url;
+    this.terminalRootFailure = undefined;
+    this.failedNavigationUrls = new WeakMap();
+    this.outboundFailureClassifications = new WeakMap();
+    this.navigationListenerCleanups = new WeakMap();
+    this.expectedUrl = normalizeQueuedUrl(url);
     this.skippedExternalPages = 0;
 
     // Extract and store the allowed hostname from the initial URL
@@ -359,15 +400,134 @@ export class CrawleeCrawler extends BaseCrawler {
       ];
     }
 
+    const existingPreNavigationHooks = crawlerOptions.preNavigationHooks ?? [];
+    crawlerOptions.preNavigationHooks = [
+      ...existingPreNavigationHooks,
+      async ({ page, request }) => {
+        const requestKey = request as object;
+        this.cleanupNavigationListener(requestKey);
+        this.failedNavigationUrls.delete(requestKey);
+        this.outboundFailureClassifications.delete(requestKey);
+        const mainFrame = page.mainFrame();
+        const onRequestFailed = (failedRequest: PlaywrightRequest) => {
+          const errorText = failedRequest.failure()?.errorText ?? '';
+          if (failedRequest.isNavigationRequest() && failedRequest.frame() === mainFrame && !isNavigationCancellationError(errorText)) {
+            this.failedNavigationUrls.set(requestKey, failedRequest.url());
+          }
+        };
+        page.on('requestfailed', onRequestFailed);
+        this.navigationListenerCleanups.set(requestKey, () => page.off('requestfailed', onRequestFailed));
+      },
+    ];
+
     this.crawler = new PlaywrightCrawler({
       ...crawlerOptions,
-      requestHandler: async ({ request, page, enqueueLinks, log }) => {
-        if (this.isAborting) {
-          log.debug('Crawl aborted');
-          return;
+      errorHandler: async (context, error) => {
+        const requestKey = context.request as object;
+        const failedUrl = this.failedNavigationUrls.get(requestKey);
+        const outboundFailure = failedUrl ? await classifyOutboundFailure(failedUrl) : normalizeOutboundFailure(error);
+        if (outboundFailure) {
+          this.outboundFailureClassifications.set(requestKey, outboundFailure);
         }
+        if (outboundFailure instanceof BlockedOutboundRequestError) {
+          context.request.noRetry = true;
+        }
+        try {
+          await crawlerOptions.errorHandler?.(context, error);
+        }
+        finally {
+          if (outboundFailure instanceof BlockedOutboundRequestError) {
+            context.request.noRetry = true;
+          }
+          this.cleanupNavigationListener(requestKey);
+        }
+      },
+      failedRequestHandler: async (context, error) => {
+        const requestKey = context.request as object;
+        this.cleanupNavigationListener(requestKey);
+        const failedUrl = this.failedNavigationUrls.get(requestKey);
+        const outboundFailure =
+          this.outboundFailureClassifications.get(requestKey) ??
+          (failedUrl ? await classifyOutboundFailure(failedUrl) : normalizeOutboundFailure(error));
+        if (normalizeQueuedUrl(context.request.url) === this.expectedUrl && outboundFailure instanceof OutboundRequestFailedError) {
+          this.terminalRootFailure = outboundFailure;
+        }
+        this.failedNavigationUrls.delete(requestKey);
+        this.outboundFailureClassifications.delete(requestKey);
+        await crawlerOptions.failedRequestHandler?.(context, error);
+      },
+      requestHandler: async ({ request, response, page, enqueueLinks, log }) => {
+        const requestKey = request as object;
+        this.cleanupNavigationListener(requestKey);
+        this.failedNavigationUrls.delete(requestKey);
+        this.outboundFailureClassifications.delete(requestKey);
+        let latestMainFrameResponse = response;
+        let mainFrameNavigationError: BlockedOutboundRequestError | OutboundRequestFailedError | undefined;
+        let navigationSequence = 0;
+        const pendingNavigationChecks = new Set<Promise<void>>();
+        const trackMainFrameResponse = (nextResponse: typeof response) => {
+          const nextRequest = nextResponse?.request();
+          if (nextRequest?.isNavigationRequest() && nextRequest.frame() === page.mainFrame()) {
+            navigationSequence++;
+            latestMainFrameResponse = nextResponse;
+            mainFrameNavigationError = undefined;
+          }
+        };
+        const trackMainFrameFailure = (failedRequest: PlaywrightRequest) => {
+          if (
+            failedRequest.isNavigationRequest() &&
+            failedRequest.frame() === page.mainFrame() &&
+            !isNavigationCancellationError(failedRequest.failure()?.errorText ?? '')
+          ) {
+            const failureSequence = ++navigationSequence;
+            if (typeof failedRequest.url !== 'function') {
+              mainFrameNavigationError = new OutboundRequestFailedError(
+                `Navigation failed: ${failedRequest.failure()?.errorText ?? 'unknown network error'}`
+              );
+              return;
+            }
+            const check = classifyOutboundFailure(failedRequest.url())
+              .then((error) => {
+                if (navigationSequence === failureSequence) {
+                  mainFrameNavigationError = error;
+                }
+              })
+              .finally(() => pendingNavigationChecks.delete(check));
+            pendingNavigationChecks.add(check);
+          }
+        };
+        page.on('response', trackMainFrameResponse);
+        page.on('requestfailed', trackMainFrameFailure);
+        const shouldSkipNavigation = async () => {
+          await Promise.all(pendingNavigationChecks);
+          if (mainFrameNavigationError) {
+            if (mainFrameNavigationError instanceof BlockedOutboundRequestError) {
+              log.warning(`Skipping blocked outbound destination: ${request.url}`);
+              return true;
+            }
+            throw mainFrameNavigationError;
+          }
+          const outboundError = await getOutboundResponseError(latestMainFrameResponse);
+          if (outboundError instanceof BlockedOutboundRequestError) {
+            log.warning(`Skipping blocked outbound destination: ${request.url}`);
+            return true;
+          }
+          if (outboundError) {
+            throw outboundError;
+          }
+          return false;
+        };
 
         try {
+          if (this.isAborting) {
+            log.debug('Crawl aborted');
+            return;
+          }
+
+          if (await shouldSkipNavigation()) {
+            return;
+          }
+
           // Wait for initial page load
           await Promise.all([
             page.waitForLoadState('domcontentloaded'),
@@ -376,6 +536,9 @@ export class CrawleeCrawler extends BaseCrawler {
 
           // Handle client-side redirects (Docusaurus) and Cloudflare challenges
           await this.waitForPageStabilization(page);
+          if (await shouldSkipNavigation()) {
+            return;
+          }
 
           // Get the actual URL after any redirects
           const actualUrl = page.url();
@@ -452,6 +615,9 @@ export class CrawleeCrawler extends BaseCrawler {
                 extractorUsed,
               };
 
+              if (await shouldSkipNavigation()) {
+                return;
+              }
               this.queueManager.addResult(result);
               this.markUrlProcessed(request.url);
               break;
@@ -459,8 +625,15 @@ export class CrawleeCrawler extends BaseCrawler {
           }
         }
         catch (error) {
+          if (error instanceof OutboundRequestFailedError) {
+            throw error;
+          }
           const errorMessage = error instanceof Error ? error.message : String(error);
           log.error(`Error processing ${request.url}: ${errorMessage}`);
+        }
+        finally {
+          page.off('response', trackMainFrameResponse);
+          page.off('requestfailed', trackMainFrameFailure);
         }
       },
     });
@@ -481,6 +654,9 @@ export class CrawleeCrawler extends BaseCrawler {
       }
 
       await crawlerPromise;
+      if (this.terminalRootFailure) {
+        throw this.terminalRootFailure;
+      }
       logger.debug('Crawler finished');
 
       // Log summary of domain-restricted crawling

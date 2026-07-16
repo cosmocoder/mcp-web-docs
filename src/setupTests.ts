@@ -28,7 +28,7 @@ vi.mock('proxy-chain', async (importOriginal) => {
     Server: class MockProxyServer {
       static instances: MockProxyServer[] = [];
       static nextListenError: Error | undefined;
-      readonly server = { unref: vi.fn() };
+      readonly server = { unref: vi.fn(), maxConnections: Infinity };
       readonly port = 43123;
       readonly options: Record<string, unknown>;
 

@@ -3,13 +3,22 @@ import type { IncomingMessage } from 'node:http';
 import { Server as ProxyServer, type PrepareRequestFunction } from 'proxy-chain';
 import { fetch as undiciFetch, ProxyAgent } from 'undici';
 
-import { closeOutboundProxy, createOutboundProxy, fetchPublicUrl, getOutboundProxyUrl, resolvePublicTarget } from './outbound-request.js';
+import {
+  BlockedOutboundRequestError,
+  classifyOutboundFailure,
+  closeOutboundProxy,
+  createOutboundProxy,
+  fetchPublicUrl,
+  getOutboundProxyUrl,
+  OutboundRequestFailedError,
+  resolvePublicTarget,
+} from './outbound-request.js';
 
 type Resolver = Parameters<typeof resolvePublicTarget>[1];
 
 interface MockProxyServerInstance {
   options: Record<string, unknown> & { prepareRequestFunction?: PrepareRequestFunction };
-  server: { unref: ReturnType<typeof vi.fn> };
+  server: { unref: ReturnType<typeof vi.fn>; maxConnections: number };
   close: ReturnType<typeof vi.fn>;
 }
 
@@ -47,7 +56,7 @@ describe('outbound request security', () => {
     expect(lookup).toHaveBeenCalledWith('example.com', { all: true, order: 'verbatim' });
   });
 
-  it.each(['10.0.0.1', '169.254.169.254', '::1', 'fc00::1', 'fe80::1', 'ff02::1', '::ffff:c0a8:101'])(
+  it.each(['10.0.0.1', '169.254.169.254', '::1', '100:0:0:1::1', '4000::1', 'fc00::1', 'fe80::1', 'ff02::1', '::ffff:c0a8:101'])(
     'rejects a hostname when DNS includes non-public address %s',
     async (address) => {
       await expect(
@@ -58,7 +67,10 @@ describe('outbound request security', () => {
             { address, family: address.includes(':') ? 6 : 4 },
           ])
         )
-      ).rejects.toThrow('non-public');
+      ).rejects.toMatchObject({
+        name: 'BlockedOutboundRequestError',
+        message: expect.stringContaining('non-public'),
+      });
     }
   );
 
@@ -85,6 +97,58 @@ describe('outbound request security', () => {
       headers: { 'x-mcp-web-docs-blocked': '1' },
     });
     await expect(fetchPublicUrl('http://8.8.8.8/docs')).rejects.toThrow('Blocked outbound destination');
+  });
+
+  it.each(['EAI_AGAIN', 'ENOTFOUND'])('classifies resolver error %s as an unblocked proxy failure', async (code) => {
+    const lookup = vi.fn().mockRejectedValue(Object.assign(new Error(code), { code })) as unknown as Resolver;
+    const proxy = await createOutboundProxy(lookup);
+    const prepareRequest = latestProxyServer().options.prepareRequestFunction!;
+    const request = Object.assign(new EventEmitter(), { socket: new EventEmitter() }) as unknown as IncomingMessage;
+
+    await expect(
+      prepareRequest({
+        hostname: 'example.com',
+        port: 443,
+        isHttp: false,
+        connectionId: 1,
+        request,
+        username: '',
+        password: '',
+      })
+    ).rejects.toMatchObject({
+      name: 'RequestError',
+      statusCode: 502,
+      headers: { 'x-mcp-web-docs-failed': '1' },
+    });
+    await proxy.close();
+  });
+
+  it('classifies concurrent failures independently even for the same endpoint', async () => {
+    const [blocked, failed] = await Promise.all([
+      classifyOutboundFailure('https://same.example.com/docs', resolver([{ address: '127.0.0.1', family: 4 }])),
+      classifyOutboundFailure('https://same.example.com/docs', resolver([{ address: '8.8.8.8', family: 4 }])),
+    ]);
+
+    expect(blocked).toBeInstanceOf(BlockedOutboundRequestError);
+    expect(failed).toBeInstanceOf(OutboundRequestFailedError);
+  });
+
+  it('surfaces a proxy network failure to raw fetch callers', async () => {
+    fetchMock.mockResponseOnce('Outbound destination unavailable', {
+      status: 502,
+      headers: { 'x-mcp-web-docs-failed': '1' },
+    });
+
+    await expect(fetchPublicUrl('http://8.8.8.8/docs')).rejects.toMatchObject({
+      name: 'OutboundRequestFailedError',
+      message: 'Outbound destination unavailable',
+    });
+  });
+
+  it('classifies a rejected raw fetch by validating the failed URL', async () => {
+    fetchMock.mockRejectOnce(new Error('fetch failed'));
+
+    await expect(fetchPublicUrl('https://8.8.8.8/docs')).rejects.toBeInstanceOf(OutboundRequestFailedError);
   });
 
   it('pins the proxy connector to the validated address without resolving again', async () => {
@@ -122,6 +186,47 @@ describe('outbound request security', () => {
     await proxy.close();
   });
 
+  it('bounds concurrent resolver work and removes aborted queued lookups', async () => {
+    const pending: Array<(addresses: Array<{ address: string; family: 4 }>) => void> = [];
+    const lookup = vi.fn(
+      () =>
+        new Promise<Array<{ address: string; family: 4 }>>((resolve) => {
+          pending.push(resolve);
+        })
+    ) as unknown as Resolver;
+    const proxy = await createOutboundProxy(lookup);
+    const prepareRequest = latestProxyServer().options.prepareRequestFunction!;
+    const requests = Array.from(
+      { length: 65 },
+      () => Object.assign(new EventEmitter(), { socket: new EventEmitter() }) as unknown as IncomingMessage
+    );
+    const lookups = requests.map((request, index) =>
+      prepareRequest({
+        hostname: `host-${index}.example.com`,
+        port: 443,
+        isHttp: false,
+        connectionId: index,
+        request,
+        username: '',
+        password: '',
+      })
+    );
+
+    await vi.waitFor(() => expect(lookup).toHaveBeenCalledTimes(64));
+
+    requests[0].emit('aborted');
+    await expect(lookups[0]).rejects.toMatchObject({ name: 'AbortError' });
+    expect(lookup).toHaveBeenCalledTimes(64);
+
+    requests[64].emit('aborted');
+    await expect(lookups[64]).rejects.toMatchObject({ name: 'AbortError' });
+
+    pending.forEach((resolve) => resolve([{ address: '8.8.8.8', family: 4 }]));
+    await expect(Promise.all(lookups.slice(1, 64))).resolves.toHaveLength(63);
+    expect(lookup).toHaveBeenCalledTimes(64);
+    await proxy.close();
+  });
+
   it('aborts DNS validation while the resolver is pending', async () => {
     const controller = new AbortController();
     const lookup = vi.fn(() => new Promise<never>(() => {})) as unknown as Resolver;
@@ -139,6 +244,7 @@ describe('outbound request security', () => {
     expect(proxy.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(server.options).toMatchObject({ host: '127.0.0.1', port: 0 });
     expect(server.server.unref).toHaveBeenCalledOnce();
+    expect(server.server.maxConnections).toBe(64);
     await expect(proxy.close()).resolves.toBeUndefined();
     expect(server.close).toHaveBeenCalledWith(true);
   });
@@ -190,12 +296,15 @@ describe('outbound request security', () => {
     }
   });
 
-  it('validates a redirect before requesting the next hop', async () => {
-    fetchMock.mockResponseOnce('', { status: 302, headers: { location: 'http://127.0.0.1/admin' } });
+  it.each(['http://127.0.0.1/admin', 'http://[::1]/admin'])(
+    'validates a redirect to %s before requesting the next hop',
+    async (location) => {
+      fetchMock.mockResponseOnce('', { status: 302, headers: { location } });
 
-    await expect(fetchPublicUrl('https://8.8.8.8/docs')).rejects.toThrow();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
+      await expect(fetchPublicUrl('https://8.8.8.8/docs')).rejects.toMatchObject({ name: 'BlockedOutboundRequestError' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  );
 
   it('preserves redirects between public URLs', async () => {
     fetchMock.mockResponseOnce('', { status: 302, headers: { location: 'https://1.1.1.1/docs' } });

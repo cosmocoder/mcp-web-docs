@@ -7,7 +7,7 @@ import { RequestError, Server as ProxyServer } from 'proxy-chain';
 import { fetch as undiciFetch, ProxyAgent, type Dispatcher } from 'undici';
 import { validatePublicUrl } from './security.js';
 
-type Resolver = typeof lookup;
+type Resolver = (hostname: string, options: { all: true; order: 'verbatim' }) => Promise<LookupAddress[]>;
 type PinnedLookup = (
   hostname: string,
   options: LookupOptions,
@@ -16,8 +16,15 @@ type PinnedLookup = (
 
 const MAX_REDIRECTS = 5;
 const BLOCKED_HEADER = 'x-mcp-web-docs-blocked';
+const FAILED_HEADER = 'x-mcp-web-docs-failed';
 const PROXY_SHUTDOWN_TIMEOUT_MS = 1000;
+const FAILURE_CLASSIFICATION_TIMEOUT_MS = 1000;
+const MAX_PROXY_CONNECTIONS = 64;
+const publicAddresses = new BlockList();
 const blockedAddresses = new BlockList();
+
+publicAddresses.addSubnet('0.0.0.0', 0, 'ipv4');
+publicAddresses.addSubnet('2000::', 3, 'ipv6');
 
 for (const [network, prefix] of [
   ['0.0.0.0', 8],
@@ -60,21 +67,15 @@ for (const [network, prefix] of [
   blockedAddresses.addSubnet(network, prefix, 'ipv6');
 }
 
-function abortError(): DOMException {
-  return new DOMException('The operation was aborted', 'AbortError');
-}
-
 async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal | null): Promise<T> {
   if (!signal) {
     return promise;
   }
-  if (signal.aborted) {
-    throw abortError();
-  }
+  signal.throwIfAborted();
 
   let onAbort: (() => void) | undefined;
   const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(abortError());
+    onAbort = () => reject(signal.reason);
     signal.addEventListener('abort', onAbort, { once: true });
   });
 
@@ -86,16 +87,131 @@ async function raceWithAbort<T>(promise: Promise<T>, signal?: AbortSignal | null
   }
 }
 
+function createLimitedResolver(
+  resolver: Resolver
+): (hostname: string, options: { all: true; order: 'verbatim' }, signal?: AbortSignal) => Promise<LookupAddress[]> {
+  interface QueuedLookup {
+    hostname: string;
+    options: { all: true; order: 'verbatim' };
+    signal?: AbortSignal;
+    resolve: (addresses: LookupAddress[]) => void;
+    reject: (error: unknown) => void;
+    onAbort?: () => void;
+  }
+
+  let active = 0;
+  const queue: QueuedLookup[] = [];
+
+  const drain = () => {
+    while (active < MAX_PROXY_CONNECTIONS && queue.length > 0) {
+      const lookupRequest = queue.shift()!;
+      lookupRequest.signal?.removeEventListener('abort', lookupRequest.onAbort!);
+      if (lookupRequest.signal?.aborted) {
+        lookupRequest.reject(lookupRequest.signal.reason);
+        continue;
+      }
+
+      active++;
+      Promise.resolve()
+        .then(() => resolver(lookupRequest.hostname, lookupRequest.options))
+        .then(lookupRequest.resolve, lookupRequest.reject)
+        .finally(() => {
+          active--;
+          drain();
+        });
+    }
+  };
+
+  return (hostname, options, signal) => {
+    signal?.throwIfAborted();
+    return new Promise<LookupAddress[]>((resolve, reject) => {
+      const lookupRequest: QueuedLookup = { hostname, options, signal, resolve, reject };
+      lookupRequest.onAbort = () => {
+        const index = queue.indexOf(lookupRequest);
+        if (index >= 0) {
+          queue.splice(index, 1);
+          reject(signal!.reason);
+        }
+      };
+      queue.push(lookupRequest);
+      signal?.addEventListener('abort', lookupRequest.onAbort, { once: true });
+      drain();
+    });
+  };
+}
+
 function isPublicAddress(address: string): boolean {
   const family = isIP(address);
-  return family !== 0 && !blockedAddresses.check(address, family === 4 ? 'ipv4' : 'ipv6');
+  const addressFamily = family === 4 ? 'ipv4' : 'ipv6';
+  return family !== 0 && publicAddresses.check(address, addressFamily) && !blockedAddresses.check(address, addressFamily);
+}
+
+export class BlockedOutboundRequestError extends Error {
+  constructor(message = 'Blocked outbound destination') {
+    super(message);
+    this.name = 'BlockedOutboundRequestError';
+  }
+}
+
+export class OutboundRequestFailedError extends Error {
+  constructor(message = 'Outbound request failed') {
+    super(message);
+    this.name = 'OutboundRequestFailedError';
+  }
+}
+
+type BrowserResponse = { status(): number; headerValue(name: string): Promise<string | null> };
+
+export async function getOutboundResponseError(response: BrowserResponse | null | undefined): Promise<Error | undefined> {
+  if (!response || (response.status() !== 403 && response.status() !== 502)) {
+    return undefined;
+  }
+  try {
+    const [blocked, failed] = await Promise.all([response.headerValue(BLOCKED_HEADER), response.headerValue(FAILED_HEADER)]);
+    if (response.status() === 403 && blocked === '1') {
+      return new BlockedOutboundRequestError();
+    }
+    if (response.status() === 502 && failed === '1') {
+      return new OutboundRequestFailedError('Outbound destination unavailable');
+    }
+    return undefined;
+  }
+  catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new OutboundRequestFailedError(`Failed to inspect outbound response: ${message}`);
+  }
+}
+
+export async function isBlockedOutboundResponse(response: BrowserResponse | null | undefined): Promise<boolean> {
+  return (await getOutboundResponseError(response)) instanceof BlockedOutboundRequestError;
+}
+
+export function isNavigationCancellationError(errorText: string): boolean {
+  return /ERR_ABORTED|NS_BINDING_ABORTED|cancel(?:l)?ed.*load|load.*cancel(?:l)?ed/i.test(errorText);
 }
 
 function validateHostname(hostname: string): string {
   const normalized = hostname.replace(/^\[|\]$/g, '');
   const host = isIP(normalized) === 6 ? `[${normalized}]` : normalized;
-  validatePublicUrl(`http://${host}`);
+  try {
+    validatePublicUrl(`http://${host}`);
+  }
+  catch {
+    throw new BlockedOutboundRequestError('Access to non-public addresses is not allowed');
+  }
   return normalized;
+}
+
+function validateOutboundUrl(urlString: string): URL {
+  try {
+    return validatePublicUrl(urlString);
+  }
+  catch (error) {
+    if (error instanceof Error && error.message.startsWith('Access to')) {
+      throw new BlockedOutboundRequestError(error.message);
+    }
+    throw error;
+  }
 }
 
 function createPinnedLookup(hostname: string, addresses: LookupAddress[]): PinnedLookup {
@@ -128,10 +244,43 @@ export async function resolvePublicTarget(hostname: string, resolver: Resolver =
     : await raceWithAbort(resolver(normalizedHostname, { all: true, order: 'verbatim' }), signal);
 
   if (addresses.length === 0 || addresses.some(({ address }) => !isPublicAddress(address))) {
-    throw new Error('Access to non-public addresses is not allowed');
+    throw new BlockedOutboundRequestError('Access to non-public addresses is not allowed');
   }
 
   return createPinnedLookup(normalizedHostname, addresses);
+}
+
+const limitedClassificationResolver = createLimitedResolver(lookup);
+
+/** Re-resolve the exact URL whose connection failed to distinguish policy blocks from ordinary network failures. */
+export async function classifyOutboundFailure(
+  input: string | URL,
+  resolver: Resolver = lookup
+): Promise<BlockedOutboundRequestError | OutboundRequestFailedError> {
+  let url: URL;
+  try {
+    url = validateOutboundUrl(input.toString());
+  }
+  catch (error) {
+    if (error instanceof BlockedOutboundRequestError || (error instanceof Error && error.message.startsWith('Access to'))) {
+      return new BlockedOutboundRequestError();
+    }
+    return new OutboundRequestFailedError('Outbound destination unavailable');
+  }
+
+  const signal = AbortSignal.timeout(FAILURE_CLASSIFICATION_TIMEOUT_MS);
+  try {
+    const classificationResolver: Resolver =
+      resolver === lookup ? (hostname, options) => limitedClassificationResolver(hostname, options, signal) : resolver;
+    await resolvePublicTarget(url.hostname, classificationResolver, signal);
+    return new OutboundRequestFailedError('Outbound destination unavailable');
+  }
+  catch (error) {
+    if (error instanceof BlockedOutboundRequestError) {
+      return new BlockedOutboundRequestError();
+    }
+    return new OutboundRequestFailedError('Outbound destination unavailable');
+  }
 }
 
 function requestAbortSignal(request: IncomingMessage): { signal: AbortSignal; cleanup: () => void } {
@@ -156,13 +305,14 @@ export interface OutboundProxy {
 
 /** Start a loopback-only proxy that pins every target connection to its validated DNS result. */
 export async function createOutboundProxy(resolver: Resolver = lookup): Promise<OutboundProxy> {
+  const limitedResolver = createLimitedResolver(resolver);
   const server = new ProxyServer({
     host: '127.0.0.1',
     port: 0,
     prepareRequestFunction: async ({ hostname, request }) => {
       const { signal, cleanup } = requestAbortSignal(request);
       try {
-        const dnsLookup = await resolvePublicTarget(hostname, resolver, signal);
+        const dnsLookup = await resolvePublicTarget(hostname, (target, options) => limitedResolver(target, options, signal), signal);
         return {
           dnsLookup: dnsLookup as typeof import('node:dns').lookup,
         };
@@ -171,13 +321,18 @@ export async function createOutboundProxy(resolver: Resolver = lookup): Promise<
         if (error instanceof DOMException && error.name === 'AbortError') {
           throw error;
         }
-        throw new RequestError('Blocked outbound destination', 403, { [BLOCKED_HEADER]: '1' });
+        if (error instanceof BlockedOutboundRequestError) {
+          throw new RequestError('Blocked outbound destination', 403, { [BLOCKED_HEADER]: '1' });
+        }
+        throw new RequestError('Outbound destination unavailable', 502, { [FAILED_HEADER]: '1' });
       }
       finally {
         cleanup();
       }
     },
   });
+  // Bound concurrent proxy sockets so hostile pages cannot fan out unbounded resolver work.
+  server.server.maxConnections = MAX_PROXY_CONNECTIONS;
 
   try {
     await server.listen();
@@ -228,9 +383,7 @@ function startProxyState(): Promise<ProxyState> {
 }
 
 async function getProxyState(signal?: AbortSignal | null): Promise<ProxyState> {
-  if (signal?.aborted) {
-    throw abortError();
-  }
+  signal?.throwIfAborted();
   return raceWithAbort(proxyState ?? startProxyState(), signal);
 }
 
@@ -253,16 +406,29 @@ export async function closeOutboundProxy(): Promise<void> {
 
 /** Fetch a public URL while validating every redirect through the pinned egress proxy. */
 export async function fetchPublicUrl(urlString: string, init: RequestInit = {}): Promise<Response> {
-  let url = validatePublicUrl(urlString);
+  let url = validateOutboundUrl(urlString);
   let headers = init.headers;
   const dispatcher = await getProxyState(init.signal).then((state) => state.dispatcher);
 
   for (let redirects = 0; ; redirects++) {
     const requestInit = { ...init, headers, redirect: 'manual', dispatcher } as RequestInit;
-    const response = await undiciFetch(url.toString(), requestInit as Parameters<typeof undiciFetch>[1]);
+    let response;
+    try {
+      response = await undiciFetch(url.toString(), requestInit as Parameters<typeof undiciFetch>[1]);
+    }
+    catch (error) {
+      if (init.signal?.aborted) {
+        throw error;
+      }
+      throw await classifyOutboundFailure(url);
+    }
     if (response.headers.get(BLOCKED_HEADER) === '1') {
       await response.body?.cancel();
-      throw new Error('Blocked outbound destination');
+      throw new BlockedOutboundRequestError();
+    }
+    if (response.headers.get(FAILED_HEADER) === '1') {
+      await response.body?.cancel();
+      throw new OutboundRequestFailedError('Outbound destination unavailable');
     }
     const location = response.headers.get('location');
 
@@ -275,7 +441,7 @@ export async function fetchPublicUrl(urlString: string, init: RequestInit = {}):
     }
 
     await response.body?.cancel();
-    const nextUrl = validatePublicUrl(new URL(location, url).toString());
+    const nextUrl = validateOutboundUrl(new URL(location, url).toString());
     if (nextUrl.origin !== url.origin) {
       const safeHeaders = new Headers(headers);
       safeHeaders.delete('authorization');

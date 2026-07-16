@@ -1,5 +1,4 @@
 import { lookup } from 'node:dns/promises';
-import type { Mock } from 'vitest';
 
 import { encryptData } from '../util/security.js';
 import { detectDefaultBrowser, AuthManager, type BrowserType } from './auth.js';
@@ -54,6 +53,7 @@ interface Cookie {
 
 interface BrowserMockOptions {
   status?: number;
+  blocked?: boolean;
   url?: string;
   content?: string;
   bodyText?: string;
@@ -89,19 +89,44 @@ function mockStoredSession(cookies: Cookie[], domain = 'example.com') {
 function setupBrowserMock(options: BrowserMockOptions = {}) {
   const {
     status = 200,
+    blocked = false,
     url = 'https://example.com',
     content = '<html><body>Welcome!</body></html>',
     bodyText = 'Welcome to the site',
   } = options;
+  const mainFrame = {};
+  const responseListeners = new Set<(response: Record<string, unknown>) => void>();
+  const requestFailedListeners = new Set<(request: Record<string, unknown>) => void>();
 
   const mockPage = {
-    goto: vi.fn().mockResolvedValue({ status: () => status }),
+    goto: vi.fn().mockResolvedValue({
+      status: () => status,
+      headerValue: vi.fn().mockImplementation(async (name: string) => (blocked && name === 'x-mcp-web-docs-blocked' ? '1' : null)),
+    }),
     url: vi.fn().mockReturnValue(url),
     waitForLoadState: vi.fn().mockResolvedValue(undefined),
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
     waitForURL: vi.fn().mockResolvedValue(undefined),
     content: vi.fn().mockResolvedValue(content),
     evaluate: vi.fn().mockResolvedValue(bodyText),
+    close: vi.fn().mockResolvedValue(undefined),
+    mainFrame: vi.fn().mockReturnValue(mainFrame),
+    on: vi.fn((event: string, listener: (response: Record<string, unknown>) => void) => {
+      if (event === 'response') {
+        responseListeners.add(listener);
+      }
+      else if (event === 'requestfailed') {
+        requestFailedListeners.add(listener);
+      }
+    }),
+    off: vi.fn((event: string, listener: (response: Record<string, unknown>) => void) => {
+      if (event === 'response') {
+        responseListeners.delete(listener);
+      }
+      else if (event === 'requestfailed') {
+        requestFailedListeners.delete(listener);
+      }
+    }),
   };
   const mockContext = {
     newPage: vi.fn().mockResolvedValue(mockPage),
@@ -116,7 +141,14 @@ function setupBrowserMock(options: BrowserMockOptions = {}) {
   };
   mockChromiumLaunch.mockResolvedValue(mockBrowser);
 
-  return { mockPage, mockContext, mockBrowser };
+  return {
+    mockPage,
+    mockContext,
+    mockBrowser,
+    emitResponse: (response: Record<string, unknown>) => responseListeners.forEach((listener) => listener(response)),
+    emitRequestFailed: (request: Record<string, unknown>) => requestFailedListeners.forEach((listener) => listener(request)),
+    mainFrame,
+  };
 }
 
 /**
@@ -257,6 +289,7 @@ describe('Auth Module', () => {
         expect(mockBrowser.newContext.mock.calls[0][0]).not.toHaveProperty('serviceWorkers');
         expect(mockContext.route).not.toHaveBeenCalled();
         expect(mockContext.routeWebSocket).not.toHaveBeenCalled();
+        expect(lookup).not.toHaveBeenCalled();
       });
     });
 
@@ -279,6 +312,311 @@ describe('Auth Module', () => {
         expect(mockBrowser.newContext.mock.calls[0][0]).not.toHaveProperty('serviceWorkers');
         expect(mockContext.route).not.toHaveBeenCalled();
         expect(mockContext.routeWebSocket).not.toHaveBeenCalled();
+      });
+
+      it('does not wait for login when the proxy blocks the destination', async () => {
+        const { mockPage } = setupBrowserMock({ status: 403, blocked: true });
+
+        await expect(
+          authManager.performInteractiveLogin('https://example.com', {
+            browser: 'chromium',
+            loginSuccessPattern: 'example',
+          })
+        ).rejects.toThrow('Blocked outbound destination');
+
+        expect(mockPage.waitForURL).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['tagged response', 'Blocked outbound destination'],
+        ['tunnel failure', 'Navigation failed: net::ERR_TUNNEL_CONNECTION_FAILED'],
+      ])('rejects a main-frame %s emitted during goto', async (failureKind, expectedError) => {
+        const { mockPage, emitResponse, emitRequestFailed, mainFrame } = setupBrowserMock();
+        mockPage.goto.mockImplementation(async () => {
+          if (failureKind === 'tagged response') {
+            emitResponse({
+              status: () => 403,
+              headerValue: vi.fn().mockResolvedValue('1'),
+              request: () => ({ isNavigationRequest: () => true, frame: () => mainFrame }),
+            });
+          }
+          else {
+            emitRequestFailed({
+              isNavigationRequest: () => true,
+              frame: () => mainFrame,
+              failure: () => ({ errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }),
+            });
+          }
+          return {
+            status: () => 200,
+            headerValue: vi.fn().mockResolvedValue(null),
+          };
+        });
+
+        await expect(
+          authManager.performInteractiveLogin('https://example.com', {
+            browser: 'chromium',
+            loginSuccessPattern: 'example',
+          })
+        ).rejects.toThrow(expectedError);
+
+        expect(mockPage.waitForURL).not.toHaveBeenCalled();
+        expect(mockWriteFile).not.toHaveBeenCalled();
+        expect(mockPage.off).toHaveBeenCalledWith('response', expect.any(Function));
+        expect(mockPage.off).toHaveBeenCalledWith('requestfailed', expect.any(Function));
+      });
+
+      it.each([
+        ['blocked', 'http://127.0.0.1/login', 'Blocked outbound destination'],
+        ['failed', 'https://8.8.8.8/login', 'Outbound destination unavailable'],
+      ])('classifies an async %s requestfailed URL', async (_kind, failedUrl, expectedError) => {
+        const { mockPage, emitRequestFailed, mainFrame } = setupBrowserMock();
+        mockPage.goto.mockImplementation(async () => {
+          emitRequestFailed({
+            isNavigationRequest: () => true,
+            frame: () => mainFrame,
+            failure: () => ({ errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }),
+            url: () => failedUrl,
+          });
+          return { status: () => 200, headerValue: vi.fn().mockResolvedValue(null) };
+        });
+
+        await expect(
+          authManager.performInteractiveLogin('https://example.com', {
+            browser: 'chromium',
+            loginSuccessPattern: 'example',
+          })
+        ).rejects.toThrow(expectedError);
+
+        expect(mockPage.waitForURL).not.toHaveBeenCalled();
+        expect(mockWriteFile).not.toHaveBeenCalled();
+      });
+
+      it('awaits asynchronous requestfailed classification before continuing login', async () => {
+        let resolveLookup!: (addresses: Array<{ address: string; family: 4 }>) => void;
+        const pendingLookup = new Promise<Array<{ address: string; family: 4 }>>((resolve) => {
+          resolveLookup = resolve;
+        });
+        vi.mocked(lookup).mockImplementationOnce(() => pendingLookup as never);
+        const { mockPage, emitRequestFailed, mainFrame } = setupBrowserMock();
+        mockPage.goto.mockImplementation(async () => {
+          emitRequestFailed({
+            isNavigationRequest: () => true,
+            frame: () => mainFrame,
+            failure: () => ({ errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }),
+            url: () => 'https://redirected.example.com/login',
+          });
+          return { status: () => 200, headerValue: vi.fn().mockResolvedValue(null) };
+        });
+
+        const login = authManager.performInteractiveLogin('https://example.com', {
+          browser: 'chromium',
+          loginSuccessPattern: 'example',
+        });
+        let settled = false;
+        void login.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          }
+        );
+        await vi.waitFor(() => expect(resolveLookup).toBeTypeOf('function'));
+        expect(settled).toBe(false);
+
+        resolveLookup([{ address: '127.0.0.1', family: 4 }]);
+        await expect(login).rejects.toThrow('Blocked outbound destination');
+      });
+
+      it('awaits a deferred response marker before saving a successful login', async () => {
+        const { mockPage, emitResponse, mainFrame } = setupBrowserMock();
+        let finishWait!: () => void;
+        mockPage.waitForURL.mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              finishWait = resolve;
+            })
+        );
+        let resolveHeader!: (value: string | null) => void;
+        const header = new Promise<string | null>((resolve) => {
+          resolveHeader = resolve;
+        });
+        const login = authManager.performInteractiveLogin('https://example.com', {
+          browser: 'chromium',
+          loginSuccessPattern: 'example',
+        });
+        await vi.waitFor(() => expect(mockPage.waitForURL).toHaveBeenCalled());
+
+        emitResponse({
+          status: () => 403,
+          headerValue: vi.fn().mockReturnValue(header),
+          request: () => ({ isNavigationRequest: () => true, frame: () => mainFrame }),
+        });
+        finishWait();
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(mockWriteFile).not.toHaveBeenCalled();
+
+        resolveHeader('1');
+
+        await expect(login).rejects.toThrow('Blocked outbound destination');
+        expect(mockWriteFile).not.toHaveBeenCalled();
+      });
+
+      it('fails closed when a login response marker cannot be inspected', async () => {
+        const { mockPage, emitResponse, mainFrame } = setupBrowserMock();
+        let finishWait!: () => void;
+        mockPage.waitForURL.mockImplementation(
+          () =>
+            new Promise<void>((resolve) => {
+              finishWait = resolve;
+            })
+        );
+        const login = authManager.performInteractiveLogin('https://example.com', {
+          browser: 'chromium',
+          loginSuccessPattern: 'example',
+        });
+        await vi.waitFor(() => expect(mockPage.waitForURL).toHaveBeenCalled());
+
+        emitResponse({
+          status: () => 403,
+          headerValue: vi.fn().mockRejectedValue(new Error('headers unavailable')),
+          request: () => ({ isNavigationRequest: () => true, frame: () => mainFrame }),
+        });
+        finishWait();
+
+        await expect(login).rejects.toThrow('Failed to inspect outbound response: headers unavailable');
+        expect(mockWriteFile).not.toHaveBeenCalled();
+      });
+
+      it('stops an OAuth wait when a later main-frame navigation is blocked', async () => {
+        const { mockPage, emitResponse, mainFrame } = setupBrowserMock();
+        let rejectWait!: (error: Error) => void;
+        mockPage.waitForURL.mockImplementation(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectWait = reject;
+            })
+        );
+        mockPage.close.mockImplementation(async () => rejectWait(new Error('Page closed')));
+        const login = authManager.performInteractiveLogin('https://example.com', {
+          browser: 'chromium',
+          loginSuccessPattern: 'example',
+        });
+        await vi.waitFor(() => expect(mockPage.waitForURL).toHaveBeenCalled());
+
+        let settled = false;
+        void login.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          }
+        );
+        emitResponse({
+          status: () => 403,
+          headerValue: vi.fn().mockResolvedValue('1'),
+          request: () => ({ isNavigationRequest: () => false, frame: () => mainFrame }),
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        emitResponse({
+          status: () => 403,
+          headerValue: vi.fn().mockResolvedValue('1'),
+          request: () => ({ isNavigationRequest: () => true, frame: () => mainFrame }),
+        });
+
+        await expect(login).rejects.toThrow('Blocked outbound destination');
+        expect(mockPage.off).toHaveBeenCalledWith('response', expect.any(Function));
+      });
+
+      it('checks navigation policy after capturing storage state and before saving', async () => {
+        const { mockPage, mockContext, emitResponse, mainFrame } = setupBrowserMock();
+        let resolveHeader!: (value: string | null) => void;
+        const blockedHeader = new Promise<string | null>((resolve) => {
+          resolveHeader = resolve;
+        });
+        mockContext.storageState.mockImplementation(async () => {
+          emitResponse({
+            status: () => 403,
+            headerValue: vi
+              .fn()
+              .mockImplementation((name: string) => (name === 'x-mcp-web-docs-blocked' ? blockedHeader : Promise.resolve(null))),
+            request: () => ({ isNavigationRequest: () => true, frame: () => mainFrame }),
+          });
+          return { cookies: [], origins: [] };
+        });
+        const login = authManager.performInteractiveLogin('https://example.com', {
+          browser: 'chromium',
+          loginSuccessPattern: 'example',
+        });
+        await vi.waitFor(() => expect(mockContext.storageState).toHaveBeenCalled());
+        await Promise.resolve();
+        expect(mockWriteFile).not.toHaveBeenCalled();
+
+        resolveHeader('1');
+
+        await expect(login).rejects.toThrow('Blocked outbound destination');
+        expect(mockWriteFile).not.toHaveBeenCalled();
+        expect(mockPage.off).toHaveBeenCalledWith('response', expect.any(Function));
+      });
+
+      it('ignores an aborted OAuth navigation but stops on a later fatal tunnel failure', async () => {
+        const { mockPage, emitRequestFailed, mainFrame } = setupBrowserMock();
+        let rejectWait!: (error: Error) => void;
+        mockPage.waitForURL.mockImplementation(
+          () =>
+            new Promise((_resolve, reject) => {
+              rejectWait = reject;
+            })
+        );
+        mockPage.close.mockImplementation(async () => rejectWait(new Error('Page closed')));
+        const login = authManager.performInteractiveLogin('https://example.com', {
+          browser: 'chromium',
+          loginSuccessPattern: 'example',
+        });
+        await vi.waitFor(() => expect(mockPage.waitForURL).toHaveBeenCalled());
+
+        let settled = false;
+        void login.then(
+          () => {
+            settled = true;
+          },
+          () => {
+            settled = true;
+          }
+        );
+        emitRequestFailed({
+          isNavigationRequest: () => false,
+          frame: () => mainFrame,
+          failure: () => ({ errorText: 'net::ERR_CONNECTION_REFUSED' }),
+        });
+        await Promise.resolve();
+        expect(settled).toBe(false);
+
+        for (const errorText of ['net::ERR_ABORTED', 'NS_BINDING_ABORTED', 'Load request cancelled']) {
+          emitRequestFailed({
+            isNavigationRequest: () => true,
+            frame: () => mainFrame,
+            failure: () => ({ errorText }),
+          });
+          await Promise.resolve();
+          expect(settled).toBe(false);
+        }
+
+        emitRequestFailed({
+          isNavigationRequest: () => true,
+          frame: () => mainFrame,
+          failure: () => ({ errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }),
+        });
+
+        await expect(login).rejects.toThrow('Navigation failed: net::ERR_TUNNEL_CONNECTION_FAILED');
+        expect(mockPage.off).toHaveBeenCalledWith('response', expect.any(Function));
+        expect(mockPage.off).toHaveBeenCalledWith('requestfailed', expect.any(Function));
       });
     });
 
@@ -342,17 +680,15 @@ describe('Auth Module', () => {
     });
   });
 
-  it('rejects a custom login URL that DNS resolves to a private address before launching a browser', async () => {
-    const authManager = new AuthManager('/tmp/test-data');
-    const mockLookup = lookup as Mock;
-    mockLookup.mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }]);
-    mockLookup.mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }]);
+  it.each(['http://127.0.0.1/login', 'http://[::1]/login'])(
+    'rejects private custom login URL %s before launching a browser',
+    async (loginUrl) => {
+      const authManager = new AuthManager('/tmp/test-data');
 
-    await expect(
-      authManager.performInteractiveLogin('https://example.com', { loginUrl: 'https://login.example.com/login' })
-    ).rejects.toThrow('non-public');
-    expect(mockChromiumLaunch).not.toHaveBeenCalled();
-  });
+      await expect(authManager.performInteractiveLogin('https://example.com', { loginUrl })).rejects.toThrow('not allowed');
+      expect(mockChromiumLaunch).not.toHaveBeenCalled();
+    }
+  );
 
   describe('validateSession', () => {
     let authManager: AuthManager;
@@ -456,6 +792,95 @@ describe('Auth Module', () => {
 
         expect(result.isValid).toBe(false);
         expect(result.reason).toContain(String(statusCode));
+      });
+
+      it('does not classify a proxy policy rejection as expired credentials', async () => {
+        setupBrowserMock({ status: 403, blocked: true });
+
+        await expect(authManager.validateSession('https://example.com')).rejects.toThrow('Blocked outbound destination');
+      });
+
+      it('preserves the session when a post-load main-frame response is proxy-blocked', async () => {
+        const { mockPage, emitResponse, mainFrame } = setupBrowserMock();
+        let emitted = false;
+        mockPage.waitForLoadState.mockImplementation(async () => {
+          if (!emitted) {
+            emitted = true;
+            emitResponse({
+              status: () => 403,
+              headerValue: vi.fn().mockResolvedValue('1'),
+              request: () => ({ isNavigationRequest: () => true, frame: () => mainFrame }),
+            });
+          }
+        });
+
+        await expect(authManager.validateSessionOrThrow('https://example.com')).rejects.toThrow('Blocked outbound destination');
+        expect(mockUnlink).not.toHaveBeenCalled();
+        expect(mockPage.off).toHaveBeenCalledWith('response', expect.any(Function));
+      });
+
+      it('preserves the session when a post-load main-frame request fails', async () => {
+        const { mockPage, emitRequestFailed, mainFrame } = setupBrowserMock();
+        let emitted = false;
+        mockPage.waitForLoadState.mockImplementation(async () => {
+          if (!emitted) {
+            emitted = true;
+            emitRequestFailed({
+              isNavigationRequest: () => true,
+              frame: () => mainFrame,
+              failure: () => ({ errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }),
+            });
+          }
+        });
+
+        await expect(authManager.validateSessionOrThrow('https://example.com')).rejects.toThrow(
+          'Navigation failed: net::ERR_TUNNEL_CONNECTION_FAILED'
+        );
+        expect(mockUnlink).not.toHaveBeenCalled();
+        expect(mockPage.off).toHaveBeenCalledWith('requestfailed', expect.any(Function));
+      });
+
+      it('fails closed without deleting the session when a validation marker cannot be inspected', async () => {
+        const { mockPage, emitResponse, mainFrame } = setupBrowserMock();
+        let emitted = false;
+        mockPage.waitForLoadState.mockImplementation(async () => {
+          if (!emitted) {
+            emitted = true;
+            emitResponse({
+              status: () => 403,
+              headerValue: vi.fn().mockRejectedValue(new Error('headers unavailable')),
+              request: () => ({ isNavigationRequest: () => true, frame: () => mainFrame }),
+            });
+          }
+        });
+
+        await expect(authManager.validateSessionOrThrow('https://example.com')).rejects.toThrow(
+          'Failed to inspect outbound response: headers unavailable'
+        );
+        expect(mockUnlink).not.toHaveBeenCalled();
+      });
+
+      it('preserves the session when a blocked marker resolves during content inspection', async () => {
+        const { mockPage, emitResponse, mainFrame } = setupBrowserMock();
+        let resolveHeader!: (value: string | null) => void;
+        const header = new Promise<string | null>((resolve) => {
+          resolveHeader = resolve;
+        });
+        mockPage.content.mockImplementation(async () => {
+          emitResponse({
+            status: () => 403,
+            headerValue: vi.fn().mockReturnValue(header),
+            request: () => ({ isNavigationRequest: () => true, frame: () => mainFrame }),
+          });
+          return '<html><body>Welcome!</body></html>';
+        });
+        mockPage.evaluate.mockImplementation(async () => {
+          resolveHeader('1');
+          return 'Welcome to the site';
+        });
+
+        await expect(authManager.validateSessionOrThrow('https://example.com')).rejects.toThrow('Blocked outbound destination');
+        expect(mockUnlink).not.toHaveBeenCalled();
       });
 
       it('should detect redirect to external login page as expired session', async () => {

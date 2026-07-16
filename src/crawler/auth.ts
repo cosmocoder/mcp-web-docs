@@ -1,4 +1,5 @@
 import { chromium, firefox, webkit, Browser, BrowserContext, Page } from 'playwright';
+import type { Request as PlaywrightRequest, Response as PlaywrightResponse } from 'playwright';
 import { mkdir, readFile, writeFile, access, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import defaultBrowser from 'default-browser';
@@ -18,7 +19,74 @@ import {
   type LoginPageDetectionResult,
   validatePublicUrl,
 } from '../util/security.js';
-import { getOutboundProxyUrl, resolvePublicTarget } from '../util/outbound-request.js';
+import {
+  BlockedOutboundRequestError,
+  classifyOutboundFailure,
+  getOutboundResponseError,
+  getOutboundProxyUrl,
+  isNavigationCancellationError,
+  OutboundRequestFailedError,
+} from '../util/outbound-request.js';
+
+function monitorMainFrameNavigations(page: Page): { throwIfError: () => Promise<void>; stop: () => void } {
+  let navigationError: Error | undefined;
+  const pendingChecks = new Set<Promise<void>>();
+  const stopPage = (error: Error) => {
+    if (!navigationError) {
+      navigationError = error;
+      void page.close().catch(() => {});
+    }
+  };
+  const onResponse = (response: PlaywrightResponse) => {
+    const request = response.request();
+    if (!request.isNavigationRequest() || request.frame() !== page.mainFrame()) {
+      return;
+    }
+    const check = getOutboundResponseError(response)
+      .then((outboundError) => {
+        if (outboundError) {
+          stopPage(outboundError);
+        }
+      })
+      .catch((error) => {
+        stopPage(error instanceof OutboundRequestFailedError ? error : new OutboundRequestFailedError(String(error)));
+      })
+      .finally(() => pendingChecks.delete(check));
+    pendingChecks.add(check);
+  };
+  const onRequestFailed = (request: PlaywrightRequest) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      const errorText = request.failure()?.errorText ?? 'unknown network error';
+      if (!isNavigationCancellationError(errorText)) {
+        if (typeof request.url !== 'function') {
+          stopPage(new OutboundRequestFailedError(`Navigation failed: ${errorText}`));
+          return;
+        }
+        const check = classifyOutboundFailure(request.url())
+          .then(stopPage)
+          .catch(() => stopPage(new OutboundRequestFailedError(`Navigation failed: ${errorText}`)))
+          .finally(() => pendingChecks.delete(check));
+        pendingChecks.add(check);
+      }
+    }
+  };
+  page.on('response', onResponse);
+  page.on('requestfailed', onRequestFailed);
+  return {
+    throwIfError: async () => {
+      while (pendingChecks.size > 0) {
+        await Promise.all(pendingChecks);
+      }
+      if (navigationError) {
+        throw navigationError;
+      }
+    },
+    stop: () => {
+      page.off('response', onResponse);
+      page.off('requestfailed', onRequestFailed);
+    },
+  };
+}
 
 /** Supported browser types */
 export type BrowserType = 'chromium' | 'chrome' | 'firefox' | 'webkit' | 'edge';
@@ -350,6 +418,7 @@ export class AuthManager {
 
     let browser: Browser | null = null;
     let context: BrowserContext | null = null;
+    let navigationMonitor: ReturnType<typeof monitorMainFrameNavigations> | undefined;
 
     try {
       const launcher = this.getBrowserLauncher(browserType);
@@ -368,6 +437,7 @@ export class AuthManager {
       });
 
       const page = await context.newPage();
+      navigationMonitor = monitorMainFrameNavigations(page);
 
       // Navigate to the protected URL and check the result
       logger.debug(`[AuthManager] Navigating to ${url} to validate session...`);
@@ -375,12 +445,18 @@ export class AuthManager {
         waitUntil: 'domcontentloaded',
         timeout: 30000,
       });
+      const initialOutboundError = await getOutboundResponseError(response);
+      if (initialOutboundError) {
+        throw initialOutboundError;
+      }
 
       // Wait for potential JavaScript redirects
       await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
 
       // Additional wait for JS-based auth redirects (GitHub Pages, etc.)
       await page.waitForTimeout(2000);
+
+      await navigationMonitor.throwIfError();
 
       const finalUrl = page.url();
       logger.debug(`[AuthManager] Final URL after navigation: ${finalUrl}`);
@@ -392,6 +468,7 @@ export class AuthManager {
         // Redirected to a different domain - check if it's a login page
         if (isLoginPageUrl(finalUrl)) {
           logger.warn(`[AuthManager] Session appears expired - redirected to login page: ${finalUrl}`);
+          await navigationMonitor.throwIfError();
           return {
             isValid: false,
             reason: `Redirected to login page on different domain (${finalDomain})`,
@@ -405,6 +482,7 @@ export class AuthManager {
       const status = response?.status();
       if (status === 401 || status === 403) {
         logger.warn(`[AuthManager] Session appears expired - received HTTP ${status}`);
+        await navigationMonitor.throwIfError();
         return {
           isValid: false,
           reason: `Authentication failed with HTTP ${status}`,
@@ -420,6 +498,7 @@ export class AuthManager {
       if (loginDetection.isLoginPage && loginDetection.confidence >= 0.5) {
         logger.warn(`[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`);
         logger.debug(`[AuthManager] Login detection reasons: ${loginDetection.reasons.join(', ')}`);
+        await navigationMonitor.throwIfError();
         return {
           isValid: false,
           reason: `Login page detected (confidence: ${Math.round(loginDetection.confidence * 100)}%)`,
@@ -429,10 +508,15 @@ export class AuthManager {
       }
 
       // Session appears valid
+      await navigationMonitor.throwIfError();
       logger.info(`[AuthManager] ✓ Session for ${domain} is valid`);
       return { isValid: true, finalUrl };
     }
     catch (error) {
+      await navigationMonitor?.throwIfError();
+      if (error instanceof BlockedOutboundRequestError || error instanceof OutboundRequestFailedError) {
+        throw error;
+      }
       const errorMsg = error instanceof Error ? error.message : String(error);
       logger.error(`[AuthManager] Error validating session: ${errorMsg}`);
       // On error, we can't confirm validity - treat as potentially invalid
@@ -442,6 +526,7 @@ export class AuthManager {
       };
     }
     finally {
+      navigationMonitor?.stop();
       if (context) {
         await context.close().catch(() => {});
       }
@@ -536,14 +621,8 @@ export class AuthManager {
     } = options;
     let browserType = initialBrowserType;
     const targetUrl = loginUrl || url;
-    const validationSignal = AbortSignal.timeout(loginTimeoutSecs * 1000);
-
-    await Promise.all(
-      [url, targetUrl].map((candidate) => {
-        const validated = validatePublicUrl(candidate);
-        return resolvePublicTarget(validated.hostname, undefined, validationSignal);
-      })
-    );
+    validatePublicUrl(url);
+    validatePublicUrl(targetUrl);
 
     logger.info(`[AuthManager] === Starting Interactive Login ===`);
     logger.info(`[AuthManager] Target URL: ${url}`);
@@ -588,6 +667,7 @@ export class AuthManager {
     const domain = new URL(url).hostname;
     const launcher = this.getBrowserLauncher(browserType);
     const launchOptions = this.getLaunchOptions(browserType);
+    let stopMonitoring: (() => void) | undefined;
 
     logger.info(`[AuthManager] Launching fresh ${browserType} browser...`);
     logger.debug(`[AuthManager] Launch options:`, launchOptions);
@@ -607,21 +687,39 @@ export class AuthManager {
       logger.debug(`[AuthManager] ✓ Browser context created`);
 
       const page = await this.activeContext.newPage();
+      const navigationMonitor = monitorMainFrameNavigations(page);
+      stopMonitoring = navigationMonitor.stop;
       logger.debug(`[AuthManager] ✓ New page created`);
 
       // Navigate to login page
       logger.info(`[AuthManager] Navigating to: ${targetUrl}`);
-      await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+      let response: Awaited<ReturnType<typeof page.goto>>;
+      try {
+        response = await page.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+      }
+      catch (error) {
+        await navigationMonitor.throwIfError();
+        throw error;
+      }
+      const initialOutboundError = await getOutboundResponseError(response);
+      if (initialOutboundError) {
+        throw initialOutboundError;
+      }
+      await navigationMonitor.throwIfError();
       logger.info(`[AuthManager] ✓ Page loaded. Waiting for user to login...`);
       logger.info(`[AuthManager] ⏳ You have ${loginTimeoutSecs} seconds to complete login.`);
 
       // Wait for successful login
-      const loginSuccess = await this.waitForLogin(page, {
-        targetUrl: url, // The original target URL to return to
-        successPattern: loginSuccessPattern,
-        successSelector: loginSuccessSelector,
-        timeoutSecs: loginTimeoutSecs,
-      });
+      const loginSuccess = await this.waitForLogin(
+        page,
+        {
+          targetUrl: url, // The original target URL to return to
+          successPattern: loginSuccessPattern,
+          successSelector: loginSuccessSelector,
+          timeoutSecs: loginTimeoutSecs,
+        },
+        navigationMonitor.throwIfError
+      );
 
       if (!loginSuccess) {
         logger.error(`[AuthManager] ✗ Login timed out after ${loginTimeoutSecs} seconds`);
@@ -632,6 +730,9 @@ export class AuthManager {
 
       // Extract and save the storage state
       const storageState = await this.activeContext.storageState();
+      await navigationMonitor.throwIfError();
+      navigationMonitor.stop();
+      stopMonitoring = undefined;
       const storageStateJson = JSON.stringify(storageState);
       logger.debug(`[AuthManager] Storage state captured (${storageStateJson.length} bytes)`);
 
@@ -642,6 +743,7 @@ export class AuthManager {
       return storageStateJson;
     }
     finally {
+      stopMonitoring?.();
       await this.cleanup();
     }
   }
@@ -664,7 +766,8 @@ export class AuthManager {
       successPattern?: string;
       successSelector?: string;
       timeoutSecs: number;
-    }
+    },
+    throwIfNavigationFailed: () => Promise<void>
   ): Promise<boolean> {
     const { targetUrl, successPattern, successSelector, timeoutSecs } = options;
     const startTime = Date.now();
@@ -701,10 +804,12 @@ export class AuthManager {
       logger.info(`[AuthManager] Waiting for URL to match pattern: ${successPattern}`);
       try {
         await page.waitForURL(pattern, { timeout: timeoutMs });
+        await throwIfNavigationFailed();
         logger.info(`[AuthManager] ✓ URL matched success pattern`);
         return true;
       }
       catch {
+        await throwIfNavigationFailed();
         logger.debug(`[AuthManager] ✗ URL did not match pattern within timeout`);
         return false;
       }
@@ -714,10 +819,12 @@ export class AuthManager {
       logger.info(`[AuthManager] Waiting for element: ${successSelector}`);
       try {
         await page.waitForSelector(successSelector, { timeout: timeoutMs });
+        await throwIfNavigationFailed();
         logger.info(`[AuthManager] ✓ Success selector found`);
         return true;
       }
       catch {
+        await throwIfNavigationFailed();
         logger.debug(`[AuthManager] ✗ Selector not found within timeout`);
         return false;
       }
@@ -742,6 +849,7 @@ export class AuthManager {
 
     while (Date.now() - startTime < timeoutMs) {
       try {
+        await throwIfNavigationFailed();
         const currentUrl = page.url();
         const elapsed = Math.round((Date.now() - startTime) / 1000);
 
@@ -795,8 +903,10 @@ export class AuthManager {
 
         // Success condition 1: Found logout button or user menu (and not on login page)
         if (!isLoginPage && (hasLogoutButton || hasUserMenu)) {
+          await throwIfNavigationFailed();
           logger.info(`[AuthManager] ✓ Login indicators found (logout button or user menu)`);
           await page.waitForTimeout(1000);
+          await throwIfNavigationFailed();
           return true;
         }
 
@@ -824,6 +934,7 @@ export class AuthManager {
             }
 
             if (finalDomain === targetDomain || finalDomain.endsWith('.' + targetDomain)) {
+              await throwIfNavigationFailed();
               logger.info(`[AuthManager] ✓ Confirmed on target domain: ${finalUrl}`);
               return true;
             }
@@ -837,6 +948,7 @@ export class AuthManager {
         await page.waitForTimeout(1000);
       }
       catch (error) {
+        await throwIfNavigationFailed();
         // Page might have navigated, which is fine
         logger.debug(`[AuthManager] Error during login check (may be normal during navigation):`, error);
         await page.waitForTimeout(1000);
@@ -861,8 +973,7 @@ export class AuthManager {
       return null;
     }
 
-    const validatedUrl = validatePublicUrl(url);
-    await resolvePublicTarget(validatedUrl.hostname, undefined, AbortSignal.timeout(30000));
+    validatePublicUrl(url);
 
     const launcher = this.getBrowserLauncher(browserType);
     const launchOptions = this.getLaunchOptions(browserType);
