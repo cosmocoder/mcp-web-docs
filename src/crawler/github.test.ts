@@ -1,6 +1,16 @@
 import { GitHubCrawler } from './github.js';
 import type { CrawlResult } from '../types.js';
 
+function githubFile(path: string, branch = 'main') {
+  return {
+    path,
+    type: 'file',
+    url: `https://api.github.com/repos/owner/repo/contents/${path}`,
+    html_url: `https://github.com/owner/repo/blob/${branch}/${path}`,
+    download_url: `https://raw.githubusercontent.com/owner/repo/${branch}/${path}`,
+  };
+}
+
 describe('GitHubCrawler', () => {
   let crawler: GitHubCrawler;
 
@@ -66,17 +76,7 @@ describe('GitHubCrawler', () => {
         ])
       );
       // Second call: list docs directory
-      fetchMock.mockResponseOnce(
-        JSON.stringify([
-          {
-            path: 'docs/guide.md',
-            type: 'file',
-            name: 'guide.md',
-            url: 'https://api.github.com/repos/owner/repo/contents/docs/guide.md',
-          },
-          { path: 'docs/api.md', type: 'file', name: 'api.md', url: 'https://api.github.com/repos/owner/repo/contents/docs/api.md' },
-        ])
-      );
+      fetchMock.mockResponseOnce(JSON.stringify([githubFile('docs/guide.md'), githubFile('docs/api.md')]));
       // Third call: fetch guide.md content
       fetchMock.mockResponseOnce('# Guide\n\nThis is the guide content.');
       // Fourth call: fetch api.md content
@@ -94,10 +94,8 @@ describe('GitHubCrawler', () => {
       expect(results[1].path).toBe('docs/api.md');
     });
 
-    it('should handle .git extension in repo URL', async () => {
-      const rootFiles = [
-        { path: 'README.md', type: 'file', name: 'README.md', url: 'https://api.github.com/repos/owner/repo/contents/README.md' },
-      ];
+    it('should use canonical URLs from a repository whose default branch is master', async () => {
+      const rootFiles = [githubFile('README.md', 'master')];
       // First call: findDocumentationDirs checks root
       fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
       // Second call: processDirectory fetches root again (no doc dirs found)
@@ -112,14 +110,14 @@ describe('GitHubCrawler', () => {
 
       expect(results).toHaveLength(1);
       expect(results[0].title).toBe('README');
+      expect(results[0].url).toBe('https://github.com/owner/repo/blob/master/README.md');
+      expect(fetchMock.mock.calls[0][0]).toBe('https://api.github.com/repos/owner/repo/contents/');
+      expect(fetchMock.mock.calls[1][0]).toBe('https://api.github.com/repos/owner/repo/contents/');
+      expect(fetchMock.mock.calls[2][0]).toBe('https://raw.githubusercontent.com/owner/repo/master/README.md');
     });
 
     it('should skip non-markdown files', async () => {
-      const rootFiles = [
-        { path: 'index.js', type: 'file', name: 'index.js', url: 'https://api.github.com/repos/owner/repo/contents/index.js' },
-        { path: 'style.css', type: 'file', name: 'style.css', url: 'https://api.github.com/repos/owner/repo/contents/style.css' },
-        { path: 'README.md', type: 'file', name: 'README.md', url: 'https://api.github.com/repos/owner/repo/contents/README.md' },
-      ];
+      const rootFiles = [githubFile('index.js'), githubFile('style.css'), githubFile('README.md')];
       // First call: findDocumentationDirs checks root
       fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
       // Second call: processDirectory fetches root again (no doc dirs found)
@@ -137,16 +135,7 @@ describe('GitHubCrawler', () => {
     });
 
     it('should handle various markdown extensions', async () => {
-      const rootFiles = [
-        { path: 'doc.md', type: 'file', name: 'doc.md', url: 'https://api.github.com/repos/owner/repo/contents/doc.md' },
-        { path: 'page.mdx', type: 'file', name: 'page.mdx', url: 'https://api.github.com/repos/owner/repo/contents/page.mdx' },
-        {
-          path: 'guide.markdown',
-          type: 'file',
-          name: 'guide.markdown',
-          url: 'https://api.github.com/repos/owner/repo/contents/guide.markdown',
-        },
-      ];
+      const rootFiles = [githubFile('doc.md'), githubFile('page.mdx'), githubFile('guide.markdown')];
       // First call: findDocumentationDirs checks root
       fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
       // Second call: processDirectory fetches root again (no doc dirs found)
@@ -178,16 +167,7 @@ describe('GitHubCrawler', () => {
           { path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' },
         ])
       );
-      fetchMock.mockResponseOnce(
-        JSON.stringify([
-          {
-            path: 'docs/guide.md',
-            type: 'file',
-            name: 'guide.md',
-            url: 'https://api.github.com/repos/owner/repo/contents/docs/guide.md',
-          },
-        ])
-      );
+      fetchMock.mockResponseOnce(JSON.stringify([githubFile('docs/guide.md')]));
       fetchMock.mockResponseOnce('# Guide');
 
       const results: CrawlResult[] = [];
@@ -229,15 +209,18 @@ describe('GitHubCrawler', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(tokenCrawler as any, 'rateLimit').mockResolvedValue(undefined);
 
-      fetchMock.mockResponseOnce(JSON.stringify([]));
+      const rootFiles = [githubFile('README.md')];
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      fetchMock.mockResponseOnce('# README');
 
       const results: CrawlResult[] = [];
       for await (const result of tokenCrawler.crawl('https://github.com/owner/repo')) {
         results.push(result);
       }
 
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.any(String),
+      expect(fetchMock).toHaveBeenLastCalledWith(
+        'https://raw.githubusercontent.com/owner/repo/main/README.md',
         expect.objectContaining({
           headers: expect.objectContaining({
             Authorization: 'token test_token_123',
@@ -247,20 +230,7 @@ describe('GitHubCrawler', () => {
     });
 
     it('should extract title from file path', async () => {
-      const rootFiles = [
-        {
-          path: 'getting-started.md',
-          type: 'file',
-          name: 'getting-started.md',
-          url: 'https://api.github.com/repos/owner/repo/contents/getting-started.md',
-        },
-        {
-          path: 'api_reference.md',
-          type: 'file',
-          name: 'api_reference.md',
-          url: 'https://api.github.com/repos/owner/repo/contents/api_reference.md',
-        },
-      ];
+      const rootFiles = [githubFile('getting-started.md'), githubFile('api_reference.md')];
       // First call: findDocumentationDirs checks root
       fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
       // Second call: processDirectory fetches root again (no doc dirs found)
@@ -278,39 +248,92 @@ describe('GitHubCrawler', () => {
       expect(results[1].title).toBe('Api Reference');
     });
 
-    it('should construct correct GitHub blob URLs', async () => {
-      // First call: findDocumentationDirs checks root - find docs directory
+    it('should use an explicit branch for root, recursive, and file requests', async () => {
       fetchMock.mockResponseOnce(
-        JSON.stringify([{ path: 'docs', type: 'dir', name: 'docs', url: 'https://api.github.com/repos/owner/repo/contents/docs' }])
+        JSON.stringify([{ path: 'docs', type: 'dir', url: 'https://api.github.com/repos/owner/repo/contents/docs' }])
       );
-      // Second call: processDirectory fetches docs directory contents
-      fetchMock.mockResponseOnce(
-        JSON.stringify([
-          {
-            path: 'docs/guide.md',
-            type: 'file',
-            name: 'guide.md',
-            url: 'https://api.github.com/repos/owner/repo/contents/docs/guide.md',
-          },
-        ])
-      );
-      // Third call: fetch file content
+      fetchMock.mockResponseOnce(JSON.stringify([githubFile('docs/guide.md', 'develop')]));
       fetchMock.mockResponseOnce('# Guide');
+
+      const results: CrawlResult[] = [];
+      for await (const result of crawler.crawl('https://github.com/owner/repo/tree/develop')) {
+        results.push(result);
+      }
+
+      expect(fetchMock.mock.calls[0][0]).toBe('https://api.github.com/repos/owner/repo/contents/?ref=develop');
+      expect(fetchMock.mock.calls[1][0]).toBe('https://api.github.com/repos/owner/repo/contents/docs?ref=develop');
+      expect(fetchMock.mock.calls[2][0]).toBe('https://raw.githubusercontent.com/owner/repo/develop/docs/guide.md');
+      expect(results[0].url).toBe('https://github.com/owner/repo/blob/develop/docs/guide.md');
+    });
+
+    it('should treat a literal suffix as a subdirectory on a single-segment branch', async () => {
+      fetchMock.mockResponseOnce(JSON.stringify([githubFile('docs/guide.md', 'feature')]));
+      fetchMock.mockResponseOnce('# Guide');
+
+      const results: CrawlResult[] = [];
+      for await (const result of crawler.crawl('https://github.com/owner/repo/tree/feature/docs')) {
+        results.push(result);
+      }
+
+      expect(fetchMock.mock.calls[0][0]).toBe('https://api.github.com/repos/owner/repo/contents/docs?ref=feature');
+      expect(results.map(({ path }) => path)).toEqual(['docs/guide.md']);
+    });
+
+    it('should use an encoded slash as part of the branch name', async () => {
+      const rootFiles = [githubFile('README.md', 'feature/docs')];
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      fetchMock.mockResponseOnce('# README');
+
+      const results: CrawlResult[] = [];
+      for await (const result of crawler.crawl('https://github.com/owner/repo/tree/feature%2Fdocs')) {
+        results.push(result);
+      }
+
+      expect(fetchMock.mock.calls[0][0]).toBe('https://api.github.com/repos/owner/repo/contents/?ref=feature%2Fdocs');
+      expect(results.map(({ url }) => url)).toEqual(['https://github.com/owner/repo/blob/feature/docs/README.md']);
+    });
+
+    it('should skip markdown files without canonical GitHub URLs', async () => {
+      const rootFiles = [{ path: 'README.md', type: 'file', url: 'https://api.github.com/repos/owner/repo/contents/README.md' }];
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
 
       const results: CrawlResult[] = [];
       for await (const result of crawler.crawl('https://github.com/owner/repo')) {
         results.push(result);
       }
 
-      expect(results[0].url).toBe('https://github.com/owner/repo/blob/main/docs/guide.md');
+      expect(results).toHaveLength(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ['invalid download URL', { download_url: 'not a URL' }],
+      ['insecure download URL', { download_url: 'http://raw.githubusercontent.com/owner/repo/main/README.md' }],
+      ['internal download URL', { download_url: 'https://127.0.0.1/README.md' }],
+      ['attacker download URL', { download_url: 'https://attacker.example/README.md' }],
+      ['insecure HTML URL', { html_url: 'http://github.com/owner/repo/blob/main/README.md' }],
+      ['non-GitHub HTML URL', { html_url: 'https://attacker.example/owner/repo/blob/main/README.md' }],
+    ])('should reject %s', async (_name, override) => {
+      const rootFiles = [{ ...githubFile('README.md'), ...override }];
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+
+      const results: CrawlResult[] = [];
+      for await (const result of crawler.crawl('https://github.com/owner/repo')) {
+        results.push(result);
+      }
+
+      expect(results).toHaveLength(0);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls.every(([request]) => String(request).startsWith('https://api.github.com/'))).toBe(true);
     });
 
     it('should handle fetch errors for file content', async () => {
-      fetchMock.mockResponseOnce(
-        JSON.stringify([
-          { path: 'guide.md', type: 'file', name: 'guide.md', url: 'https://api.github.com/repos/owner/repo/contents/guide.md' },
-        ])
-      );
+      const rootFiles = [githubFile('guide.md')];
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
+      fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
       fetchMock.mockRejectOnce(new Error('Network error'));
 
       const results: CrawlResult[] = [];
@@ -320,6 +343,7 @@ describe('GitHubCrawler', () => {
 
       // Should skip files that fail to fetch
       expect(results).toHaveLength(0);
+      expect(fetchMock.mock.calls[2][0]).toBe('https://raw.githubusercontent.com/owner/repo/main/guide.md');
     });
 
     it('should validate GitHub API response structure', async () => {
@@ -341,22 +365,9 @@ describe('GitHubCrawler', () => {
           { path: 'guide', type: 'dir', name: 'guide', url: 'https://api.github.com/repos/owner/repo/contents/guide' },
         ])
       );
-      fetchMock.mockResponseOnce(
-        JSON.stringify([
-          { path: 'docs/api.md', type: 'file', name: 'api.md', url: 'https://api.github.com/repos/owner/repo/contents/docs/api.md' },
-        ])
-      );
+      fetchMock.mockResponseOnce(JSON.stringify([githubFile('docs/api.md')]));
       fetchMock.mockResponseOnce('# API');
-      fetchMock.mockResponseOnce(
-        JSON.stringify([
-          {
-            path: 'guide/intro.md',
-            type: 'file',
-            name: 'intro.md',
-            url: 'https://api.github.com/repos/owner/repo/contents/guide/intro.md',
-          },
-        ])
-      );
+      fetchMock.mockResponseOnce(JSON.stringify([githubFile('guide/intro.md')]));
       fetchMock.mockResponseOnce('# Intro');
 
       const results: CrawlResult[] = [];
@@ -368,10 +379,7 @@ describe('GitHubCrawler', () => {
     });
 
     it('should stop crawling when aborted', async () => {
-      const rootFiles = [
-        { path: 'doc1.md', type: 'file', name: 'doc1.md', url: 'https://api.github.com/repos/owner/repo/contents/doc1.md' },
-        { path: 'doc2.md', type: 'file', name: 'doc2.md', url: 'https://api.github.com/repos/owner/repo/contents/doc2.md' },
-      ];
+      const rootFiles = [githubFile('doc1.md'), githubFile('doc2.md')];
       // First call: findDocumentationDirs checks root
       fetchMock.mockResponseOnce(JSON.stringify(rootFiles));
       // Second call: processDirectory fetches root again (no doc dirs found)

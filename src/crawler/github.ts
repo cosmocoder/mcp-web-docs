@@ -5,9 +5,15 @@ import { logger } from '../util/logger.js';
 import { fetchPublicUrl } from '../util/outbound-request.js';
 import { GitHubFilesArraySchema, type ValidatedGitHubFile } from '../util/security.js';
 
+interface RepoInfo {
+  owner: string;
+  repo: string;
+  branch?: string;
+  startPath?: string;
+}
+
 export class GitHubCrawler extends BaseCrawler {
   private readonly API_BASE = 'https://api.github.com';
-  private readonly RAW_CONTENT_BASE = 'https://raw.githubusercontent.com';
   private readonly MARKDOWN_EXTENSIONS = ['.md', '.mdx', '.markdown'];
   private readonly DOCUMENTATION_PATHS = ['docs', 'doc', 'documentation', 'wiki', 'guide', 'guides', 'tutorial', 'tutorials'];
 
@@ -35,8 +41,7 @@ export class GitHubCrawler extends BaseCrawler {
       }
 
       // First try to find documentation directory
-      const docDirs = await this.findDocumentationDirs(repoInfo);
-
+      const docDirs = repoInfo.startPath ? [repoInfo.startPath] : await this.findDocumentationDirs(repoInfo);
       if (docDirs.length > 0) {
         // Process documentation directories
         for (const docDir of docDirs) {
@@ -57,14 +62,14 @@ export class GitHubCrawler extends BaseCrawler {
     }
   }
 
-  private parseGitHubUrl(url: string): { owner: string; repo: string; branch: string } | null {
+  private parseGitHubUrl(url: string): RepoInfo | null {
     try {
       const urlObj = new URL(url);
       if (urlObj.hostname !== 'github.com') {
         return null;
       }
 
-      const [, owner, repo] = urlObj.pathname.split('/');
+      const [, owner, repo, view, encodedBranch, ...remainingPath] = urlObj.pathname.split('/');
       if (!owner || !repo) {
         return null;
       }
@@ -72,18 +77,18 @@ export class GitHubCrawler extends BaseCrawler {
       // Remove .git extension if present
       const cleanRepo = repo.replace(/\.git$/, '');
 
-      return {
-        owner,
-        repo: cleanRepo,
-        branch: 'main', // Default to main, could be determined dynamically
-      };
+      // ponytail: literal suffixes are paths; encode "/" as %2F when it belongs to the branch. Probe refs if ambiguity matters.
+      const branch = view === 'tree' && encodedBranch ? decodeURIComponent(encodedBranch) : undefined;
+      const startPath = branch ? decodeURIComponent(remainingPath.filter(Boolean).join('/')) || undefined : undefined;
+
+      return { owner, repo: cleanRepo, branch, startPath };
     }
     catch {
       return null;
     }
   }
 
-  private async findDocumentationDirs(repoInfo: { owner: string; repo: string; branch: string }): Promise<string[]> {
+  private async findDocumentationDirs(repoInfo: RepoInfo): Promise<string[]> {
     const dirs: string[] = [];
 
     try {
@@ -102,7 +107,7 @@ export class GitHubCrawler extends BaseCrawler {
     return dirs;
   }
 
-  private async *processDirectory(repoInfo: { owner: string; repo: string; branch: string }, path: string): AsyncGenerator<CrawlResult> {
+  private async *processDirectory(repoInfo: RepoInfo, path: string): AsyncGenerator<CrawlResult> {
     try {
       const contents = await this.fetchRepoContents(repoInfo, path);
 
@@ -112,10 +117,15 @@ export class GitHubCrawler extends BaseCrawler {
         }
 
         if (item.type === 'file' && this.isMarkdownFile(item.path)) {
-          const content = await this.fetchFileContent(repoInfo, item.path);
+          if (!item.download_url || !item.html_url) {
+            logger.debug(`[GitHubCrawler] Skipping ${item.path}: GitHub did not return canonical file URLs`);
+            continue;
+          }
+
+          const content = await this.fetchFileContent(item.download_url, item.path);
           if (content) {
             yield {
-              url: this.constructGitHubUrl(repoInfo, item.path),
+              url: item.html_url,
               path: item.path,
               content,
               contentFormat: 'markdown',
@@ -133,10 +143,20 @@ export class GitHubCrawler extends BaseCrawler {
     }
   }
 
-  private async fetchRepoContents(repoInfo: { owner: string; repo: string; branch: string }, path: string): Promise<ValidatedGitHubFile[]> {
+  private async fetchRepoContents(repoInfo: RepoInfo, path: string): Promise<ValidatedGitHubFile[]> {
     await this.rateLimit();
 
-    const url = `${this.API_BASE}/repos/${repoInfo.owner}/${repoInfo.repo}/contents/${path}`;
+    const encodedPath = path
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const url = new URL(
+      `/repos/${encodeURIComponent(repoInfo.owner)}/${encodeURIComponent(repoInfo.repo)}/contents/${encodedPath}`,
+      this.API_BASE
+    );
+    if (repoInfo.branch) {
+      url.searchParams.set('ref', repoInfo.branch);
+    }
     const headers: HeadersInit = {
       Accept: 'application/vnd.github.v3+json',
     };
@@ -146,7 +166,7 @@ export class GitHubCrawler extends BaseCrawler {
     }
 
     try {
-      const response = await fetchPublicUrl(url, { headers, signal: this.abortSignal });
+      const response = await fetchPublicUrl(url.toString(), { headers, signal: this.abortSignal });
 
       if (!response.ok) {
         if (response.status === 403) {
@@ -172,10 +192,9 @@ export class GitHubCrawler extends BaseCrawler {
     }
   }
 
-  private async fetchFileContent(repoInfo: { owner: string; repo: string; branch: string }, path: string): Promise<string | null> {
+  private async fetchFileContent(url: string, path: string): Promise<string | null> {
     await this.rateLimit();
 
-    const url = `${this.RAW_CONTENT_BASE}/${repoInfo.owner}/${repoInfo.repo}/${repoInfo.branch}/${path}`;
     const headers: HeadersInit = this.githubToken ? { Authorization: `token ${this.githubToken}` } : {};
 
     try {
@@ -209,10 +228,6 @@ export class GitHubCrawler extends BaseCrawler {
       !lowercasePath.includes('build') &&
       !lowercasePath.includes('dist')
     );
-  }
-
-  private constructGitHubUrl(repoInfo: { owner: string; repo: string; branch: string }, path: string): string {
-    return `https://github.com/${repoInfo.owner}/${repoInfo.repo}/blob/${repoInfo.branch}/${path}`;
   }
 
   private extractTitleFromPath(path: string): string {

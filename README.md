@@ -346,6 +346,8 @@ add_documentation({
 });
 ```
 
+For GitHub tree URLs, the first segment after `/tree/` is the branch and any remaining segments are the crawl root. Encode `/` as `%2F` in branch names (for example, `/tree/feature%2Fdocs`).
+
 ### `search_documentation`
 
 Search through indexed documentation using hybrid search (FTS + semantic).
