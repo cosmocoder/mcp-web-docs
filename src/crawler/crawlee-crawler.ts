@@ -38,6 +38,12 @@ function normalizeQueuedUrl(url: string): string {
   return parsed.origin + parsed.pathname + parsed.search;
 }
 
+interface NavigationAttempt {
+  failedUrl?: string;
+  outboundFailure?: BlockedOutboundRequestError | OutboundRequestFailedError;
+  cleanup?: () => void;
+}
+
 /** Storage state for authentication (cookies and localStorage) */
 export interface StorageState {
   cookies: Array<{
@@ -70,13 +76,14 @@ export class CrawleeCrawler extends BaseCrawler {
   /** Optional path prefix to restrict crawling */
   private pathPrefix?: string;
   private terminalRootFailure?: OutboundRequestFailedError;
-  private failedNavigationUrls = new WeakMap<object, string>();
-  private outboundFailureClassifications = new WeakMap<object, BlockedOutboundRequestError | OutboundRequestFailedError>();
-  private navigationListenerCleanups = new WeakMap<object, () => void>();
+  private navigationAttempts = new WeakMap<object, NavigationAttempt>();
 
   private cleanupNavigationListener(request: object): void {
-    this.navigationListenerCleanups.get(request)?.();
-    this.navigationListenerCleanups.delete(request);
+    const attempt = this.navigationAttempts.get(request);
+    attempt?.cleanup?.();
+    if (attempt) {
+      attempt.cleanup = undefined;
+    }
   }
 
   /**
@@ -346,9 +353,7 @@ export class CrawleeCrawler extends BaseCrawler {
     this.isFirstPage = true;
     this.sessionExpiredError = null;
     this.terminalRootFailure = undefined;
-    this.failedNavigationUrls = new WeakMap();
-    this.outboundFailureClassifications = new WeakMap();
-    this.navigationListenerCleanups = new WeakMap();
+    this.navigationAttempts = new WeakMap();
     this.expectedUrl = normalizeQueuedUrl(url);
     this.skippedExternalPages = 0;
 
@@ -406,17 +411,17 @@ export class CrawleeCrawler extends BaseCrawler {
       async ({ page, request }) => {
         const requestKey = request as object;
         this.cleanupNavigationListener(requestKey);
-        this.failedNavigationUrls.delete(requestKey);
-        this.outboundFailureClassifications.delete(requestKey);
         const mainFrame = page.mainFrame();
+        const attempt: NavigationAttempt = {};
         const onRequestFailed = (failedRequest: PlaywrightRequest) => {
           const errorText = failedRequest.failure()?.errorText ?? '';
           if (failedRequest.isNavigationRequest() && failedRequest.frame() === mainFrame && !isNavigationCancellationError(errorText)) {
-            this.failedNavigationUrls.set(requestKey, failedRequest.url());
+            attempt.failedUrl = failedRequest.url();
           }
         };
         page.on('requestfailed', onRequestFailed);
-        this.navigationListenerCleanups.set(requestKey, () => page.off('requestfailed', onRequestFailed));
+        attempt.cleanup = () => page.off('requestfailed', onRequestFailed);
+        this.navigationAttempts.set(requestKey, attempt);
       },
     ];
 
@@ -424,10 +429,12 @@ export class CrawleeCrawler extends BaseCrawler {
       ...crawlerOptions,
       errorHandler: async (context, error) => {
         const requestKey = context.request as object;
-        const failedUrl = this.failedNavigationUrls.get(requestKey);
+        const attempt = this.navigationAttempts.get(requestKey) ?? {};
+        const failedUrl = attempt.failedUrl;
         const outboundFailure = failedUrl ? await classifyOutboundFailure(failedUrl) : normalizeOutboundFailure(error);
         if (outboundFailure) {
-          this.outboundFailureClassifications.set(requestKey, outboundFailure);
+          attempt.outboundFailure = outboundFailure;
+          this.navigationAttempts.set(requestKey, attempt);
         }
         if (outboundFailure instanceof BlockedOutboundRequestError) {
           context.request.noRetry = true;
@@ -445,22 +452,20 @@ export class CrawleeCrawler extends BaseCrawler {
       failedRequestHandler: async (context, error) => {
         const requestKey = context.request as object;
         this.cleanupNavigationListener(requestKey);
-        const failedUrl = this.failedNavigationUrls.get(requestKey);
+        const attempt = this.navigationAttempts.get(requestKey);
+        const failedUrl = attempt?.failedUrl;
         const outboundFailure =
-          this.outboundFailureClassifications.get(requestKey) ??
-          (failedUrl ? await classifyOutboundFailure(failedUrl) : normalizeOutboundFailure(error));
+          attempt?.outboundFailure ?? (failedUrl ? await classifyOutboundFailure(failedUrl) : normalizeOutboundFailure(error));
         if (normalizeQueuedUrl(context.request.url) === this.expectedUrl && outboundFailure instanceof OutboundRequestFailedError) {
           this.terminalRootFailure = outboundFailure;
         }
-        this.failedNavigationUrls.delete(requestKey);
-        this.outboundFailureClassifications.delete(requestKey);
+        this.navigationAttempts.delete(requestKey);
         await crawlerOptions.failedRequestHandler?.(context, error);
       },
       requestHandler: async ({ request, response, page, enqueueLinks, log }) => {
         const requestKey = request as object;
         this.cleanupNavigationListener(requestKey);
-        this.failedNavigationUrls.delete(requestKey);
-        this.outboundFailureClassifications.delete(requestKey);
+        this.navigationAttempts.delete(requestKey);
         let latestMainFrameResponse = response;
         let mainFrameNavigationError: BlockedOutboundRequestError | OutboundRequestFailedError | undefined;
         let navigationSequence = 0;

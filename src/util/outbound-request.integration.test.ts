@@ -9,7 +9,7 @@ import {
   classifyOutboundFailure,
   closeOutboundProxy,
   createOutboundProxy,
-  isBlockedOutboundResponse,
+  getOutboundResponseError,
   type OutboundProxy,
 } from './outbound-request.js';
 
@@ -152,7 +152,7 @@ describe('outbound request integration', () => {
 
         const navigationResponse = await page.goto(`${privateUrl}/main`, { waitUntil: 'commit', timeout: 5000 });
         expect(navigationResponse?.status()).toBe(403);
-        await expect(isBlockedOutboundResponse(navigationResponse)).resolves.toBe(true);
+        await expect(getOutboundResponseError(navigationResponse)).resolves.toBeInstanceOf(BlockedOutboundRequestError);
 
         await page.goto('about:blank');
         await expect(loadImage(page, `${privateUrl}/image.png`)).resolves.toBe('blocked');
@@ -161,7 +161,9 @@ describe('outbound request integration', () => {
         const secureUrl = `https://${urlHost}:${tlsPort}`;
         const secureNavigation = await page
           .goto(`${secureUrl}/main`, { waitUntil: 'commit', timeout: 5000 })
-          .then(async (response) => (response?.status() === 403 || (await isBlockedOutboundResponse(response)) ? 'blocked' : 'loaded'))
+          .then(async (response) =>
+            (await getOutboundResponseError(response)) instanceof BlockedOutboundRequestError ? 'blocked' : 'loaded'
+          )
           .catch(() => 'blocked');
         expect(secureNavigation).toBe('blocked');
         await expect(classifyOutboundFailure(secureUrl)).resolves.toBeInstanceOf(BlockedOutboundRequestError);

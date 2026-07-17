@@ -320,6 +320,22 @@ describe('outbound request security', () => {
     );
   });
 
+  it('does not replay a request body across redirects', async () => {
+    const cancel = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(undiciFetch).mockResolvedValueOnce({
+      status: 307,
+      headers: new Headers({ location: 'https://1.1.1.1/docs' }),
+      body: { cancel },
+    } as unknown as Awaited<ReturnType<typeof undiciFetch>>);
+
+    await expect(fetchPublicUrl('https://8.8.8.8/docs', { body: 'payload', method: 'POST' })).rejects.toThrow(
+      'Cannot redirect a request with a body'
+    );
+
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(undiciFetch).toHaveBeenCalledOnce();
+  });
+
   it('does not forward credentials across origins', async () => {
     fetchMock.mockResponseOnce('', { status: 302, headers: { location: 'https://1.1.1.1/docs' } });
     fetchMock.mockResponseOnce('ok');

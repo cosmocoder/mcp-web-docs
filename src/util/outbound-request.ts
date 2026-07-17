@@ -182,10 +182,6 @@ export async function getOutboundResponseError(response: BrowserResponse | null 
   }
 }
 
-export async function isBlockedOutboundResponse(response: BrowserResponse | null | undefined): Promise<boolean> {
-  return (await getOutboundResponseError(response)) instanceof BlockedOutboundRequestError;
-}
-
 export function isNavigationCancellationError(errorText: string): boolean {
   return /ERR_ABORTED|NS_BINDING_ABORTED|cancel(?:l)?ed.*load|load.*cancel(?:l)?ed/i.test(errorText);
 }
@@ -441,6 +437,9 @@ export async function fetchPublicUrl(urlString: string, init: RequestInit = {}):
     }
 
     await response.body?.cancel();
+    if (init.body != null) {
+      throw new Error('Cannot redirect a request with a body');
+    }
     const nextUrl = validateOutboundUrl(new URL(location, url).toString());
     if (nextUrl.origin !== url.origin) {
       const safeHeaders = new Headers(headers);
