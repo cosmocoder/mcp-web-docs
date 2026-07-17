@@ -24,7 +24,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Restore node modules cache
         uses: actions/cache/restore@v5
@@ -67,7 +67,7 @@ jobs:
           - npm run test:types
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Restore node modules cache
         uses: actions/cache/restore@v5
@@ -105,7 +105,7 @@ jobs:
         shardTotal: [3]
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Restore node modules cache
         uses: actions/cache/restore@v5
@@ -144,7 +144,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Restore node modules cache
         uses: actions/cache/restore@v5
@@ -179,7 +179,7 @@ jobs:
     if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta' }}
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
