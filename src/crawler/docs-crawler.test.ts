@@ -193,30 +193,6 @@ describe('DocsCrawler', () => {
         await expect(next).resolves.toMatchObject({ done: true });
       });
 
-      it('should stop crawling when aborted', async () => {
-        mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
-          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', title: 'Page 2' };
-          yield { url: 'https://example.com/page3', path: '/page3', content: 'Page 3', title: 'Page 3' };
-        });
-
-        const results: CrawlResult[] = [];
-        const generator = crawler.crawl('https://example.com');
-
-        // Get first result
-        const first = await generator.next();
-        if (!first.done) {
-          results.push(first.value);
-        }
-
-        // Abort
-        crawler.abort();
-
-        // Generator should stop yielding after abort (depending on implementation)
-        // The test verifies abort() method exists and is callable
-        expect(results).toHaveLength(1);
-      });
-
       it('should return early when already aborting', async () => {
         crawler.abort();
 

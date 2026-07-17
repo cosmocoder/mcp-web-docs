@@ -186,6 +186,10 @@ describe('WebDocsServer', () => {
     vi.clearAllMocks();
   });
 
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   describe('operation lifecycle integration', () => {
     let toolHandler: ToolHandler;
 
@@ -225,7 +229,6 @@ describe('WebDocsServer', () => {
       }
       finally {
         await Promise.allSettled(successorCompletion ? [successorCompletion] : []);
-        startIndexing.mockRestore();
       }
     });
 
@@ -336,7 +339,6 @@ describe('WebDocsServer', () => {
         releaseSuccessorCrawl.resolve();
         await Promise.allSettled(completions);
         mockNotification.mockResolvedValue(undefined);
-        startIndexing.mockRestore();
       }
     });
 
@@ -371,8 +373,6 @@ describe('WebDocsServer', () => {
       finally {
         releaseCrawl.resolve();
         await Promise.allSettled(completion ? [completion] : []);
-        cancelIndexing.mockRestore();
-        failIndexing.mockRestore();
       }
     });
 
@@ -429,8 +429,6 @@ describe('WebDocsServer', () => {
         controller.abort();
         clearSession.resolve();
         await Promise.allSettled(completion ? [completion] : []);
-        cancelIndexing.mockRestore();
-        failIndexing.mockRestore();
       }
     });
 
@@ -466,9 +464,6 @@ describe('WebDocsServer', () => {
       finally {
         lookup.resolve({ url: 'https://example.com', title: 'Existing', lastIndexed: new Date() });
         await Promise.allSettled(completion ? [completion] : []);
-        cancelIndexing.mockRestore();
-        completeIndexing.mockRestore();
-        failIndexing.mockRestore();
       }
     });
 
@@ -505,9 +500,6 @@ describe('WebDocsServer', () => {
       finally {
         favicon.resolve(null);
         await Promise.allSettled(completion ? [completion] : []);
-        cancelIndexing.mockRestore();
-        completeIndexing.mockRestore();
-        failIndexing.mockRestore();
       }
     });
 
@@ -544,9 +536,6 @@ describe('WebDocsServer', () => {
       finally {
         add.resolve();
         await Promise.allSettled(completion ? [completion] : []);
-        cancelIndexing.mockRestore();
-        completeIndexing.mockRestore();
-        failIndexing.mockRestore();
       }
     });
 
@@ -580,8 +569,6 @@ describe('WebDocsServer', () => {
       finally {
         controller.abort();
         await Promise.allSettled(completion ? [completion] : []);
-        cancelIndexing.mockRestore();
-        completeIndexing.mockRestore();
       }
     });
 
@@ -612,7 +599,6 @@ describe('WebDocsServer', () => {
       expect(payload.message).toContain('Previous operation was cancelled');
       expect(mockRunLatest).toHaveBeenCalledOnce();
       await completion;
-      startIndexing.mockRestore();
     });
   });
 

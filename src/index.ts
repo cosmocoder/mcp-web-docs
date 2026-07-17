@@ -60,9 +60,6 @@ import type { StorageState } from './crawler/crawlee-crawler.js';
 
 /** Progress token type from MCP spec */
 type ProgressToken = string | number;
-interface ProgressRegistration {
-  token: ProgressToken;
-}
 
 class WebDocsServer {
   private server: McpServer;
@@ -73,7 +70,7 @@ class WebDocsServer {
   private indexingQueue: IndexingQueueManager;
   private authManager!: AuthManager;
   /** Maps operation ID to progress token for MCP notifications */
-  private progressTokens: Map<string, ProgressRegistration> = new Map();
+  private progressTokens: Map<string, { token: ProgressToken }> = new Map();
   /** Tracks last notified progress to throttle notifications */
   private lastNotifiedProgress: Map<string, number> = new Map();
 
