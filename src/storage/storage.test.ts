@@ -448,6 +448,27 @@ describe('DocumentStore', () => {
       expect(await storedContents(store, url)).toEqual(['old commit failure content']);
     });
 
+    it('preserves a published generation when COMMIT succeeds but reports an error', async () => {
+      const url = 'https://example.com/ambiguous-commit';
+      await store.addDocument(createDocumentWithContent(url, 'Original', 'old ambiguous commit content'));
+
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const run = sqliteDb.run.bind(sqliteDb);
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        if (String(sql) !== 'COMMIT') {
+          return run(sql, ...params);
+        }
+        await run(sql, ...params);
+        throw new Error('commit succeeded but response was lost');
+      });
+
+      await expect(
+        store.addDocument(createDocumentWithContent(url, 'Replacement', 'new ambiguous commit content'), { tags: ['new-tag'] })
+      ).rejects.toThrow('commit succeeded but response was lost');
+      await expect(store.getDocument(url)).resolves.toMatchObject({ title: 'Replacement', tags: ['new-tag'] });
+      await expect(storedContents(store, url)).resolves.toEqual(['new ambiguous commit content']);
+    });
+
     it('retries a search that overlaps publication cleanup', async () => {
       const url = 'https://example.com/search-publication-race';
       const original = createDocumentWithContent(url, 'Original', 'old search race content');
