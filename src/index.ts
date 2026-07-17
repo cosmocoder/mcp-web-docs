@@ -2054,11 +2054,7 @@ async function shutdown(signal: 'SIGINT' | 'SIGTERM'): Promise<void> {
   }
 }
 
-let shutdownPromise: Promise<void> | undefined;
-
 // Handle process signals - cancel all operations before shutdown
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => {
-    shutdownPromise ??= shutdown(signal);
-  });
+  process.once(signal, () => void shutdown(signal));
 }
