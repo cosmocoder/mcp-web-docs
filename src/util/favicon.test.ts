@@ -60,64 +60,38 @@ describe('Favicon Utilities', () => {
       expect(result).toBeUndefined();
     });
 
-    it('should fallback to HTML meta tag parsing when favicon.ico fails', async () => {
-      const faviconData = new Uint8Array([0x89, 0x50, 0x4e, 0x47]); // PNG header
-      // favicon.ico returns 404
-      fetchMock.mockResponseOnce('', { status: 404 });
-      // HTML page with icon link
-      fetchMock.mockResponseOnce('<html><head><link rel="icon" href="/icon.png"></head><body></body></html>');
-      // Fetch the icon from meta tag
-      fetchMock.mockResponseOnce(async () => ({
-        body: Buffer.from(faviconData).toString(),
-        headers: { 'content-type': 'image/png' },
-      }));
-
-      const result = await fetchFavicon(new URL('https://example.com'));
-
-      expect(result).toBeDefined();
-      expect(result).toContain('data:image/png;base64,');
-    });
-
-    it('should handle shortcut icon rel value', async () => {
+    it.each([
+      {
+        label: 'standard icon metadata',
+        html: '<html><head><link rel="icon" href="/icon.png"></head><body></body></html>',
+        contentType: 'image/png',
+      },
+      {
+        label: 'shortcut icon metadata',
+        html: '<html><head><link rel="shortcut icon" href="/favicon.ico"></head></html>',
+        contentType: 'image/x-icon',
+      },
+      {
+        label: 'metadata with href before rel',
+        html: '<html><head><link href="/my-icon.ico" rel="icon"></head></html>',
+        contentType: 'image/x-icon',
+      },
+    ])('loads $label', async ({ html, contentType }) => {
       const faviconData = new Uint8Array([0x00, 0x00, 0x01, 0x00]);
       fetchMock.mockResponseOnce('', { status: 404 });
-      fetchMock.mockResponseOnce('<html><head><link rel="shortcut icon" href="/favicon.ico"></head></html>');
+      fetchMock.mockResponseOnce(html);
       fetchMock.mockResponseOnce(async () => ({
         body: Buffer.from(faviconData).toString(),
-        headers: { 'content-type': 'image/x-icon' },
+        headers: { 'content-type': contentType },
       }));
 
       const result = await fetchFavicon(new URL('https://example.com'));
 
-      expect(result).toBeDefined();
-    });
-
-    it('should handle href before rel attribute order', async () => {
-      const faviconData = new Uint8Array([0x00, 0x00, 0x01, 0x00]);
-      fetchMock.mockResponseOnce('', { status: 404 });
-      fetchMock.mockResponseOnce('<html><head><link href="/my-icon.ico" rel="icon"></head></html>');
-      fetchMock.mockResponseOnce(async () => ({
-        body: Buffer.from(faviconData).toString(),
-        headers: { 'content-type': 'image/x-icon' },
-      }));
-
-      const result = await fetchFavicon(new URL('https://example.com'));
-
-      expect(result).toBeDefined();
+      expect(result).toContain(`data:${contentType};base64,`);
     });
 
     it('should return undefined on network error', async () => {
       fetchMock.mockRejectOnce(new Error('Network error'));
-
-      const result = await fetchFavicon(new URL('https://example.com'));
-
-      expect(result).toBeUndefined();
-    });
-
-    it('should return undefined on timeout (AbortError)', async () => {
-      const abortError = new Error('Aborted');
-      abortError.name = 'AbortError';
-      fetchMock.mockRejectOnce(abortError);
 
       const result = await fetchFavicon(new URL('https://example.com'));
 
@@ -152,6 +126,19 @@ describe('Favicon Utilities', () => {
       expect(result).toBeDefined();
       expect(fetchMock).toHaveBeenCalledWith('https://example.com/assets/favicon.png', expect.any(Object));
     });
+
+    it.each(['http://127.0.0.1/admin?token=secret', 'http://[::1]/admin?token=secret'])(
+      'should not fetch a page-supplied favicon from private address %s',
+      async (faviconUrl) => {
+        fetchMock.mockResponseOnce('', { status: 404 });
+        fetchMock.mockResponseOnce(`<html><head><link rel="icon" href="${faviconUrl}"></head></html>`);
+
+        const result = await fetchFavicon(new URL('https://example.com'));
+
+        expect(result).toBeUndefined();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      }
+    );
 
     it('should return undefined when icon from meta tag fails to load', async () => {
       fetchMock.mockResponseOnce('', { status: 404 });

@@ -109,9 +109,15 @@ export interface SearchOptions {
   filterByTags?: string[];
 }
 
+export interface AddDocumentOptions {
+  signal?: AbortSignal;
+  tags?: string[];
+}
+
 export interface StorageProvider {
   initialize(): Promise<void>;
-  addDocument(doc: ProcessedDocument): Promise<void>;
+  close(): Promise<void>;
+  addDocument(doc: ProcessedDocument, options?: AddDocumentOptions): Promise<void>;
   searchDocuments(queryVector: number[], options?: SearchOptions): Promise<SearchResult[]>;
   searchByText(query: string, options?: SearchOptions): Promise<SearchResult[]>;
   listDocuments(): Promise<DocumentMetadata[]>;
