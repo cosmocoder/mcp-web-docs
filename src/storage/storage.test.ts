@@ -3,6 +3,7 @@ import { createMockEmbeddings } from '../__mocks__/embeddings.js';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProcessedDocument, DocumentChunk } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
 import type { Database } from 'sqlite';
@@ -265,6 +266,180 @@ describe('DocumentStore', () => {
 
       const retrieved = await store.getDocument('https://example.com/favicon-test');
       expect(retrieved?.favicon).toBe('https://example.com/favicon.ico');
+    });
+  });
+
+  describe('mutation serialization', () => {
+    it('commits one different-URL add before the next begins or mutates LanceDB', async () => {
+      const firstUrl = 'https://example.com/serialized-first';
+      const secondUrl = 'https://example.com/serialized-second';
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const table = replacementInternals().lanceTable!;
+      const run = sqliteDb.run.bind(sqliteDb);
+      const addRows = table.add.bind(table);
+      const commitReached = deferred();
+      const commitReleased = deferred();
+      const events: string[] = [];
+      let commits = 0;
+      let begins = 0;
+
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        if (String(sql) === 'BEGIN TRANSACTION') {
+          events.push(`begin:${++begins}`);
+        }
+        if (String(sql) === 'COMMIT') {
+          commits++;
+          if (commits === 1) {
+            commitReached.resolve();
+            await commitReleased.promise;
+          }
+          const result = await run(sql, ...params);
+          events.push(`commit:${commits}`);
+          return result;
+        }
+        return run(sql, ...params);
+      });
+      vi.spyOn(table, 'add').mockImplementation(async (rows, options) => {
+        const url = String((rows as Array<{ url: string }>)[0]?.url);
+        events.push(`add:${url === secondUrl ? 'second' : 'first'}`);
+        return addRows(rows, options);
+      });
+
+      const first = store.addDocument(createTestDocument(firstUrl, 'First'));
+      await commitReached.promise;
+      const second = store.addDocument(createTestDocument(secondUrl, 'Second'));
+      await nextTurn();
+
+      expect(events).not.toContain('begin:2');
+      expect(events).not.toContain('add:second');
+
+      commitReleased.resolve();
+      await Promise.all([first, second]);
+      expect(events.indexOf('commit:1')).toBeLessThan(events.indexOf('begin:2'));
+      expect(await store.getDocument(firstUrl)).not.toBeNull();
+      expect(await store.getDocument(secondUrl)).not.toBeNull();
+    });
+
+    it('queues delete, tag, and collection writes behind an active add', async () => {
+      const deleteUrl = 'https://example.com/queued-delete';
+      const tagUrl = 'https://example.com/queued-tags';
+      await store.addDocument(createTestDocument(deleteUrl, 'Delete target'));
+      await store.addDocument(createTestDocument(tagUrl, 'Tag target'));
+
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const stage = blockNextLanceAdd();
+
+      const activeAdd = store.addDocument(createTestDocument('https://example.com/active-add', 'Active add'));
+      await stage.staged;
+
+      const run = sqliteDb.run.bind(sqliteDb);
+      const queuedWrites: string[] = [];
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        const statement = String(sql);
+        const values = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+        if (statement.includes('DELETE FROM documents') && values[0] === deleteUrl) {
+          queuedWrites.push('delete');
+        }
+        if (statement.includes('DELETE FROM document_tags') && values[0] === tagUrl) {
+          queuedWrites.push('tags');
+        }
+        if (statement.includes('INSERT INTO collections') && values[0] === 'Queued Collection') {
+          queuedWrites.push('collection');
+        }
+        return run(sql, ...params);
+      });
+
+      const deletion = store.deleteDocument(deleteUrl);
+      const tagging = store.setTags(tagUrl, ['queued']);
+      const collection = store.createCollection('Queued Collection');
+      await nextTurn();
+      expect(queuedWrites).toEqual([]);
+
+      stage.release();
+      await Promise.all([activeAdd, deletion, tagging, collection]);
+      expect(queuedWrites).toEqual(['delete', 'tags', 'collection']);
+      expect(await store.getDocument(deleteUrl)).toBeNull();
+      expect(await store.getDocument(tagUrl)).toMatchObject({ tags: ['queued'] });
+      expect(await store.getCollection('Queued Collection')).not.toBeNull();
+    });
+
+    it('releases the queue after rollback so the next mutation succeeds', async () => {
+      const failedUrl = 'https://example.com/failed-mutation';
+      const nextUrl = 'https://example.com/after-failure';
+      const table = replacementInternals().lanceTable!;
+      const addRows = table.add.bind(table);
+      const failureReached = deferred();
+      const failureReleased = deferred();
+      const nextStarted = deferred();
+      let additions = 0;
+      vi.spyOn(table, 'add').mockImplementation(async (rows, options) => {
+        additions++;
+        if (additions === 1) {
+          failureReached.resolve();
+          await failureReleased.promise;
+          throw new Error('injected Lance failure');
+        }
+        nextStarted.resolve();
+        return addRows(rows, options);
+      });
+
+      const failed = store.addDocument(createTestDocument(failedUrl, 'Failed'));
+      await failureReached.promise;
+      const next = store.addDocument(createTestDocument(nextUrl, 'Next'));
+      await nextTurn();
+      expect(additions).toBe(1);
+
+      failureReleased.resolve();
+      await expect(failed).rejects.toThrow('injected Lance failure');
+      await nextStarted.promise;
+      await expect(next).resolves.toBeUndefined();
+      expect(await store.getDocument(failedUrl)).toBeNull();
+      expect(await store.getDocument(nextUrl)).toMatchObject({ title: 'Next' });
+    });
+
+    it('rejects a cancelled queued add promptly without blocking later mutations', async () => {
+      const cancelledUrl = 'https://example.com/cancelled-queued-add';
+      const nextUrl = 'https://example.com/after-cancelled-add';
+      const stage = blockNextLanceAdd();
+      const active = store.addDocument(createTestDocument('https://example.com/active-cancellation', 'Active'));
+      await stage.staged;
+
+      const controller = new AbortController();
+      const cancelled = store.addDocument(createTestDocument(cancelledUrl, 'Cancelled'), { signal: controller.signal });
+      const next = store.addDocument(createTestDocument(nextUrl, 'Next'));
+      controller.abort();
+
+      await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+      stage.release();
+      await Promise.all([active, next]);
+      expect(await store.getDocument(cancelledUrl)).toBeNull();
+      expect(await store.getDocument(nextUrl)).toMatchObject({ title: 'Next' });
+    });
+
+    it('does not queue reads behind an active mutation', async () => {
+      const existingUrl = 'https://example.com/concurrent-read';
+      await store.addDocument(createTestDocument(existingUrl, 'Concurrent read'));
+      const stage = blockNextLanceAdd();
+
+      const mutation = store.addDocument(createTestDocument('https://example.com/blocked-add', 'Blocked add'));
+      await stage.staged;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const read = await Promise.race([
+          store.getDocument(existingUrl),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('read was queued behind mutation')), 250);
+          }),
+        ]);
+        expect(read).toMatchObject({ title: 'Concurrent read' });
+      }
+      finally {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        stage.release();
+      }
+      await mutation;
     });
   });
 
