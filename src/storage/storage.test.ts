@@ -3,32 +3,69 @@ import { open } from 'sqlite';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdtemp, rm } from 'node:fs/promises';
-
 import { DocumentStore } from './storage.js';
 import { createMockEmbeddings } from '../__mocks__/embeddings.js';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProcessedDocument, DocumentChunk } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
+import type { Database } from 'sqlite';
+import type { Table } from '@lancedb/lancedb';
+
+type ReplacementInternals = {
+  sqliteDb?: Database;
+  sqliteReadDb?: Database;
+  sqliteLeaseDb?: Database;
+  lanceTable?: Table;
+  lanceConn?: { close(): void };
+  finishDocumentReplacement(journal: {
+    url: string;
+    generation: string;
+    state: 'prepared' | 'published' | 'deleting';
+    owner_id: string;
+    lease_expires_at: number;
+    cleanup_generations: string;
+  }): Promise<void>;
+  parseCleanupGenerations(value: string): string[];
+  getJournalVisibilityFilter(): Promise<string>;
+  createFTSIndex(): Promise<void>;
+};
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((resolvePromise) => {
+    resolve = () => resolvePromise();
+  });
+  return { promise, resolve };
+}
 
 describe('DocumentStore', () => {
   let store: DocumentStore;
   let tempDir: string;
   let mockEmbeddings: EmbeddingsProvider;
+  let openStores: Set<DocumentStore>;
 
   beforeEach(async () => {
     // Create temporary directory for test databases
     tempDir = await mkdtemp(join(tmpdir(), 'mcp-web-docs-test-'));
     mockEmbeddings = createMockEmbeddings();
+    openStores = new Set();
     store = new DocumentStore(join(tempDir, 'docs.db'), join(tempDir, 'vectors'), mockEmbeddings, 100);
+    openStores.add(store);
     await store.initialize();
   });
 
   afterEach(async () => {
+    const closeResults = await Promise.allSettled([...openStores].map((openStore) => openStore.close()));
     // Clean up temporary directory
     try {
       await rm(tempDir, { recursive: true, force: true });
     }
     catch {
       // Ignore cleanup errors
+    }
+    const closeErrors = closeResults.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+    if (closeErrors.length > 0) {
+      throw new AggregateError(closeErrors, 'Failed to close one or more test stores');
     }
   });
 
@@ -63,6 +100,71 @@ describe('DocumentStore', () => {
     };
   }
 
+  function replacementInternals(target: DocumentStore = store): ReplacementInternals {
+    return target as unknown as ReplacementInternals;
+  }
+
+  function createDocumentWithContent(url: string, title: string, content: string): ProcessedDocument {
+    const document = createTestDocument(url, title);
+    document.chunks[0].content = content;
+    return document;
+  }
+
+  async function openPeerStore(): Promise<DocumentStore> {
+    const peer = new DocumentStore(join(tempDir, 'docs.db'), join(tempDir, 'vectors'), mockEmbeddings, 100);
+    openStores.add(peer);
+    await peer.initialize();
+    return peer;
+  }
+
+  async function storedContents(target: DocumentStore, url: string): Promise<string[]> {
+    const results = await target.searchByText('test content', { filterUrl: url, limit: 100 });
+    return results.map((result) => result.content).sort();
+  }
+
+  function blockNextLanceAdd(target: DocumentStore = store): { staged: Promise<void>; release: () => void } {
+    const table = replacementInternals(target).lanceTable!;
+    const add = table.add.bind(table);
+    const staged = deferred();
+    const released = deferred();
+    vi.spyOn(table, 'add').mockImplementationOnce(async (data, options) => {
+      const result = await add(data, options);
+      staged.resolve();
+      await released.promise;
+      return result;
+    });
+    return { staged: staged.promise, release: released.resolve };
+  }
+
+  function blockPublication(target: DocumentStore = store): { reached: Promise<void>; release: () => void } {
+    const sqliteDb = replacementInternals(target).sqliteDb!;
+    const run = sqliteDb.run.bind(sqliteDb);
+    const reached = deferred();
+    const released = deferred();
+    vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+      if (String(sql).includes("SET state = 'published'")) {
+        reached.resolve();
+        await released.promise;
+      }
+      return run(sql, ...params);
+    });
+    return { reached: reached.promise, release: released.resolve };
+  }
+
+  function waitForLeaseContention(target: DocumentStore): Promise<void> {
+    const leaseDb = replacementInternals(target).sqliteLeaseDb!;
+    const run = leaseDb.run.bind(leaseDb);
+    const waiting = deferred();
+    vi.spyOn(leaseDb, 'run').mockImplementation(async (sql, ...params) => {
+      const result = await run(sql, ...params);
+      if (String(sql).includes('INSERT OR IGNORE INTO document_replacements') && result.changes === 0) {
+        waiting.resolve();
+      }
+      return result;
+    });
+    return waiting.promise;
+  }
+
   describe('initialize', () => {
     it('should initialize storage successfully', async () => {
       // Already initialized in beforeEach
@@ -78,6 +180,42 @@ describe('DocumentStore', () => {
 
       const retrieved = await store.getDocument('https://example.com/test');
       expect(retrieved).toBeDefined();
+    });
+
+    it('attempts every close when an earlier resource fails', async () => {
+      const internals = replacementInternals();
+      const closes = [
+        vi.spyOn(internals.lanceTable!, 'close').mockImplementationOnce(() => {
+          throw new Error('injected table close failure');
+        }),
+        vi.spyOn(internals.lanceConn!, 'close'),
+        vi.spyOn(internals.sqliteReadDb!, 'close'),
+        vi.spyOn(internals.sqliteLeaseDb!, 'close'),
+        vi.spyOn(internals.sqliteDb!, 'close'),
+      ];
+
+      await expect(store.close()).rejects.toThrow('Failed to close one or more storage resources');
+      expect(closes.map((close) => close.mock.calls.length)).toEqual([1, 1, 1, 1, 1]);
+
+      await expect(store.close()).resolves.toBeUndefined();
+      expect(closes.map((close) => close.mock.calls.length)).toEqual([2, 1, 1, 1, 1]);
+    });
+
+    it('preserves initialization failure when resource cleanup also fails', async () => {
+      const failingStore = new DocumentStore(
+        join(tempDir, 'init-failure', 'docs.db'),
+        join(tempDir, 'init-failure', 'vectors'),
+        mockEmbeddings,
+        100
+      );
+      const internals = replacementInternals(failingStore);
+      vi.spyOn(internals, 'createFTSIndex').mockRejectedValue(new Error('injected initialization failure'));
+      const close = vi.spyOn(failingStore, 'close').mockRejectedValueOnce(new Error('injected cleanup failure'));
+
+      await expect(failingStore.initialize()).rejects.toThrow('Failed to initialize LanceDB: injected initialization failure');
+      expect(close).toHaveBeenCalledOnce();
+      close.mockRestore();
+      await failingStore.close();
     });
   });
 
@@ -133,6 +271,852 @@ describe('DocumentStore', () => {
     });
   });
 
+  describe('mutation serialization', () => {
+    it('commits one different-URL add before the next begins or mutates LanceDB', async () => {
+      const firstUrl = 'https://example.com/serialized-first';
+      const secondUrl = 'https://example.com/serialized-second';
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const table = replacementInternals().lanceTable!;
+      const run = sqliteDb.run.bind(sqliteDb);
+      const addRows = table.add.bind(table);
+      const commitReached = deferred();
+      const commitReleased = deferred();
+      const events: string[] = [];
+      let commits = 0;
+      let begins = 0;
+
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        if (String(sql) === 'BEGIN TRANSACTION') {
+          events.push(`begin:${++begins}`);
+        }
+        if (String(sql) === 'COMMIT') {
+          commits++;
+          if (commits === 1) {
+            commitReached.resolve();
+            await commitReleased.promise;
+          }
+          const result = await run(sql, ...params);
+          events.push(`commit:${commits}`);
+          return result;
+        }
+        return run(sql, ...params);
+      });
+      vi.spyOn(table, 'add').mockImplementation(async (rows, options) => {
+        const url = String((rows as Array<{ url: string }>)[0]?.url);
+        events.push(`add:${url === secondUrl ? 'second' : 'first'}`);
+        return addRows(rows, options);
+      });
+
+      const first = store.addDocument(createTestDocument(firstUrl, 'First'));
+      await commitReached.promise;
+      const second = store.addDocument(createTestDocument(secondUrl, 'Second'));
+      await nextTurn();
+
+      expect(events).not.toContain('begin:2');
+      expect(events).not.toContain('add:second');
+
+      commitReleased.resolve();
+      await Promise.all([first, second]);
+      expect(events.indexOf('commit:1')).toBeLessThan(events.indexOf('begin:2'));
+      expect(await store.getDocument(firstUrl)).not.toBeNull();
+      expect(await store.getDocument(secondUrl)).not.toBeNull();
+    });
+
+    it('queues delete, tag, and collection writes behind an active add', async () => {
+      const deleteUrl = 'https://example.com/queued-delete';
+      const tagUrl = 'https://example.com/queued-tags';
+      await store.addDocument(createTestDocument(deleteUrl, 'Delete target'));
+      await store.addDocument(createTestDocument(tagUrl, 'Tag target'));
+
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const stage = blockNextLanceAdd();
+
+      const activeAdd = store.addDocument(createTestDocument('https://example.com/active-add', 'Active add'));
+      await stage.staged;
+
+      const run = sqliteDb.run.bind(sqliteDb);
+      const queuedWrites: string[] = [];
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        const statement = String(sql);
+        const values = params.length === 1 && Array.isArray(params[0]) ? params[0] : params;
+        if (statement.includes('DELETE FROM documents') && values[0] === deleteUrl) {
+          queuedWrites.push('delete');
+        }
+        if (statement.includes('DELETE FROM document_tags') && values[0] === tagUrl) {
+          queuedWrites.push('tags');
+        }
+        if (statement.includes('INSERT INTO collections') && values[0] === 'Queued Collection') {
+          queuedWrites.push('collection');
+        }
+        return run(sql, ...params);
+      });
+
+      const deletion = store.deleteDocument(deleteUrl);
+      const tagging = store.setTags(tagUrl, ['queued']);
+      const collection = store.createCollection('Queued Collection');
+      await nextTurn();
+      expect(queuedWrites).toEqual([]);
+
+      stage.release();
+      await Promise.all([activeAdd, deletion, tagging, collection]);
+      expect(queuedWrites).toEqual(['delete', 'tags', 'collection']);
+      expect(await store.getDocument(deleteUrl)).toBeNull();
+      expect(await store.getDocument(tagUrl)).toMatchObject({ tags: ['queued'] });
+      expect(await store.getCollection('Queued Collection')).not.toBeNull();
+    });
+
+    it('releases the queue after rollback so the next mutation succeeds', async () => {
+      const failedUrl = 'https://example.com/failed-mutation';
+      const nextUrl = 'https://example.com/after-failure';
+      const table = replacementInternals().lanceTable!;
+      const addRows = table.add.bind(table);
+      const failureReached = deferred();
+      const failureReleased = deferred();
+      const nextStarted = deferred();
+      let additions = 0;
+      vi.spyOn(table, 'add').mockImplementation(async (rows, options) => {
+        additions++;
+        if (additions === 1) {
+          failureReached.resolve();
+          await failureReleased.promise;
+          throw new Error('injected Lance failure');
+        }
+        nextStarted.resolve();
+        return addRows(rows, options);
+      });
+
+      const failed = store.addDocument(createTestDocument(failedUrl, 'Failed'));
+      await failureReached.promise;
+      const next = store.addDocument(createTestDocument(nextUrl, 'Next'));
+      await nextTurn();
+      expect(additions).toBe(1);
+
+      failureReleased.resolve();
+      await expect(failed).rejects.toThrow('injected Lance failure');
+      await nextStarted.promise;
+      await expect(next).resolves.toBeUndefined();
+      expect(await store.getDocument(failedUrl)).toBeNull();
+      expect(await store.getDocument(nextUrl)).toMatchObject({ title: 'Next' });
+    });
+
+    it('rejects a cancelled queued add promptly without blocking later mutations', async () => {
+      const cancelledUrl = 'https://example.com/cancelled-queued-add';
+      const nextUrl = 'https://example.com/after-cancelled-add';
+      const stage = blockNextLanceAdd();
+      const active = store.addDocument(createTestDocument('https://example.com/active-cancellation', 'Active'));
+      await stage.staged;
+
+      const controller = new AbortController();
+      const cancelled = store.addDocument(createTestDocument(cancelledUrl, 'Cancelled'), { signal: controller.signal });
+      const next = store.addDocument(createTestDocument(nextUrl, 'Next'));
+      controller.abort();
+
+      await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+      stage.release();
+      await Promise.all([active, next]);
+      expect(await store.getDocument(cancelledUrl)).toBeNull();
+      expect(await store.getDocument(nextUrl)).toMatchObject({ title: 'Next' });
+    });
+
+    it('does not queue reads behind an active mutation', async () => {
+      const existingUrl = 'https://example.com/concurrent-read';
+      await store.addDocument(createTestDocument(existingUrl, 'Concurrent read'));
+      const stage = blockNextLanceAdd();
+
+      const mutation = store.addDocument(createTestDocument('https://example.com/blocked-add', 'Blocked add'));
+      await stage.staged;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const read = await Promise.race([
+          store.getDocument(existingUrl),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('read was queued behind mutation')), 250);
+          }),
+        ]);
+        expect(read).toMatchObject({ title: 'Concurrent read' });
+      }
+      finally {
+        if (timer) {
+          clearTimeout(timer);
+        }
+        stage.release();
+      }
+      await mutation;
+    });
+  });
+
+  describe('generation replacement', () => {
+    it('keeps staged chunks hidden until publication and preserves document relationships', async () => {
+      const url = 'https://example.com/replace-safe';
+      const original = createTestDocument(url, 'Original', 3);
+      original.chunks.forEach((chunk, index) => (chunk.content = `old replacement content ${index}`));
+      await store.addDocument(original);
+      await store.setTags(url, ['stable', 'docs']);
+      await store.createCollection('Replacement Collection');
+      await store.addToCollection('Replacement Collection', [url]);
+
+      const replacement = createTestDocument(url, 'Replacement', 2);
+      replacement.chunks.forEach((chunk, index) => (chunk.content = `new replacement content ${index}`));
+      const publication = blockPublication();
+
+      const replacementPromise = store.addDocument(replacement, { tags: ['new-tag'] });
+      await publication.reached;
+
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Original', tags: ['docs', 'stable'] });
+      expect((await store.listDocuments()).find((document) => document.url === url)).toMatchObject({
+        title: 'Original',
+        tags: ['docs', 'stable'],
+      });
+      expect((await store.getCollection('Replacement Collection'))?.documents[0]).toMatchObject({
+        title: 'Original',
+        tags: ['docs', 'stable'],
+      });
+      const journal = await replacementInternals().sqliteReadDb!.get<{ cleanup_generations: string }>(
+        'SELECT cleanup_generations FROM document_replacements WHERE url = ?',
+        [url]
+      );
+      expect(JSON.parse(journal!.cleanup_generations)).toHaveLength(1);
+      expect(await storedContents(store, url)).toEqual([
+        'old replacement content 0',
+        'old replacement content 1',
+        'old replacement content 2',
+      ]);
+
+      publication.release();
+      await replacementPromise;
+
+      const metadata = await store.getDocument(url);
+      const collection = await store.getCollection('Replacement Collection');
+      expect(metadata).toMatchObject({ title: 'Replacement', tags: ['new-tag'] });
+      expect(collection?.documents[0]).toMatchObject({ title: 'Replacement', tags: ['new-tag'] });
+      expect(collection?.documents.map((document) => document.url)).toEqual([url]);
+      expect(await storedContents(store, url)).toEqual(['new replacement content 0', 'new replacement content 1']);
+    });
+
+    it.each(['add', 'delete'] as const)(
+      'keeps the old document visible when %s preparation fails after lease acquisition',
+      async (operation) => {
+        const url = 'https://example.com/prepare-failure';
+        await store.addDocument(createDocumentWithContent(url, 'Original', 'old prepare failure content'));
+
+        const leaseDb = replacementInternals().sqliteLeaseDb!;
+        const writerRun = vi.spyOn(replacementInternals().sqliteDb!, 'run');
+        const run = leaseDb.run.bind(leaseDb);
+        vi.spyOn(leaseDb, 'run').mockImplementation(async (sql, ...params) => {
+          if (String(sql).includes('SET cleanup_generations = ?')) {
+            throw new Error('injected journal preparation failure');
+          }
+          return run(sql, ...params);
+        });
+
+        const failedOperation =
+          operation === 'add'
+            ? store.addDocument(createDocumentWithContent(url, 'Replacement', 'new prepare failure content'))
+            : store.deleteDocument(url);
+        await expect(failedOperation).rejects.toThrow('injected journal preparation failure');
+        expect(writerRun).not.toHaveBeenCalledWith('ROLLBACK');
+        expect(await leaseDb.get('SELECT url FROM document_replacements WHERE url = ?', [url])).toBeUndefined();
+        expect(await store.getDocument(url)).toMatchObject({ title: 'Original' });
+        expect(await storedContents(store, url)).toEqual(['old prepare failure content']);
+      }
+    );
+
+    it('leaves the old document intact when staging fails', async () => {
+      const url = 'https://example.com/merge-failure';
+      const original = createTestDocument(url, 'Original', 2);
+      original.chunks.forEach((chunk, index) => (chunk.content = `old merge failure content ${index}`));
+      await store.addDocument(original);
+
+      vi.spyOn(replacementInternals().lanceTable!, 'add').mockRejectedValueOnce(new Error('injected staging failure'));
+
+      const replacement = createDocumentWithContent(url, 'Replacement', 'new merge failure content');
+      await expect(store.addDocument(replacement)).rejects.toThrow('injected staging failure');
+
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Original' });
+      expect(await storedContents(store, url)).toEqual(['old merge failure content 0', 'old merge failure content 1']);
+    });
+
+    it('keeps unpublished rows hidden, then recovers the prepared generation after lease expiry', async () => {
+      const url = 'https://example.com/hidden-publication-failure';
+      const otherUrl = 'https://example.com/unrelated';
+      const original = createTestDocument(url, 'Original', 2);
+      original.chunks.forEach((chunk, index) => (chunk.content = `old publication failure content ${index}`));
+      await store.addDocument(original);
+
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const originalRun = sqliteDb.run.bind(sqliteDb);
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        if (String(sql).includes('INSERT INTO documents')) {
+          throw new Error('injected publication failure');
+        }
+        return originalRun(sql, ...params);
+      });
+      vi.spyOn(replacementInternals(), 'finishDocumentReplacement').mockRejectedValueOnce(new Error('injected cleanup failure'));
+
+      const replacement = createDocumentWithContent(url, 'Replacement', 'new publication failure content');
+      await expect(store.addDocument(replacement)).rejects.toThrow('injected publication failure');
+
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Original' });
+      expect(await storedContents(store, url)).toEqual(['old publication failure content 0', 'old publication failure content 1']);
+      expect(await sqliteDb.get('SELECT state FROM document_replacements WHERE url = ?', [url])).toMatchObject({ state: 'prepared' });
+
+      vi.restoreAllMocks();
+      await store.addDocument(createTestDocument(otherUrl, 'Unrelated'));
+      expect(await storedContents(store, otherUrl)).toEqual(['Test content for chunk 1 of Unrelated']);
+      await sqliteDb.run('UPDATE document_replacements SET lease_expires_at = 0 WHERE url = ?', [url]);
+
+      const recoveredStore = await openPeerStore();
+      expect(await storedContents(recoveredStore, url)).toEqual(['old publication failure content 0', 'old publication failure content 1']);
+      expect(await storedContents(recoveredStore, otherUrl)).toEqual(['Test content for chunk 1 of Unrelated']);
+      expect(await sqliteDb.get('SELECT url FROM document_replacements WHERE url = ?', [url])).toBeUndefined();
+    });
+
+    it('keeps committed metadata and cached search results visible when publication is cancelled', async () => {
+      const url = 'https://example.com/cancelled-publication';
+      const original = createDocumentWithContent(url, 'Original', 'old cancellation content');
+      await store.addDocument(original);
+
+      const controller = new AbortController();
+      const publication = blockPublication();
+
+      const replacement = createDocumentWithContent(url, 'Replacement', 'new cancellation content');
+      const replacementPromise = store.addDocument(replacement, { signal: controller.signal });
+      await publication.reached;
+
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Original' });
+      expect(await storedContents(store, url)).toEqual(['old cancellation content']);
+
+      controller.abort();
+      publication.release();
+      await expect(replacementPromise).rejects.toMatchObject({ name: 'AbortError' });
+
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Original' });
+      expect(await storedContents(store, url)).toEqual(['old cancellation content']);
+    });
+
+    it('keeps committed metadata and cached search results visible when publication commit fails', async () => {
+      const url = 'https://example.com/commit-failure';
+      const original = createDocumentWithContent(url, 'Original', 'old commit failure content');
+      await store.addDocument(original);
+
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const originalRun = sqliteDb.run.bind(sqliteDb);
+      const commitReached = deferred();
+      const commitReleased = deferred();
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        if (String(sql) === 'COMMIT') {
+          commitReached.resolve();
+          await commitReleased.promise;
+          throw new Error('injected commit failure');
+        }
+        return originalRun(sql, ...params);
+      });
+
+      const replacement = createDocumentWithContent(url, 'Replacement', 'new commit failure content');
+      const replacementPromise = store.addDocument(replacement);
+      await commitReached.promise;
+
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Original' });
+      expect(await storedContents(store, url)).toEqual(['old commit failure content']);
+
+      commitReleased.resolve();
+      await expect(replacementPromise).rejects.toThrow('injected commit failure');
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Original' });
+      expect(await storedContents(store, url)).toEqual(['old commit failure content']);
+    });
+
+    it('preserves a published generation when COMMIT succeeds but reports an error', async () => {
+      const url = 'https://example.com/ambiguous-commit';
+      await store.addDocument(createDocumentWithContent(url, 'Original', 'old ambiguous commit content'));
+
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const run = sqliteDb.run.bind(sqliteDb);
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        if (String(sql) !== 'COMMIT') {
+          return run(sql, ...params);
+        }
+        await run(sql, ...params);
+        throw new Error('commit succeeded but response was lost');
+      });
+
+      await expect(
+        store.addDocument(createDocumentWithContent(url, 'Replacement', 'new ambiguous commit content'), { tags: ['new-tag'] })
+      ).rejects.toThrow('commit succeeded but response was lost');
+      await expect(store.getDocument(url)).resolves.toMatchObject({ title: 'Replacement', tags: ['new-tag'] });
+      await expect(storedContents(store, url)).resolves.toEqual(['new ambiguous commit content']);
+    });
+
+    it('retries a search that overlaps publication cleanup', async () => {
+      const url = 'https://example.com/search-publication-race';
+      const original = createDocumentWithContent(url, 'Original', 'old search race content');
+      await store.addDocument(original);
+
+      const internals = replacementInternals();
+      const publication = blockPublication();
+
+      const replacement = createDocumentWithContent(url, 'Replacement', 'new search race content');
+      const replacementPromise = store.addDocument(replacement);
+      await publication.reached;
+
+      const getVisibility = internals.getJournalVisibilityFilter.bind(internals);
+      const visibilityCaptured = deferred();
+      const searchReleased = deferred();
+      vi.spyOn(internals, 'getJournalVisibilityFilter').mockImplementationOnce(async () => {
+        const filter = await getVisibility();
+        visibilityCaptured.resolve();
+        await searchReleased.promise;
+        return filter;
+      });
+
+      const searchPromise = storedContents(store, url);
+      await visibilityCaptured.promise;
+      publication.release();
+      await replacementPromise;
+      searchReleased.resolve();
+
+      await expect(searchPromise).resolves.toEqual(['new search race content']);
+    });
+
+    it('retries a search that read visibility before replacement preparation', async () => {
+      const url = 'https://example.com/search-preparation-race';
+      const original = createDocumentWithContent(url, 'Original', 'old preparation race content');
+      await store.addDocument(original);
+
+      const internals = replacementInternals();
+      const getVisibility = internals.getJournalVisibilityFilter.bind(internals);
+      const visibilityCaptured = deferred();
+      const searchReleased = deferred();
+      vi.spyOn(internals, 'getJournalVisibilityFilter').mockImplementationOnce(async () => {
+        const filter = await getVisibility();
+        visibilityCaptured.resolve();
+        await searchReleased.promise;
+        return filter;
+      });
+
+      const searchPromise = storedContents(store, url);
+      await visibilityCaptured.promise;
+
+      const publication = blockPublication();
+
+      const replacement = createDocumentWithContent(url, 'Replacement', 'new preparation race content');
+      const replacementPromise = store.addDocument(replacement);
+      await publication.reached;
+      searchReleased.resolve();
+
+      await expect(searchPromise).resolves.toEqual(['old preparation race content']);
+      publication.release();
+      await replacementPromise;
+      await expect(storedContents(store, url)).resolves.toEqual(['new preparation race content']);
+    });
+
+    it('survives consecutive visibility invalidations from two replacements', async () => {
+      const firstUrl = 'https://example.com/consecutive-race-a';
+      const secondUrl = 'https://example.com/consecutive-race-b';
+      const first = createDocumentWithContent(firstUrl, 'First', 'old consecutive invalidation A');
+      const second = createDocumentWithContent(secondUrl, 'Second', 'old consecutive invalidation B');
+      await store.addDocument(first);
+      await store.addDocument(second);
+
+      const internals = replacementInternals();
+      const getVisibility = internals.getJournalVisibilityFilter.bind(internals);
+      const firstAttemptCaptured = deferred();
+      const firstAttemptReleased = deferred();
+      const secondAttemptCaptured = deferred();
+      const secondAttemptReleased = deferred();
+      let attempt = 0;
+      vi.spyOn(internals, 'getJournalVisibilityFilter').mockImplementation(async () => {
+        const filter = await getVisibility();
+        attempt++;
+        if (attempt === 1) {
+          firstAttemptCaptured.resolve();
+          await firstAttemptReleased.promise;
+        }
+        else if (attempt === 2) {
+          secondAttemptCaptured.resolve();
+          await secondAttemptReleased.promise;
+        }
+        return filter;
+      });
+
+      const queryVector = await mockEmbeddings.embed('consecutive invalidation');
+      const searchPromise = store.searchDocuments(queryVector, { limit: 100 });
+      await firstAttemptCaptured.promise;
+
+      const firstReplacement = createDocumentWithContent(firstUrl, 'First replacement', 'new consecutive invalidation A');
+      await store.addDocument(firstReplacement);
+      firstAttemptReleased.resolve();
+      await secondAttemptCaptured.promise;
+
+      const secondReplacement = createDocumentWithContent(secondUrl, 'Second replacement', 'new consecutive invalidation B');
+      await store.addDocument(secondReplacement);
+      secondAttemptReleased.resolve();
+
+      const contents = (await searchPromise).map((result) => result.content).sort();
+      expect(contents).toEqual(['new consecutive invalidation A', 'new consecutive invalidation B']);
+    });
+
+    it('uses committed visibility to invalidate another store instance cache', async () => {
+      const url = 'https://example.com/cross-instance-race';
+      const original = createDocumentWithContent(url, 'Original', 'old cross instance content');
+      await store.addDocument(original);
+
+      const readerStore = await openPeerStore();
+      expect(await storedContents(readerStore, url)).toEqual(['old cross instance content']);
+
+      const publication = blockPublication();
+
+      const replacement = createDocumentWithContent(url, 'Replacement', 'new cross instance content');
+      const replacementPromise = store.addDocument(replacement);
+      await publication.reached;
+
+      expect(await storedContents(readerStore, url)).toEqual(['old cross instance content']);
+
+      publication.release();
+      await replacementPromise;
+      expect(await storedContents(readerStore, url)).toEqual(['new cross instance content']);
+    });
+
+    it('guarantees a retry after a slow query is invalidated', async () => {
+      const url = 'https://example.com/slow-invalidated-search';
+      const original = createDocumentWithContent(url, 'Original', 'slow invalidated search content');
+      await store.addDocument(original);
+
+      let now = 0;
+      const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+      const internals = replacementInternals();
+      const getVisibility = internals.getJournalVisibilityFilter.bind(internals);
+      const firstAttemptCaptured = deferred();
+      const firstAttemptReleased = deferred();
+      let attempts = 0;
+      vi.spyOn(internals, 'getJournalVisibilityFilter').mockImplementation(async () => {
+        const filter = await getVisibility();
+        attempts++;
+        if (attempts === 1) {
+          firstAttemptCaptured.resolve();
+          await firstAttemptReleased.promise;
+        }
+        return filter;
+      });
+
+      const queryVector = await mockEmbeddings.embed('slow invalidated search');
+      const searchPromise = store.searchDocuments(queryVector, { limit: 10 });
+      await firstAttemptCaptured.promise;
+      now = 10_000;
+      await store.createCollection('search-version-invalidation');
+      firstAttemptReleased.resolve();
+
+      await expect(searchPromise).resolves.toHaveLength(1);
+      expect(attempts).toBeGreaterThanOrEqual(2);
+      nowSpy.mockRestore();
+    });
+
+    it('serializes two store instances replacing the same URL', async () => {
+      const url = 'https://example.com/same-url-writers';
+      const original = createDocumentWithContent(url, 'Original', 'old same URL test content');
+      await store.addDocument(original, { tags: ['original-tag'] });
+
+      const contender = await openPeerStore();
+      const firstStage = blockNextLanceAdd();
+      const first = createDocumentWithContent(url, 'First replacement', 'first same URL test content');
+      const firstPromise = store.addDocument(first, { tags: ['first-tag'] });
+      await firstStage.staged;
+
+      const contenderWaiting = waitForLeaseContention(contender);
+
+      const second = createDocumentWithContent(url, 'Second replacement', 'second same URL test content');
+      const secondPromise = contender.addDocument(second, { tags: ['Second-Tag', 'second-tag'] });
+      await contenderWaiting;
+      expect(await storedContents(contender, url)).toEqual(['old same URL test content']);
+      expect(await contender.getDocument(url)).toMatchObject({ title: 'Original', tags: ['original-tag'] });
+
+      firstStage.release();
+      await Promise.all([firstPromise, secondPromise]);
+
+      expect(await contender.getDocument(url)).toMatchObject({ title: 'Second replacement', tags: ['second-tag'] });
+      expect(await storedContents(contender, url)).toEqual(['second same URL test content']);
+      const table = replacementInternals(contender).lanceTable!;
+      await table.checkoutLatest();
+      const rows = await table.query().where(`url = '${url}'`).toArray();
+      expect(rows).toHaveLength(1);
+    });
+
+    it('does not recover a live replacement during another store initialization', async () => {
+      const url = 'https://example.com/live-initialization';
+      const original = createDocumentWithContent(url, 'Original', 'old live initialization test content');
+      await store.addDocument(original);
+
+      const stage = blockNextLanceAdd();
+      const replacement = createDocumentWithContent(url, 'Replacement', 'new live initialization test content');
+      const replacementPromise = store.addDocument(replacement);
+      await stage.staged;
+
+      const initializingStore = await openPeerStore();
+      expect(await storedContents(initializingStore, url)).toEqual(['old live initialization test content']);
+
+      stage.release();
+      await replacementPromise;
+      expect(await storedContents(initializingStore, url)).toEqual(['new live initialization test content']);
+    });
+
+    it('renews the lease while Lance staging remains in flight', async () => {
+      const url = 'https://example.com/heartbeat-renewal';
+      await store.addDocument(createTestDocument(url, 'Original'));
+      vi.useFakeTimers();
+
+      try {
+        const leaseDb = replacementInternals().sqliteLeaseDb!;
+        const run = leaseDb.run.bind(leaseDb);
+        const renewed = deferred();
+        vi.spyOn(leaseDb, 'run').mockImplementation(async (sql, ...params) => {
+          const result = await run(sql, ...params);
+          if (String(sql).includes('SET lease_expires_at = ?') && String(sql).includes('state = ?')) {
+            renewed.resolve();
+          }
+          return result;
+        });
+
+        const stage = blockNextLanceAdd();
+        const replacementPromise = store.addDocument(createTestDocument(url, 'Replacement'));
+        await stage.staged;
+        const before = await leaseDb.get<{ lease_expires_at: number }>('SELECT lease_expires_at FROM document_replacements WHERE url = ?', [
+          url,
+        ]);
+
+        await vi.advanceTimersByTimeAsync(10_000);
+        await renewed.promise;
+        const after = await leaseDb.get<{ lease_expires_at: number }>('SELECT lease_expires_at FROM document_replacements WHERE url = ?', [
+          url,
+        ]);
+        expect(after!.lease_expires_at).toBeGreaterThan(before!.lease_expires_at);
+
+        stage.release();
+        await replacementPromise;
+      }
+      finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('prevents a stale owner from publishing or deleting its successor lease', async () => {
+      const url = 'https://example.com/stale-owner';
+      const original = createDocumentWithContent(url, 'Original', 'old stale owner test content');
+      await store.addDocument(original);
+
+      const stage = blockNextLanceAdd();
+      const replacement = createDocumentWithContent(url, 'Stale replacement', 'stale replacement test content');
+      const replacementPromise = store.addDocument(replacement);
+      await stage.staged;
+
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const journal = await sqliteDb.get<{ generation: string }>('SELECT generation FROM document_replacements WHERE url = ?', [url]);
+      await sqliteDb.run('UPDATE document_replacements SET owner_id = ?, lease_expires_at = ? WHERE url = ?', [
+        'successor-owner',
+        Date.now() + 60_000,
+        url,
+      ]);
+      stage.release();
+
+      await expect(replacementPromise).rejects.toThrow(`Replacement lease lost for ${url}`);
+      expect(await sqliteDb.get('SELECT owner_id, state FROM document_replacements WHERE url = ?', [url])).toMatchObject({
+        owner_id: 'successor-owner',
+        state: 'prepared',
+      });
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Original' });
+      expect(await storedContents(store, url)).toEqual(['old stale owner test content']);
+      const table = replacementInternals().lanceTable!;
+      expect(await table.countRows(`url = '${url}' AND generation = '${journal!.generation}'`)).toBe(0);
+      await sqliteDb.run('DELETE FROM document_replacements WHERE url = ?', [url]);
+    });
+
+    it('keeps a late stale append hidden and reaps it during recovery', async () => {
+      const url = 'https://example.com/late-stale-append';
+      const original = createDocumentWithContent(url, 'Original', 'old late append test content');
+      await store.addDocument(original);
+      const successor = await openPeerStore();
+
+      const staleTable = replacementInternals().lanceTable!;
+      const add = staleTable.add.bind(staleTable);
+      const appendStarted = deferred();
+      const appendReleased = deferred();
+      vi.spyOn(staleTable, 'add').mockImplementationOnce(async (data, options) => {
+        appendStarted.resolve();
+        await appendReleased.promise;
+        return add(data, options);
+      });
+
+      const stale = createDocumentWithContent(url, 'Stale', 'stale late append test content');
+      const stalePromise = store.addDocument(stale);
+      await appendStarted.promise;
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const staleJournal = await sqliteDb.get<{ generation: string }>('SELECT generation FROM document_replacements WHERE url = ?', [url]);
+      await sqliteDb.run('UPDATE document_replacements SET lease_expires_at = 0 WHERE url = ?', [url]);
+
+      const winner = createDocumentWithContent(url, 'Winner', 'winner late append test content');
+      await successor.addDocument(winner);
+
+      const deleteRows = staleTable.delete.bind(staleTable);
+      vi.spyOn(staleTable, 'delete').mockImplementation(async (predicate) => {
+        if (predicate.includes(staleJournal!.generation)) {
+          throw new Error('injected stale cleanup failure');
+        }
+        return deleteRows(predicate);
+      });
+      appendReleased.resolve();
+      await expect(stalePromise).rejects.toThrow(`Replacement lease lost for ${url}`);
+
+      const winnerTable = replacementInternals(successor).lanceTable!;
+      await winnerTable.checkoutLatest();
+      const rows = await winnerTable.query().where(`url = '${url}'`).toArray();
+      expect(rows.some((row) => row.generation === staleJournal!.generation && row.published === false)).toBe(true);
+      expect(await storedContents(successor, url)).toEqual(['winner late append test content']);
+
+      const recoveredStore = await openPeerStore();
+      const recoveredTable = replacementInternals(recoveredStore).lanceTable!;
+      await recoveredTable.checkoutLatest();
+      expect(await recoveredTable.countRows(`url = '${url}' AND generation = '${staleJournal!.generation}'`)).toBe(0);
+      expect(await storedContents(recoveredStore, url)).toEqual(['winner late append test content']);
+    });
+
+    it.each(['published', 'deleting'] as const)('does not let stale %s cleanup delete a successor generation', async (state) => {
+      const url = `https://example.com/stale-${state}-cleanup`;
+      await store.addDocument(createTestDocument(url, 'Original'));
+      const successor = await openPeerStore();
+
+      const staleTable = replacementInternals().lanceTable!;
+      const deleteRows = staleTable.delete.bind(staleTable);
+      const cleanupStarted = deferred();
+      const cleanupReleased = deferred();
+      vi.spyOn(staleTable, 'delete').mockImplementationOnce(async (predicate) => {
+        cleanupStarted.resolve();
+        await cleanupReleased.promise;
+        return deleteRows(predicate);
+      });
+
+      const cleanupPromise =
+        state === 'published'
+          ? store.addDocument(createDocumentWithContent(url, 'Stale replacement', 'stale published cleanup content'))
+          : store.deleteDocument(url);
+      await cleanupStarted.promise;
+      await replacementInternals().sqliteDb!.run('UPDATE document_replacements SET lease_expires_at = 0 WHERE url = ?', [url]);
+
+      const winnerContent = `winner ${state} cleanup content`;
+      const winner = createDocumentWithContent(url, 'Winner', winnerContent);
+      await successor.addDocument(winner);
+      cleanupReleased.resolve();
+      await cleanupPromise;
+
+      expect(await successor.getDocument(url)).toMatchObject({ title: 'Winner' });
+      expect(await storedContents(successor, url)).toEqual([winnerContent]);
+    });
+
+    it('cancels a contender while it waits for a live same-URL lease', async () => {
+      const url = 'https://example.com/cancelled-lease-wait';
+      await store.addDocument(createTestDocument(url, 'Original'));
+      const contender = await openPeerStore();
+
+      const stage = blockNextLanceAdd();
+      const activePromise = store.addDocument(createTestDocument(url, 'Active replacement'));
+      await stage.staged;
+
+      const waiting = waitForLeaseContention(contender);
+      const controller = new AbortController();
+      const waitingPromise = contender.addDocument(createTestDocument(url, 'Cancelled replacement'), { signal: controller.signal });
+      await waiting;
+      controller.abort();
+
+      await expect(waitingPromise).rejects.toMatchObject({ name: 'AbortError' });
+      stage.release();
+      await activePromise;
+      expect(await contender.getDocument(url)).toMatchObject({ title: 'Active replacement' });
+    });
+
+    it('serializes add then delete across two store instances', async () => {
+      const url = 'https://example.com/add-then-delete';
+      await store.addDocument(createTestDocument(url, 'Original'));
+      const deletingStore = await openPeerStore();
+
+      const stage = blockNextLanceAdd();
+      const addPromise = store.addDocument(createTestDocument(url, 'Replacement'));
+      await stage.staged;
+
+      const deleteWaiting = waitForLeaseContention(deletingStore);
+      const deletePromise = deletingStore.deleteDocument(url);
+      await deleteWaiting;
+      expect(await deletingStore.getDocument(url)).toMatchObject({ title: 'Original' });
+
+      stage.release();
+      await Promise.all([addPromise, deletePromise]);
+      expect(await deletingStore.getDocument(url)).toBeNull();
+      expect(await storedContents(deletingStore, url)).toEqual([]);
+      const table = replacementInternals(deletingStore).lanceTable!;
+      await table.checkoutLatest();
+      expect(await table.countRows(`url = '${url}'`)).toBe(0);
+    });
+
+    it('serializes delete then add across two store instances', async () => {
+      const url = 'https://example.com/delete-then-add';
+      await store.addDocument(createTestDocument(url, 'Original'));
+      const addingStore = await openPeerStore();
+
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const runSql = sqliteDb.run.bind(sqliteDb);
+      const deleteReady = deferred();
+      const deleteReleased = deferred();
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        if (String(sql) === 'BEGIN TRANSACTION') {
+          deleteReady.resolve();
+          await deleteReleased.promise;
+        }
+        return runSql(sql, ...params);
+      });
+      const deletePromise = store.deleteDocument(url);
+      await deleteReady.promise;
+
+      const addWaiting = waitForLeaseContention(addingStore);
+      const winner = createDocumentWithContent(url, 'Winner', 'winner delete then add test content');
+      const addPromise = addingStore.addDocument(winner);
+      await addWaiting;
+      expect(await addingStore.getDocument(url)).toMatchObject({ title: 'Original' });
+
+      deleteReleased.resolve();
+      await Promise.all([deletePromise, addPromise]);
+      expect(await addingStore.getDocument(url)).toMatchObject({ title: 'Winner' });
+      expect(await storedContents(addingStore, url)).toEqual(['winner delete then add test content']);
+      const table = replacementInternals(addingStore).lanceTable!;
+      await table.checkoutLatest();
+      expect(await table.countRows(`url = '${url}' AND published = true`)).toBe(1);
+    });
+
+    it('keeps the published generation visible, then recovers its cleanup after lease expiry', async () => {
+      const url = 'https://example.com/published-cleanup-failure';
+      const original = createDocumentWithContent(url, 'Original', 'old published cleanup content');
+      await store.addDocument(original);
+
+      const replacement = createDocumentWithContent(url, 'Replacement', 'new published cleanup content');
+      vi.spyOn(replacementInternals(), 'finishDocumentReplacement').mockRejectedValueOnce(new Error('injected cleanup failure'));
+      await expect(store.addDocument(replacement)).resolves.toBeUndefined();
+
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Replacement' });
+      expect(await storedContents(store, url)).toEqual(['new published cleanup content']);
+      expect(await replacementInternals().sqliteDb!.get('SELECT state FROM document_replacements WHERE url = ?', [url])).toMatchObject({
+        state: 'published',
+      });
+      await replacementInternals().sqliteDb!.run('UPDATE document_replacements SET lease_expires_at = 0 WHERE url = ?', [url]);
+
+      const recoveredStore = await openPeerStore();
+
+      expect(await storedContents(recoveredStore, url)).toEqual(['new published cleanup content']);
+      const journal = await replacementInternals(recoveredStore).sqliteDb!.get('SELECT url FROM document_replacements WHERE url = ?', [
+        url,
+      ]);
+      expect(journal).toBeUndefined();
+    });
+
+    it('rejects a malformed durable cleanup generation list', () => {
+      expect(() => replacementInternals().parseCleanupGenerations('{bad json')).toThrow();
+    });
+  });
+
   describe('getDocument', () => {
     it('should return null for non-existent document', async () => {
       const result = await store.getDocument('https://nonexistent.com/page');
@@ -148,6 +1132,31 @@ describe('DocumentStore', () => {
       expect(result?.url).toBe('https://example.com/get-test');
       expect(result?.title).toBe('Get Test');
       expect(result?.lastIndexed).toBeInstanceOf(Date);
+    });
+
+    it('hydrates metadata and tags in one query for every document read API', async () => {
+      const url = 'https://example.com/snapshot-tags';
+      await store.addDocument(createTestDocument(url, 'Snapshot Tags'), { tags: ['tag'] });
+      await store.createCollection('Snapshot Collection');
+      await store.addToCollection('Snapshot Collection', [url]);
+      const reader = replacementInternals().sqliteReadDb!;
+      const get = vi.spyOn(reader, 'get');
+      const all = vi.spyOn(reader, 'all');
+
+      get.mockClear();
+      await store.getDocument(url);
+      expect(String(get.mock.calls[0]?.[0])).toContain('json_group_array');
+      expect(get).toHaveBeenCalledOnce();
+
+      all.mockClear();
+      await store.listDocuments();
+      expect(String(all.mock.calls[0]?.[0])).toContain('json_group_array');
+      expect(all).toHaveBeenCalledOnce();
+
+      all.mockClear();
+      await store.getCollection('Snapshot Collection');
+      expect(String(all.mock.calls[0]?.[0])).toContain('json_group_array');
+      expect(all).toHaveBeenCalledOnce();
     });
   });
 
@@ -199,6 +1208,20 @@ describe('DocumentStore', () => {
       // Verify it's gone
       doc = await store.getDocument(url);
       expect(doc).toBeNull();
+    });
+
+    it('keeps failed vector cleanup hidden behind a deleting journal', async () => {
+      const url = 'https://example.com/delete-cleanup-failure';
+      await store.addDocument(createTestDocument(url, 'Delete cleanup failure'));
+      vi.spyOn(replacementInternals().lanceTable!, 'delete').mockRejectedValueOnce(new Error('injected delete cleanup failure'));
+
+      await expect(store.deleteDocument(url)).resolves.toBeUndefined();
+
+      expect(await store.getDocument(url)).toBeNull();
+      expect(await storedContents(store, url)).toEqual([]);
+      expect(await replacementInternals().sqliteReadDb!.get('SELECT state FROM document_replacements WHERE url = ?', [url])).toMatchObject({
+        state: 'deleting',
+      });
     });
 
     it('should not throw when deleting non-existent document', async () => {
@@ -411,6 +1434,7 @@ describe('DocumentStore', () => {
       await legacyDb.close();
 
       const legacyStore = new DocumentStore(legacyDbPath, join(tempDir, 'legacy-vectors'), mockEmbeddings, 100);
+      openStores.add(legacyStore);
       await legacyStore.initialize();
 
       expect((await legacyStore.getDocument('https://legacy.example.com'))?.pathPrefix).toBeUndefined();
@@ -432,8 +1456,7 @@ describe('DocumentStore', () => {
 
     it('should apply migrations only once', async () => {
       // Create a second store instance pointing to the same database
-      const store2 = new DocumentStore(join(tempDir, 'docs.db'), join(tempDir, 'vectors'), mockEmbeddings, 100);
-      await store2.initialize();
+      const store2 = await openPeerStore();
 
       // Add document with auth fields using new store
       const doc = createTestDocument('https://second-store.com', 'Second Store Test');
@@ -443,6 +1466,52 @@ describe('DocumentStore', () => {
       // Should work without errors (migrations already applied, should be skipped)
       const retrieved = await store2.getDocument('https://second-store.com');
       expect(retrieved?.requiresAuth).toBe(true);
+    });
+
+    it('should add generations to a legacy Lance table without losing its chunks', async () => {
+      const url = 'https://example.com/legacy-lance';
+      const original = createDocumentWithContent(url, 'Legacy', 'legacy table content');
+      await store.addDocument(original);
+      await replacementInternals().lanceTable!.dropColumns(['generation', 'published']);
+
+      const migratedStore = await openPeerStore();
+
+      expect(await storedContents(migratedStore, url)).toEqual(['legacy table content']);
+      const migratedSchema = await replacementInternals(migratedStore).lanceTable!.schema();
+      const fields = migratedSchema.fields.map((field) => field.name);
+      expect(fields).toContain('generation');
+      expect(fields).toContain('published');
+      expect(migratedSchema.fields.find((field) => field.name === 'published')?.nullable).toBe(false);
+
+      const replacement = createDocumentWithContent(url, 'Migrated', 'migrated table content');
+      await migratedStore.addDocument(replacement);
+      expect(await storedContents(migratedStore, url)).toEqual(['migrated table content']);
+    });
+
+    it('allows concurrent initializers to finish the same journal and generation migrations', async () => {
+      const url = 'https://example.com/concurrent-migration';
+      await store.addDocument(createTestDocument(url, 'Concurrent migration'));
+      await replacementInternals().lanceTable!.dropColumns(['generation', 'published']);
+      await replacementInternals().sqliteDb!.exec(`
+        DROP TABLE document_replacements;
+        DELETE FROM schema_migrations WHERE version = 5;
+      `);
+      await store.close();
+
+      const first = new DocumentStore(join(tempDir, 'docs.db'), join(tempDir, 'vectors'), mockEmbeddings, 100);
+      const second = new DocumentStore(join(tempDir, 'docs.db'), join(tempDir, 'vectors'), mockEmbeddings, 100);
+      openStores.add(first);
+      openStores.add(second);
+      await Promise.all([first.initialize(), second.initialize()]);
+
+      const firstFields = (await replacementInternals(first).lanceTable!.schema()).fields.map((field) => field.name);
+      const secondFields = (await replacementInternals(second).lanceTable!.schema()).fields.map((field) => field.name);
+      for (const fields of [firstFields, secondFields]) {
+        expect(fields).toEqual(expect.arrayContaining(['generation', 'published']));
+      }
+      expect(
+        await replacementInternals(first).sqliteReadDb!.get('SELECT COUNT(*) AS count FROM schema_migrations WHERE version = 5')
+      ).toMatchObject({ count: 1 });
     });
 
     it('should handle auth columns added by migration', async () => {

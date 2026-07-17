@@ -1,4 +1,5 @@
 import { logger } from '../util/logger.js';
+import { fetchPublicUrl } from '../util/outbound-request.js';
 
 /**
  * Fetches and parses a site's llms.txt file to discover documentation URLs.
@@ -86,7 +87,7 @@ export async function discoverUrlsFromLlmsTxt(baseUrl: string): Promise<string[]
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), LLMS_TXT_TIMEOUT_MS);
 
-    const response = await fetch(llmsTxtUrl, {
+    const response = await fetchPublicUrl(llmsTxtUrl, {
       signal: controller.signal,
       headers: {
         'User-Agent': 'Mozilla/5.0 (compatible; mcp-web-docs/1.0)',

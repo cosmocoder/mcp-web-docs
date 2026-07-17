@@ -12,7 +12,7 @@
     "declaration": true,
     "sourceMap": true,
     "resolveJsonModule": true,
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2024", "DOM"],
     "types": ["node", "vite/client", "vitest/globals"],
     "noUnusedLocals": true,
     "noUnusedParameters": true

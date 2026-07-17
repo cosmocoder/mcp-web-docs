@@ -116,7 +116,7 @@ export function validatePublicUrl(urlString: string): URL {
     throw new Error('Only HTTP and HTTPS protocols are allowed');
   }
 
-  const hostname = url.hostname.toLowerCase();
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, '');
 
   // Block localhost variants
   if (

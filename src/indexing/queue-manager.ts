@@ -1,104 +1,114 @@
+import { setTimeout as delay } from 'node:timers/promises';
 import { normalizeUrl } from '../config.js';
 import { logger } from '../util/logger.js';
 
+const DEFAULT_CANCELLATION_TIMEOUT_MS = 5_000;
+const CANCELLATION_IN_PROGRESS_MESSAGE = 'Indexing operations are being cancelled';
+
 interface ActiveOperation {
   controller: AbortController;
-  promise: Promise<void>;
-  url: string;
-  startedAt: Date;
+  completion: Promise<void>;
 }
 
-/**
- * Manages concurrent indexing operations to prevent conflicts.
- * Ensures only one indexing operation runs per URL at a time.
- */
+export interface IndexingOperationHandle {
+  completion: Promise<void>;
+  replacedExisting: boolean;
+}
+
+/** Owns the complete lifecycle of at most one indexing operation per URL. */
 export class IndexingQueueManager {
-  private activeOperations: Map<string, ActiveOperation> = new Map();
+  private readonly activeOperations = new Map<string, ActiveOperation>();
+  private readonly transitions = new Map<string, Promise<void>>();
+  private cancellation?: Promise<void>;
 
-  /**
-   * Start a new operation for a URL, cancelling any existing operation first.
-   * @param url The URL to index
-   * @returns AbortController for the new operation
-   */
-  async startOperation(url: string): Promise<AbortController> {
-    const normalizedUrl = normalizeUrl(url);
+  constructor(private readonly cancellationTimeoutMs = DEFAULT_CANCELLATION_TIMEOUT_MS) {}
 
-    // Cancel existing operation for this URL if any
-    const existing = this.activeOperations.get(normalizedUrl);
-    if (existing) {
-      logger.debug(`[IndexingQueue] Cancelling existing operation for ${url}`);
-      existing.controller.abort();
-
-      // Wait for cancellation to complete (with timeout)
-      try {
-        await Promise.race([
-          existing.promise,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('Cancellation timeout')), 5000)),
-        ]);
-      }
-      catch (e) {
-        // Expected - operation was cancelled or timed out
-        logger.debug(`[IndexingQueue] Previous operation ended: ${e instanceof Error ? e.message : 'cancelled'}`);
-      }
+  runLatest(url: string, operation: (signal: AbortSignal) => Promise<void>): Promise<IndexingOperationHandle> {
+    if (this.cancellation) {
+      return Promise.reject(new Error(CANCELLATION_IN_PROGRESS_MESSAGE));
     }
-
-    // Create new abort controller for this operation
-    const controller = new AbortController();
-    return controller;
-  }
-
-  /**
-   * Register an active operation
-   */
-  registerOperation(url: string, controller: AbortController, promise: Promise<void>): void {
     const normalizedUrl = normalizeUrl(url);
-    this.activeOperations.set(normalizedUrl, {
-      controller,
-      promise,
-      url,
-      startedAt: new Date(),
+    return this.runTransition(normalizedUrl, async () => {
+      if (this.cancellation) {
+        throw new Error(CANCELLATION_IN_PROGRESS_MESSAGE);
+      }
+      const existing = this.activeOperations.get(normalizedUrl);
+      if (existing) {
+        logger.debug(`[IndexingQueue] Cancelling existing operation for ${url}`);
+        existing.controller.abort();
+        await this.awaitCancellation(existing.completion, `the existing indexing operation for ${url}`);
+        if (this.cancellation) {
+          throw new Error(CANCELLATION_IN_PROGRESS_MESSAGE);
+        }
+      }
+
+      const controller = new AbortController();
+      const started = Promise.resolve().then(() => operation(controller.signal));
+      const completion = started.finally(() => {
+        if (this.activeOperations.get(normalizedUrl)?.controller === controller) {
+          this.activeOperations.delete(normalizedUrl);
+          logger.debug(`[IndexingQueue] Completed operation for ${url}`);
+        }
+      });
+      this.activeOperations.set(normalizedUrl, { controller, completion });
+      logger.debug(`[IndexingQueue] Registered operation for ${url}`);
+      return { completion, replacedExisting: existing !== undefined };
     });
-    logger.debug(`[IndexingQueue] Registered operation for ${url}`);
   }
 
-  /**
-   * Mark an operation as complete
-   */
-  completeOperation(url: string): void {
-    const normalizedUrl = normalizeUrl(url);
-    this.activeOperations.delete(normalizedUrl);
-    logger.debug(`[IndexingQueue] Completed operation for ${url}`);
-  }
-
-  /**
-   * Cancel all active operations (for shutdown)
-   */
-  async cancelAll(): Promise<void> {
-    logger.debug(`[IndexingQueue] Cancelling all ${this.activeOperations.size} operations`);
-
-    const cancellations = Array.from(this.activeOperations.values()).map((op) => {
-      op.controller.abort();
-      return op.promise.catch(() => {});
+  private runTransition<T>(normalizedUrl: string, transition: () => Promise<T>): Promise<T> {
+    const previous = this.transitions.get(normalizedUrl) ?? Promise.resolve();
+    const result = previous.then(transition);
+    const tail = result.then(
+      () => undefined,
+      () => undefined
+    );
+    this.transitions.set(normalizedUrl, tail);
+    void tail.then(() => {
+      if (this.transitions.get(normalizedUrl) === tail) {
+        this.transitions.delete(normalizedUrl);
+      }
     });
-
-    await Promise.all(cancellations);
-    this.activeOperations.clear();
+    return result;
   }
 
-  /**
-   * Check if a URL is currently being indexed
-   */
-  isIndexing(url: string): boolean {
-    return this.activeOperations.has(normalizeUrl(url));
+  private async awaitCancellation(completion: Promise<void>, description: string): Promise<void> {
+    const timerController = new AbortController();
+    try {
+      await Promise.race([
+        completion.catch(() => undefined),
+        delay(this.cancellationTimeoutMs, undefined, { signal: timerController.signal }).then(() => {
+          throw new Error(`Timed out cancelling ${description}`);
+        }),
+      ]);
+    }
+    finally {
+      timerController.abort();
+    }
   }
 
-  /**
-   * Get information about active operations
-   */
-  getActiveOperations(): Array<{ url: string; startedAt: Date }> {
-    return Array.from(this.activeOperations.values()).map((op) => ({
-      url: op.url,
-      startedAt: op.startedAt,
-    }));
+  cancelAll(): Promise<void> {
+    if (this.cancellation) {
+      return this.cancellation;
+    }
+    this.cancellation = Promise.resolve()
+      .then(() => this.drainOperations())
+      .finally(() => {
+        this.cancellation = undefined;
+      });
+    return this.cancellation;
+  }
+
+  private async drainOperations(): Promise<void> {
+    const operations = [...this.activeOperations.values()];
+    const transitions = [...this.transitions.values()];
+    logger.debug(`[IndexingQueue] Cancelling ${operations.length} operations and draining ${transitions.length} transitions`);
+    for (const operation of operations) {
+      operation.controller.abort();
+    }
+    await this.awaitCancellation(
+      Promise.allSettled([...operations.map((operation) => operation.completion), ...transitions]).then(() => undefined),
+      'all indexing operations'
+    );
   }
 }

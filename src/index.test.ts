@@ -1,4 +1,5 @@
 import { type Mock } from 'vitest';
+import { setImmediate as nextTurn } from 'node:timers/promises';
 import { isValidPublicUrl } from './config.js';
 import {
   validateToolArgs,
@@ -9,33 +10,58 @@ import {
   wrapExternalContent,
   addInjectionWarnings,
   sanitizeErrorMessage,
+  SessionExpiredError,
 } from './util/security.js';
 import { generateDocId } from './util/docs.js';
 import { IndexingStatusTracker } from './indexing/status.js';
-import { IndexingQueueManager } from './indexing/queue-manager.js';
-import type { DocumentMetadata, SearchResult } from './types.js';
+import type { DocumentChunk, DocumentMetadata, SearchResult } from './types.js';
 
-const reindexMocks = vi.hoisted(() => ({
-  handlers: [] as Array<(request: { params: { name: string; arguments?: Record<string, unknown> } }) => Promise<unknown>>,
-  storeInitialize: vi.fn().mockResolvedValue(undefined),
-  storeGetDocument: vi.fn(),
-  storeAddDocument: vi.fn().mockResolvedValue(undefined),
-  storeDeleteDocument: vi.fn().mockResolvedValue(undefined),
-  storeSetTags: vi.fn().mockResolvedValue(undefined),
-  storeOptimize: vi.fn().mockResolvedValue({ compacted: false, cleanedUp: false }),
-  crawlerSetPathPrefix: vi.fn(),
+type ToolHandler = (request: { params: { name: string; arguments?: Record<string, unknown> } }) => Promise<unknown>;
+
+const {
+  mockCrawlerAbort,
+  mockCrawlerCrawl,
+  mockCrawlerSetPathPrefix,
+  mockClearSession,
+  mockFetchFavicon,
+  mockNotification,
+  mockProcessorProcess,
+  mockRunLatest,
+  mockStoreAddDocument,
+  mockStoreGetDocument,
+  requestHandlers,
+} = vi.hoisted(() => ({
+  mockCrawlerAbort: vi.fn(),
+  mockCrawlerCrawl: vi.fn().mockImplementation(async function* () {
+    yield { url: 'https://example.com', path: '/', content: '<h1>Test</h1>', title: 'Test' };
+  }),
+  mockCrawlerSetPathPrefix: vi.fn(),
+  mockClearSession: vi.fn().mockResolvedValue(undefined),
+  mockFetchFavicon: vi.fn().mockResolvedValue('https://example.com/favicon.ico'),
+  mockNotification: vi.fn().mockResolvedValue(undefined),
+  mockProcessorProcess: vi.fn().mockResolvedValue({
+    metadata: { url: 'https://example.com', title: 'Test', lastIndexed: new Date() },
+    chunks: [] as DocumentChunk[],
+  }),
+  mockRunLatest: vi.fn(),
+  mockStoreAddDocument: vi.fn().mockResolvedValue(undefined),
+  mockStoreGetDocument: vi.fn().mockResolvedValue(null),
+  requestHandlers: [] as ToolHandler[],
 }));
 
+mockRunLatest.mockImplementation(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+  const completion = Promise.resolve().then(() => operation(new AbortController().signal));
+  return { completion, replacedExisting: false };
+});
+
 vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
-  McpServer: vi.fn().mockImplementation(function MockMcpServer() {
+  McpServer: vi.fn().mockImplementation(function () {
     return {
       server: {
-        setRequestHandler: vi.fn(
-          (_schema: unknown, handler: (request: { params: { name: string; arguments?: Record<string, unknown> } }) => Promise<unknown>) => {
-            reindexMocks.handlers.push(handler);
-          }
-        ),
-        notification: vi.fn().mockResolvedValue(undefined),
+        setRequestHandler: vi.fn((_schema: unknown, handler: ToolHandler) => {
+          requestHandlers.push(handler);
+        }),
+        notification: mockNotification,
         onerror: null,
       },
       connect: vi.fn().mockResolvedValue(undefined),
@@ -48,23 +74,31 @@ vi.mock('@modelcontextprotocol/sdk/server/stdio.js', () => ({
 }));
 
 vi.mock('./storage/storage.js', () => ({
-  DocumentStore: vi.fn().mockImplementation(function MockDocumentStore() {
+  DocumentStore: vi.fn().mockImplementation(function () {
     return {
-      initialize: reindexMocks.storeInitialize,
+      initialize: vi.fn().mockResolvedValue(undefined),
       listDocuments: vi.fn().mockResolvedValue([]),
-      getDocument: reindexMocks.storeGetDocument,
+      getDocument: mockStoreGetDocument,
       searchByText: vi.fn().mockResolvedValue([]),
-      addDocument: reindexMocks.storeAddDocument,
-      deleteDocument: reindexMocks.storeDeleteDocument,
-      setTags: reindexMocks.storeSetTags,
+      addDocument: mockStoreAddDocument,
+      deleteDocument: vi.fn().mockResolvedValue(undefined),
+      setTags: vi.fn().mockResolvedValue(undefined),
       listAllTags: vi.fn().mockResolvedValue([]),
-      optimize: reindexMocks.storeOptimize,
+      optimize: vi.fn().mockResolvedValue({ compacted: false, cleanedUp: false }),
     };
   }),
 }));
 
+vi.mock('./indexing/queue-manager.js', () => ({
+  IndexingQueueManager: function () {
+    return {
+      runLatest: mockRunLatest,
+    };
+  },
+}));
+
 vi.mock('./embeddings/fastembed.js', () => ({
-  FastEmbeddings: vi.fn().mockImplementation(function MockFastEmbeddings() {
+  FastEmbeddings: vi.fn().mockImplementation(function () {
     return {
       dimensions: 384,
       embed: vi.fn().mockResolvedValue(new Array(384).fill(0)),
@@ -73,47 +107,31 @@ vi.mock('./embeddings/fastembed.js', () => ({
 }));
 
 vi.mock('./processor/processor.js', () => ({
-  WebDocumentProcessor: vi.fn().mockImplementation(function MockWebDocumentProcessor() {
+  WebDocumentProcessor: vi.fn().mockImplementation(function () {
     return {
-      process: vi.fn().mockResolvedValue({
-        metadata: { url: 'https://example.com', title: 'Test', lastIndexed: new Date() },
-        chunks: [
-          {
-            content: 'Test content',
-            url: 'https://example.com',
-            title: 'Test',
-            path: '/',
-            startLine: 1,
-            endLine: 1,
-            vector: new Array(384).fill(0),
-            metadata: { type: 'overview' },
-          },
-        ],
-      }),
+      process: mockProcessorProcess,
     };
   }),
 }));
 
 vi.mock('./crawler/docs-crawler.js', () => ({
-  DocsCrawler: vi.fn().mockImplementation(function MockDocsCrawler() {
+  DocsCrawler: vi.fn().mockImplementation(function () {
     return {
-      crawl: vi.fn().mockImplementation(async function* () {
-        yield { url: 'https://example.com', path: '/', content: '<h1>Test</h1>', title: 'Test' };
-      }),
-      abort: vi.fn(),
-      setPathPrefix: reindexMocks.crawlerSetPathPrefix,
+      crawl: mockCrawlerCrawl,
+      abort: mockCrawlerAbort,
+      setPathPrefix: mockCrawlerSetPathPrefix,
       setStorageState: vi.fn(),
     };
   }),
 }));
 
 vi.mock('./crawler/auth.js', () => ({
-  AuthManager: vi.fn().mockImplementation(function MockAuthManager() {
+  AuthManager: vi.fn().mockImplementation(function () {
     return {
       initialize: vi.fn().mockResolvedValue(undefined),
       hasSession: vi.fn().mockResolvedValue(false),
       loadSession: vi.fn().mockResolvedValue(null),
-      clearSession: vi.fn().mockResolvedValue(undefined),
+      clearSession: mockClearSession,
       performInteractiveLogin: vi.fn().mockResolvedValue(undefined),
       validateSession: vi.fn().mockResolvedValue({ isValid: true }),
     };
@@ -135,7 +153,7 @@ vi.mock('./config.js', () => ({
 }));
 
 vi.mock('./util/favicon.js', () => ({
-  fetchFavicon: vi.fn().mockResolvedValue('https://example.com/favicon.ico'),
+  fetchFavicon: mockFetchFavicon,
 }));
 
 vi.mock('./util/docs.js', () => ({
@@ -151,9 +169,448 @@ vi.mock('crawlee', () => ({
   Dataset: { open: vi.fn().mockResolvedValue({ drop: vi.fn() }) },
 }));
 
+const processedPageWithChunk = {
+  metadata: { url: 'https://example.com', title: 'Test', lastIndexed: new Date() },
+  chunks: [
+    {
+      content: 'content',
+      url: 'https://example.com',
+      title: 'Test',
+      path: '/',
+      startLine: 1,
+      endLine: 1,
+      vector: [0],
+      metadata: { type: 'overview' as const },
+    },
+  ],
+};
+
 describe('WebDocsServer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  describe('operation lifecycle integration', () => {
+    let toolHandler: ToolHandler;
+
+    beforeAll(async () => {
+      requestHandlers.length = 0;
+      await import('./index.js');
+      await nextTurn();
+      toolHandler = requestHandlers.at(-1)!;
+    });
+
+    it('does not start or notify a rejected operation before admitting its tokenless successor', async () => {
+      const startIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'startIndexing');
+      let successorCompletion!: Promise<void>;
+      mockRunLatest
+        .mockRejectedValueOnce(new Error('replacement cancellation timed out'))
+        .mockImplementationOnce(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+          successorCompletion = Promise.resolve().then(() => operation(new AbortController().signal));
+          return { completion: successorCompletion, replacedExisting: false };
+        });
+
+      try {
+        await expect(
+          toolHandler({
+            params: {
+              name: 'add_documentation',
+              arguments: { url: 'https://example.com', _meta: { progressToken: 'rejected-token' } },
+            },
+          })
+        ).rejects.toThrow('replacement cancellation timed out');
+        expect(startIndexing).not.toHaveBeenCalled();
+
+        await toolHandler({ params: { name: 'add_documentation', arguments: { url: 'https://example.com' } } });
+        await successorCompletion;
+
+        expect(startIndexing).toHaveBeenCalledOnce();
+        expect(mockNotification.mock.calls.some(([notification]) => notification.params?.progressToken === 'rejected-token')).toBe(false);
+      }
+      finally {
+        await Promise.allSettled(successorCompletion ? [successorCompletion] : []);
+      }
+    });
+
+    it.each([
+      {
+        name: 'keeps successor progress state when an old terminal notification finishes late',
+        firstToken: 'same-token',
+        secondToken: 'same-token',
+      },
+      {
+        name: 'does not reuse an old progress token when its tokenless successor starts',
+        firstToken: 'old-token',
+        secondToken: undefined,
+      },
+    ])('$name', async ({ firstToken, secondToken }) => {
+      const startIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'startIndexing');
+      const firstStoreLookup = Promise.withResolvers<void>();
+      const secondStoreLookup = Promise.withResolvers<void>();
+      const oldTerminalNotification = Promise.withResolvers<void>();
+      const oldTerminalStarted = Promise.withResolvers<void>();
+      const successorProgressed = Promise.withResolvers<void>();
+      const releaseSuccessorCrawl = Promise.withResolvers<void>();
+      mockStoreGetDocument.mockReturnValueOnce(firstStoreLookup.promise).mockReturnValueOnce(secondStoreLookup.promise);
+      mockCrawlerCrawl.mockImplementationOnce(async function* () {
+        yield { url: 'https://example.com', path: '/', content: '<h1>Test</h1>', title: 'Test' };
+        successorProgressed.resolve();
+        await releaseSuccessorCrawl.promise;
+      });
+      mockNotification.mockImplementation(async (notification: { params?: { message?: string } }) => {
+        if (notification.params?.message?.startsWith('Cancelled -')) {
+          oldTerminalStarted.resolve();
+          await oldTerminalNotification.promise;
+        }
+      });
+
+      let active: { controller: AbortController; completion: Promise<void> } | undefined;
+      const completions: Promise<void>[] = [];
+      const runLatest = async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+        const previous = active;
+        if (previous) {
+          previous.controller.abort();
+          await previous.completion;
+        }
+        const controller = new AbortController();
+        const completion = Promise.resolve().then(() => operation(controller.signal));
+        completions.push(completion);
+        active = { controller, completion };
+        return { completion, replacedExisting: previous !== undefined };
+      };
+      mockRunLatest.mockImplementationOnce(runLatest).mockImplementationOnce(runLatest);
+
+      try {
+        await toolHandler({
+          params: {
+            name: 'add_documentation',
+            arguments: { url: 'https://example.com', _meta: { progressToken: firstToken } },
+          },
+        });
+        await nextTurn();
+        expect(startIndexing).toHaveBeenCalledOnce();
+
+        const replacementResponse = toolHandler({
+          params: {
+            name: 'add_documentation',
+            arguments: secondToken ? { url: 'https://example.com', _meta: { progressToken: secondToken } } : { url: 'https://example.com' },
+          },
+        });
+        await nextTurn();
+        firstStoreLookup.resolve();
+        await oldTerminalStarted.promise;
+        await replacementResponse;
+        await nextTurn();
+
+        expect(startIndexing).toHaveBeenCalledTimes(2);
+        const notificationsAtSuccessorBoundary = mockNotification.mock.calls.length;
+
+        oldTerminalNotification.resolve();
+        await nextTurn();
+
+        secondStoreLookup.resolve();
+        await successorProgressed.promise;
+
+        releaseSuccessorCrawl.resolve();
+        await active!.completion;
+        if (secondToken) {
+          const successorNotifications = mockNotification.mock.calls
+            .slice(notificationsAtSuccessorBoundary)
+            .map(([notification]) => notification.params);
+          expect(successorNotifications).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ progressToken: secondToken, message: expect.stringContaining('Finding subpages') }),
+              expect.objectContaining({ progressToken: secondToken, message: expect.stringContaining('No content was extracted') }),
+            ])
+          );
+        }
+        else {
+          expect(
+            mockNotification.mock.calls
+              .slice(notificationsAtSuccessorBoundary)
+              .some(([notification]) => notification.params?.progressToken === firstToken)
+          ).toBe(false);
+        }
+      }
+      finally {
+        firstStoreLookup.resolve();
+        secondStoreLookup.resolve();
+        oldTerminalNotification.resolve();
+        releaseSuccessorCrawl.resolve();
+        await Promise.allSettled(completions);
+        mockNotification.mockResolvedValue(undefined);
+      }
+    });
+
+    it('reports cancellation when an aborted crawler rejects with an ordinary error', async () => {
+      const enteredCrawl = Promise.withResolvers<void>();
+      const releaseCrawl = Promise.withResolvers<void>();
+      mockCrawlerCrawl.mockImplementationOnce(async function* () {
+        yield* [];
+        enteredCrawl.resolve();
+        await releaseCrawl.promise;
+        throw new Error('crawler stopped');
+      });
+      const cancelIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'cancelIndexing');
+      const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
+      const controller = new AbortController();
+      let completion!: Promise<void>;
+      mockRunLatest.mockImplementationOnce(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+        completion = Promise.resolve().then(() => operation(controller.signal));
+        return { completion, replacedExisting: false };
+      });
+
+      try {
+        await toolHandler({ params: { name: 'add_documentation', arguments: { url: 'https://example.com' } } });
+        await enteredCrawl.promise;
+        controller.abort();
+        releaseCrawl.resolve();
+        await completion;
+
+        expect(cancelIndexing).toHaveBeenCalledOnce();
+        expect(failIndexing).not.toHaveBeenCalled();
+      }
+      finally {
+        releaseCrawl.resolve();
+        await Promise.allSettled(completion ? [completion] : []);
+      }
+    });
+
+    it('cancels instead of failing when abort arrives while an expired session is being cleared', async () => {
+      const clearSession = Promise.withResolvers<void>();
+      const clearSessionStarted = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      const cancelIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'cancelIndexing');
+      const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
+      let completion!: Promise<void>;
+      mockCrawlerCrawl.mockImplementationOnce(async function* () {
+        yield* [];
+        throw new SessionExpiredError('session expired', 'https://example.com', 'https://example.com/login', {
+          isLoginPage: true,
+          confidence: 1,
+          reasons: ['login page'],
+        });
+      });
+      mockClearSession.mockImplementationOnce(() => {
+        clearSessionStarted.resolve();
+        return clearSession.promise;
+      });
+      mockRunLatest.mockImplementationOnce(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+        completion = Promise.resolve().then(() => operation(controller.signal));
+        return { completion, replacedExisting: false };
+      });
+
+      try {
+        await toolHandler({
+          params: {
+            name: 'add_documentation',
+            arguments: { url: 'https://example.com', _meta: { progressToken: 'expired-session-token' } },
+          },
+        });
+        await clearSessionStarted.promise;
+        controller.abort();
+        clearSession.resolve();
+        await Promise.allSettled([completion]);
+        await nextTurn();
+
+        expect(cancelIndexing).toHaveBeenCalledOnce();
+        expect(failIndexing).not.toHaveBeenCalled();
+        expect(
+          mockNotification.mock.calls.some(
+            ([notification]) =>
+              notification.params?.progressToken === 'expired-session-token' && notification.params?.message?.startsWith('Cancelled -')
+          )
+        ).toBe(true);
+        expect(
+          mockNotification.mock.calls.some(([notification]) => notification.params?.message?.includes('Authentication session has expired'))
+        ).toBe(false);
+      }
+      finally {
+        controller.abort();
+        clearSession.resolve();
+        await Promise.allSettled(completion ? [completion] : []);
+      }
+    });
+
+    it('cancels instead of completing an existing add after its document lookup resolves', async () => {
+      const lookup = Promise.withResolvers<DocumentMetadata>();
+      const lookupStarted = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      const cancelIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'cancelIndexing');
+      const completeIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'completeIndexing');
+      const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
+      let completion!: Promise<void>;
+      mockStoreGetDocument.mockImplementationOnce(() => {
+        lookupStarted.resolve();
+        return lookup.promise;
+      });
+      mockRunLatest.mockImplementationOnce(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+        completion = Promise.resolve().then(() => operation(controller.signal));
+        return { completion, replacedExisting: false };
+      });
+
+      try {
+        await toolHandler({ params: { name: 'add_documentation', arguments: { url: 'https://example.com' } } });
+        await lookupStarted.promise;
+        controller.abort();
+        lookup.resolve({ url: 'https://example.com', title: 'Existing', lastIndexed: new Date() });
+        await completion;
+
+        expect(cancelIndexing).toHaveBeenCalledOnce();
+        expect(completeIndexing).not.toHaveBeenCalled();
+        expect(failIndexing).not.toHaveBeenCalled();
+        expect(mockCrawlerCrawl).not.toHaveBeenCalled();
+      }
+      finally {
+        lookup.resolve({ url: 'https://example.com', title: 'Existing', lastIndexed: new Date() });
+        await Promise.allSettled(completion ? [completion] : []);
+      }
+    });
+
+    it('does not store a document when cancellation arrives during favicon lookup', async () => {
+      const favicon = Promise.withResolvers<string | null>();
+      const faviconStarted = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      const cancelIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'cancelIndexing');
+      const completeIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'completeIndexing');
+      const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
+      let completion!: Promise<void>;
+      mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk);
+      mockFetchFavicon.mockImplementationOnce(() => {
+        faviconStarted.resolve();
+        return favicon.promise;
+      });
+      mockRunLatest.mockImplementationOnce(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+        completion = Promise.resolve().then(() => operation(controller.signal));
+        return { completion, replacedExisting: false };
+      });
+
+      try {
+        await toolHandler({ params: { name: 'add_documentation', arguments: { url: 'https://example.com' } } });
+        await faviconStarted.promise;
+        controller.abort();
+        favicon.resolve(null);
+        await completion;
+
+        expect(cancelIndexing).toHaveBeenCalledOnce();
+        expect(mockStoreAddDocument).not.toHaveBeenCalled();
+        expect(completeIndexing).not.toHaveBeenCalled();
+        expect(failIndexing).not.toHaveBeenCalled();
+      }
+      finally {
+        favicon.resolve(null);
+        await Promise.allSettled(completion ? [completion] : []);
+      }
+    });
+
+    it('does not complete when cancellation arrives during document storage', async () => {
+      const add = Promise.withResolvers<void>();
+      const addStarted = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      const cancelIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'cancelIndexing');
+      const completeIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'completeIndexing');
+      const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
+      let completion!: Promise<void>;
+      mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk);
+      mockStoreAddDocument.mockImplementationOnce(() => {
+        addStarted.resolve();
+        return add.promise;
+      });
+      mockRunLatest.mockImplementationOnce(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+        completion = Promise.resolve().then(() => operation(controller.signal));
+        return { completion, replacedExisting: false };
+      });
+
+      try {
+        await toolHandler({ params: { name: 'add_documentation', arguments: { url: 'https://example.com' } } });
+        await addStarted.promise;
+        controller.abort();
+        add.resolve();
+        await completion;
+
+        expect(cancelIndexing).toHaveBeenCalledOnce();
+        expect(mockStoreAddDocument).toHaveBeenCalledWith(expect.any(Object), { signal: controller.signal, tags: [] });
+        expect(completeIndexing).not.toHaveBeenCalled();
+        expect(failIndexing).not.toHaveBeenCalled();
+      }
+      finally {
+        add.resolve();
+        await Promise.allSettled(completion ? [completion] : []);
+      }
+    });
+
+    it('stops retrying a conflicted write when cancellation arrives during backoff', async () => {
+      const firstAttempt = Promise.withResolvers<void>();
+      const controller = new AbortController();
+      const cancelIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'cancelIndexing');
+      const completeIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'completeIndexing');
+      let completion!: Promise<void>;
+      mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk);
+      mockStoreAddDocument.mockImplementationOnce(async () => {
+        firstAttempt.resolve();
+        throw new Error('Commit conflict');
+      });
+      mockRunLatest.mockImplementationOnce(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+        completion = Promise.resolve().then(() => operation(controller.signal));
+        return { completion, replacedExisting: false };
+      });
+
+      try {
+        await toolHandler({ params: { name: 'add_documentation', arguments: { url: 'https://example.com' } } });
+        await firstAttempt.promise;
+        await nextTurn();
+        controller.abort();
+        await completion;
+
+        expect(cancelIndexing).toHaveBeenCalledOnce();
+        expect(mockStoreAddDocument).toHaveBeenCalledOnce();
+        expect(completeIndexing).not.toHaveBeenCalled();
+      }
+      finally {
+        controller.abort();
+        await Promise.allSettled(completion ? [completion] : []);
+      }
+    });
+
+    it('starts reindex status inside runLatest and preserves the replacement message', async () => {
+      const url = 'https://example.com';
+      mockStoreGetDocument.mockResolvedValueOnce({
+        url,
+        title: 'Example Docs',
+        lastIndexed: new Date(),
+        requiresAuth: false,
+        tags: ['docs'],
+        pathPrefix: '/api/v2',
+      });
+      mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk);
+      const startIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'startIndexing');
+      let completion!: Promise<void>;
+      mockRunLatest.mockImplementationOnce(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
+        expect(startIndexing).not.toHaveBeenCalled();
+        completion = Promise.resolve().then(() => operation(new AbortController().signal));
+        await nextTurn();
+        expect(startIndexing).toHaveBeenCalledOnce();
+        return { completion, replacedExisting: true };
+      });
+
+      const response = (await toolHandler({ params: { name: 'reindex_documentation', arguments: { url } } })) as {
+        content: Array<{ text: string }>;
+      };
+      const payload = JSON.parse(response.content[0].text) as { message: string };
+
+      expect(payload.message).toContain('Previous operation was cancelled');
+      expect(mockRunLatest).toHaveBeenCalledOnce();
+      await completion;
+      expect(mockCrawlerSetPathPrefix).toHaveBeenCalledWith('/api/v2');
+      expect(mockStoreAddDocument).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: '/api/v2' }) }),
+        expect.objectContaining({ tags: ['docs'] })
+      );
+    });
   });
 
   describe('URL Validation', () => {
@@ -420,49 +877,6 @@ describe('WebDocsServer', () => {
       );
 
       tracker.stop();
-    });
-  });
-
-  describe('IndexingQueueManager', () => {
-    it('should manage indexing operations', async () => {
-      const queue = new IndexingQueueManager();
-
-      expect(queue.isIndexing('https://example.com')).toBe(false);
-
-      const controller = await queue.startOperation('https://example.com');
-      expect(controller).toBeDefined();
-
-      // Need to register the operation for isIndexing to return true
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 100));
-      queue.registerOperation('https://example.com', controller, mockPromise);
-      expect(queue.isIndexing('https://example.com')).toBe(true);
-
-      queue.completeOperation('https://example.com');
-      expect(queue.isIndexing('https://example.com')).toBe(false);
-    });
-
-    it('should cancel existing operation when starting new one for same URL', async () => {
-      vi.useFakeTimers();
-
-      const queue = new IndexingQueueManager();
-
-      const controller1 = await queue.startOperation('https://example.com');
-      const mockPromise = new Promise<void>((resolve) => setTimeout(resolve, 1000));
-      queue.registerOperation('https://example.com', controller1, mockPromise);
-
-      // Starting a new operation should cancel the previous one
-      const startPromise = queue.startOperation('https://example.com');
-
-      // Advance timers to resolve the mock promise
-      await vi.advanceTimersByTimeAsync(1100);
-
-      const controller2 = await startPromise;
-
-      expect(controller1.signal.aborted).toBe(true);
-      expect(controller2.signal.aborted).toBe(false);
-
-      queue.completeOperation('https://example.com');
-      vi.useRealTimers();
     });
   });
 
@@ -791,45 +1205,6 @@ describe('WebDocsServer', () => {
 
         expect(authInfo).toBeUndefined();
       });
-    });
-  });
-
-  describe('Reindex crawl restriction', () => {
-    it('should reuse a stored path prefix while leaving legacy documents unrestricted', async () => {
-      const restrictedDoc: DocumentMetadata = {
-        url: 'https://docs.example.com',
-        title: 'Example Docs',
-        lastIndexed: new Date(),
-        pathPrefix: '/api/v2',
-      };
-      (isValidPublicUrl as Mock).mockReturnValue(true);
-      reindexMocks.storeGetDocument.mockResolvedValue(restrictedDoc);
-      reindexMocks.handlers.length = 0;
-
-      await import('./index.js');
-      await vi.waitFor(() => expect(reindexMocks.storeInitialize).toHaveBeenCalled());
-      const callTool = reindexMocks.handlers[1];
-
-      await callTool({ params: { name: 'reindex_documentation', arguments: { url: restrictedDoc.url } } });
-      await vi.waitFor(() => expect(reindexMocks.storeOptimize).toHaveBeenCalledTimes(1));
-
-      expect(reindexMocks.crawlerSetPathPrefix).toHaveBeenCalledWith('/api/v2');
-      expect(reindexMocks.storeAddDocument).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: '/api/v2' }) })
-      );
-
-      reindexMocks.crawlerSetPathPrefix.mockClear();
-      reindexMocks.storeAddDocument.mockClear();
-      reindexMocks.storeOptimize.mockClear();
-      reindexMocks.storeGetDocument.mockResolvedValue({ ...restrictedDoc, pathPrefix: undefined });
-
-      await callTool({ params: { name: 'reindex_documentation', arguments: { url: restrictedDoc.url } } });
-      await vi.waitFor(() => expect(reindexMocks.storeOptimize).toHaveBeenCalledTimes(1));
-
-      expect(reindexMocks.crawlerSetPathPrefix).not.toHaveBeenCalled();
-      expect(reindexMocks.storeAddDocument).toHaveBeenCalledWith(
-        expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: undefined }) })
-      );
     });
   });
 });

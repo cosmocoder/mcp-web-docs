@@ -10,6 +10,9 @@ const mockQueueManager = {
   processBatch: vi.fn().mockResolvedValue([]),
   cleanup: vi.fn().mockResolvedValue(undefined),
 };
+const { mockConfiguredErrorHandler } = vi.hoisted(() => ({
+  mockConfiguredErrorHandler: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock('./queue-manager.js', () => ({
   QueueManager: function () {
@@ -23,6 +26,7 @@ vi.mock('./browser-config.js', () => ({
     preNavigationHooks: [],
     launchContext: {},
     browserPoolOptions: {},
+    errorHandler: mockConfiguredErrorHandler,
   }),
 }));
 
@@ -43,9 +47,17 @@ const mockCrawlerRun = vi.fn().mockResolvedValue(undefined);
 const mockCrawlerTeardown = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('crawlee', () => ({
-  PlaywrightCrawler: function (options: { requestHandler?: unknown }) {
+  PlaywrightCrawler: function (options: {
+    preNavigationHooks?: unknown;
+    requestHandler?: unknown;
+    errorHandler?: unknown;
+    failedRequestHandler?: unknown;
+  }) {
     // Store the request handler for testing
+    (global as { __preNavigationHooks?: unknown }).__preNavigationHooks = options.preNavigationHooks;
     (global as { __requestHandler?: unknown }).__requestHandler = options.requestHandler;
+    (global as { __errorHandler?: unknown }).__errorHandler = options.errorHandler;
+    (global as { __failedRequestHandler?: unknown }).__failedRequestHandler = options.failedRequestHandler;
     return {
       run: mockCrawlerRun,
       teardown: mockCrawlerTeardown,
@@ -55,6 +67,92 @@ vi.mock('crawlee', () => ({
 
 // Import after mocking
 import { CrawleeCrawler, StorageState } from './crawlee-crawler.js';
+
+type RequestHandler = (context: Record<string, unknown>) => Promise<void>;
+type ErrorHandler = (context: Record<string, unknown>, error: Error) => Promise<void>;
+type NavigationListener = (value: Record<string, unknown>) => void;
+
+function getRequestHandler(): RequestHandler {
+  return (globalThis as unknown as { __requestHandler: RequestHandler }).__requestHandler;
+}
+
+function getErrorHandler(name: '__errorHandler' | '__failedRequestHandler'): ErrorHandler {
+  return (globalThis as unknown as Record<string, ErrorHandler>)[name];
+}
+
+async function collect(crawler: CrawleeCrawler, url: string): Promise<CrawlResult[]> {
+  const results: CrawlResult[] = [];
+  for await (const result of crawler.crawl(url)) {
+    results.push(result);
+  }
+  return results;
+}
+
+function response(status = 200, blocked = false, mainFrame?: object): Record<string, unknown> {
+  return {
+    status: () => status,
+    headerValue: vi.fn().mockResolvedValue(blocked ? '1' : null),
+    ...(mainFrame && { request: () => ({ isNavigationRequest: () => true, frame: () => mainFrame }) }),
+  };
+}
+
+function navigationPage(
+  url: string,
+  onLoad: (emit: { response: (status?: number, blocked?: boolean) => void; failure: (error: string, url?: string) => void }) => void,
+  evaluate = vi.fn().mockResolvedValue(false)
+) {
+  const mainFrame = {};
+  const listeners: Partial<Record<'response' | 'requestfailed', NavigationListener>> = {};
+  let loaded = false;
+  const page = {
+    mainFrame: vi.fn().mockReturnValue(mainFrame),
+    on: vi.fn((event: 'response' | 'requestfailed', listener: NavigationListener) => {
+      listeners[event] = listener;
+    }),
+    off: vi.fn(),
+    waitForLoadState: vi.fn(async () => {
+      if (!loaded) {
+        loaded = true;
+        onLoad({
+          response: (status = 200, blocked = false) => listeners.response?.(response(status, blocked, mainFrame)),
+          failure: (error, failedUrl) =>
+            listeners.requestfailed?.({
+              isNavigationRequest: () => true,
+              frame: () => mainFrame,
+              failure: () => ({ errorText: error }),
+              ...(failedUrl && { url: () => failedUrl }),
+            }),
+        });
+      }
+    }),
+    evaluate,
+    url: vi.fn().mockReturnValue(url),
+    title: vi.fn().mockResolvedValue('Docs'),
+  };
+  return { page, listeners, mainFrame };
+}
+
+async function runRequestHandler(page: object, url: string, initialResponse = response(), warning = vi.fn()): Promise<void> {
+  await getRequestHandler()({
+    request: { url },
+    response: initialResponse,
+    page,
+    enqueueLinks: vi.fn(),
+    log: { debug: vi.fn(), error: vi.fn(), warning },
+  });
+}
+
+async function emitPreNavigationFailure(request: object, failedUrl: string): Promise<void> {
+  const { page, listeners, mainFrame } = navigationPage('', () => {});
+  const hooks = (global as { __preNavigationHooks?: Array<(context: Record<string, unknown>) => Promise<void>> }).__preNavigationHooks!;
+  await hooks.at(-1)!({ page, request });
+  listeners.requestfailed?.({
+    isNavigationRequest: () => true,
+    frame: () => mainFrame,
+    failure: () => ({ errorText: 'net::ERR_TUNNEL_CONNECTION_FAILED' }),
+    url: () => failedUrl,
+  });
+}
 
 describe('CrawleeCrawler', () => {
   let crawler: CrawleeCrawler;
@@ -66,61 +164,157 @@ describe('CrawleeCrawler', () => {
     mockQueueManager.processBatch.mockResolvedValue([]);
   });
 
-  describe('constructor', () => {
-    it('should initialize with default values', () => {
-      expect(crawler).toBeDefined();
-    });
-
-    it('should accept custom maxDepth and maxRequestsPerCrawl', () => {
-      const customCrawler = new CrawleeCrawler(10, 500);
-      expect(customCrawler).toBeDefined();
-    });
-
-    it('should accept progress callback', () => {
-      const progressFn = vi.fn();
-      const progressCrawler = new CrawleeCrawler(4, 1000, progressFn);
-      expect(progressCrawler).toBeDefined();
-    });
-  });
-
-  describe('setStorageState', () => {
-    it('should accept storage state', () => {
-      const state: StorageState = {
-        cookies: [{ name: 'session', value: 'abc123', domain: 'example.com', path: '/' }],
-      };
-
-      crawler.setStorageState(state);
-
-      // No error means success
-      expect(true).toBe(true);
-    });
-
-    it('should accept storage state with origins', () => {
-      const state: StorageState = {
-        cookies: [{ name: 'session', value: 'abc123', domain: 'example.com', path: '/' }],
-        origins: [
-          {
-            origin: 'https://example.com',
-            localStorage: [{ name: 'token', value: 'xyz' }],
-          },
-        ],
-      };
-
-      crawler.setStorageState(state);
-      expect(true).toBe(true);
-    });
-  });
-
   describe('crawl', () => {
+    it.each([
+      {
+        label: 'exact root URL',
+        requestedUrl: 'https://example.com',
+        queuedUrl: 'https://example.com',
+        message: 'terminal failure',
+      },
+      {
+        label: 'queue-normalized root URL',
+        requestedUrl: 'https://example.com#fragment',
+        queuedUrl: 'https://example.com/',
+        message: 'normalized terminal failure',
+      },
+    ])('surfaces a terminal outbound failure for the $label', async ({ requestedUrl, queuedUrl, message }) => {
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await getErrorHandler('__failedRequestHandler')(
+          { request: { url: queuedUrl } },
+          Object.assign(new Error('Crawlee retry wrapper'), {
+            cause: { name: 'OutboundRequestFailedError', message },
+          })
+        );
+      });
+
+      await expect(collect(crawler, requestedUrl)).rejects.toThrow(message);
+    });
+
+    it('marks a redirected pre-handler policy failure as non-retryable', async () => {
+      const request = { url: 'https://example.com/', noRetry: false };
+      mockConfiguredErrorHandler.mockImplementationOnce(async (context) => {
+        context.request.noRetry = false;
+      });
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await emitPreNavigationFailure(request, 'http://127.0.0.1/private');
+        const error = new Error('net::ERR_TUNNEL_CONNECTION_FAILED');
+        await getErrorHandler('__errorHandler')({ request }, error);
+        await getErrorHandler('__failedRequestHandler')({ request }, error);
+      });
+
+      await collect(crawler, request.url);
+
+      expect(request.noRetry).toBe(true);
+      expect(mockConfiguredErrorHandler).toHaveBeenCalledWith({ request }, expect.any(Error));
+    });
+
+    it('keeps a redirected pre-handler transient failure retryable and surfaces it terminally', async () => {
+      const request = { url: 'https://example.com/', noRetry: false };
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await emitPreNavigationFailure(request, 'https://8.8.8.8/redirected');
+        const error = new Error('net::ERR_TUNNEL_CONNECTION_FAILED');
+        await getErrorHandler('__errorHandler')({ request }, error);
+        expect(request.noRetry).toBe(false);
+        await getErrorHandler('__failedRequestHandler')({ request }, error);
+      });
+
+      await expect(collect(crawler, request.url)).rejects.toThrow('Outbound destination unavailable');
+    });
+
+    it('does not extract or index a proxy-blocked response', async () => {
+      const page = {
+        waitForLoadState: vi.fn(),
+        mainFrame: vi.fn().mockReturnValue({}),
+        on: vi.fn(),
+        off: vi.fn(),
+      };
+      const warning = vi.fn();
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(page, 'https://example.com/private', response(403, true), warning);
+      });
+
+      await collect(crawler, 'https://example.com/private');
+
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
+      expect(page.waitForLoadState).not.toHaveBeenCalled();
+      expect(mockQueueManager.addResult).not.toHaveBeenCalled();
+    });
+
+    it('does not index a client-side navigation blocked after the initial response', async () => {
+      const { page, listeners } = navigationPage('https://example.com/docs', (emit) => emit.response(403, true));
+      const warning = vi.fn();
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(page, 'https://example.com/docs', response(), warning);
+      });
+
+      await collect(crawler, 'https://example.com/docs');
+
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
+      expect(mockQueueManager.addResult).not.toHaveBeenCalled();
+      expect(page.off).toHaveBeenCalledWith('response', listeners.response);
+    });
+
+    it('rethrows a later main-frame navigation failure for Crawlee to retry', async () => {
+      const { page, listeners } = navigationPage('https://8.8.8.8/docs', (emit) =>
+        emit.failure('net::ERR_CONNECTION_REFUSED', 'https://8.8.8.8/docs')
+      );
+      const warning = vi.fn();
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(page, 'https://8.8.8.8/docs', response(), warning);
+      });
+
+      await expect(collect(crawler, 'https://8.8.8.8/docs')).rejects.toThrow('Outbound destination unavailable');
+
+      expect(warning).not.toHaveBeenCalled();
+      expect(mockQueueManager.addResult).not.toHaveBeenCalled();
+      expect(page.off).toHaveBeenCalledWith('requestfailed', listeners.requestfailed);
+    });
+
+    it('treats a policy-blocked later navigation as handled without retry', async () => {
+      const { page } = navigationPage('https://example.com/docs', (emit) =>
+        emit.failure('net::ERR_TUNNEL_CONNECTION_FAILED', 'http://127.0.0.1/docs')
+      );
+      const warning = vi.fn();
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(page, 'https://example.com/docs', response(), warning);
+      });
+
+      await collect(crawler, 'https://example.com/docs');
+
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
+      expect(mockQueueManager.addResult).not.toHaveBeenCalled();
+    });
+
+    it('extracts a later successful page after superseded navigation failures', async () => {
+      const { page, listeners } = navigationPage(
+        'https://example.com/docs',
+        (emit) => {
+          for (const error of ['net::ERR_ABORTED', 'NS_BINDING_ABORTED', 'Load request canceled']) {
+            emit.failure(error);
+          }
+          emit.failure('net::ERR_NAME_NOT_RESOLVED', 'https://example.com/docs');
+          emit.response();
+        },
+        vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(false).mockResolvedValue('Extracted content')
+      );
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(page, 'https://example.com/docs');
+      });
+
+      await collect(crawler, 'https://example.com/docs');
+
+      expect(mockQueueManager.addResult).toHaveBeenCalledWith(expect.objectContaining({ content: 'Extracted content', title: 'Docs' }));
+      expect(page.off).toHaveBeenCalledWith('response', listeners.response);
+      expect(page.off).toHaveBeenCalledWith('requestfailed', listeners.requestfailed);
+    });
+
     it('should initialize queue manager with URL', async () => {
       // Set up processBatch to return results immediately to end the crawl
       mockCrawlerRun.mockResolvedValueOnce(undefined);
       mockQueueManager.processBatch.mockResolvedValueOnce([]);
 
-      const results: CrawlResult[] = [];
-      for await (const result of crawler.crawl('https://example.com/docs')) {
-        results.push(result);
-      }
+      await collect(crawler, 'https://example.com/docs');
 
       expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://example.com/docs', undefined);
     });
@@ -135,19 +329,13 @@ describe('CrawleeCrawler', () => {
       // at the end of crawl (line 388 in crawlee-crawler.ts), so we only need one mock value
       mockQueueManager.processBatch.mockResolvedValueOnce(mockResults);
 
-      const results: CrawlResult[] = [];
-      for await (const result of crawler.crawl('https://example.com')) {
-        results.push(result);
-      }
+      const results = await collect(crawler, 'https://example.com');
 
       expect(results).toEqual(mockResults);
     });
 
     it('should cleanup queue manager after crawl', async () => {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      for await (const _ of crawler.crawl('https://example.com')) {
-        // Just consume results
-      }
+      await collect(crawler, 'https://example.com');
 
       expect(mockQueueManager.cleanup).toHaveBeenCalled();
     });
@@ -158,22 +346,9 @@ describe('CrawleeCrawler', () => {
       mockQueueManager.hasEnoughResults.mockReturnValueOnce(true).mockReturnValue(false);
       mockQueueManager.processBatch.mockResolvedValueOnce(mockResults).mockResolvedValueOnce([]);
 
-      const results: CrawlResult[] = [];
-      for await (const result of crawler.crawl('https://example.com')) {
-        results.push(result);
-      }
+      const results = await collect(crawler, 'https://example.com');
 
       expect(results).toHaveLength(1);
-    });
-
-    it('should set allowed hostname from URL', async () => {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      for await (const _ of crawler.crawl('https://docs.example.com/guide')) {
-        // Just consume results
-      }
-
-      // Verify through the initialize call
-      expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://docs.example.com/guide', undefined);
     });
   });
 
@@ -206,32 +381,16 @@ describe('CrawleeCrawler', () => {
 
       // Wait for the generator to complete
       await firstResultPromise;
-      const results: CrawlResult[] = [];
-      for await (const result of generator) {
-        results.push(result);
-      }
 
       expect(mockCrawlerTeardown).toHaveBeenCalled();
     });
   });
 
   describe('domain restriction', () => {
-    it('should extract hostname from URL for domain restriction', async () => {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      for await (const _ of crawler.crawl('https://subdomain.example.com/path')) {
-        // Just consume results
-      }
-
-      expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://subdomain.example.com/path', undefined);
-    });
-
     it('should pass path prefix to queue manager when set', async () => {
       crawler.setPathPrefix('/docs/api');
 
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      for await (const _ of crawler.crawl('https://example.com/docs/api')) {
-        // Just consume results
-      }
+      await collect(crawler, 'https://example.com/docs/api');
 
       expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://example.com/docs/api', '/docs/api');
     });
@@ -245,26 +404,9 @@ describe('CrawleeCrawler', () => {
 
       crawler.setStorageState(state);
 
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      for await (const _ of crawler.crawl('https://example.com')) {
-        // Just consume results
-      }
+      await collect(crawler, 'https://example.com');
 
       // Verify queue manager was initialized (auth is handled internally)
-      expect(mockQueueManager.initialize).toHaveBeenCalled();
-    });
-  });
-
-  describe('isWithinAllowedDomain', () => {
-    // Access the private method through the class prototype for testing
-    it('should handle URL parsing for domain check', async () => {
-      // This is tested indirectly through the crawl method
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      for await (const _ of crawler.crawl('https://example.com')) {
-        // Just consume results
-      }
-
-      // No errors means domain parsing worked
       expect(mockQueueManager.initialize).toHaveBeenCalled();
     });
   });
@@ -273,72 +415,9 @@ describe('CrawleeCrawler', () => {
     it('should cleanup on error', async () => {
       mockCrawlerRun.mockRejectedValueOnce(new Error('Crawl failed'));
 
-      await expect(async () => {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        for await (const _ of crawler.crawl('https://example.com')) {
-          // Just consume results
-        }
-      }).rejects.toThrow('Crawl failed');
+      await expect(collect(crawler, 'https://example.com')).rejects.toThrow('Crawl failed');
 
       expect(mockQueueManager.cleanup).toHaveBeenCalled();
     });
-
-    it('should handle invalid URLs gracefully', async () => {
-      // The crawler should handle this internally
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      for await (const _ of crawler.crawl('https://example.com')) {
-        // Just consume results
-      }
-
-      expect(mockQueueManager.initialize).toHaveBeenCalled();
-    });
-  });
-});
-
-describe('StorageState interface', () => {
-  it('should allow cookies with all optional properties', () => {
-    const state: StorageState = {
-      cookies: [
-        {
-          name: 'session',
-          value: 'abc',
-          domain: 'example.com',
-          path: '/',
-          expires: 1234567890,
-          httpOnly: true,
-          secure: true,
-          sameSite: 'Strict',
-        },
-      ],
-    };
-
-    expect(state.cookies).toHaveLength(1);
-    expect(state.cookies[0].sameSite).toBe('Strict');
-  });
-
-  it('should allow minimal cookie definition', () => {
-    const state: StorageState = {
-      cookies: [{ name: 'token', value: 'xyz', domain: 'test.com', path: '/' }],
-    };
-
-    expect(state.cookies[0].expires).toBeUndefined();
-  });
-
-  it('should allow origins for localStorage', () => {
-    const state: StorageState = {
-      cookies: [],
-      origins: [
-        {
-          origin: 'https://example.com',
-          localStorage: [
-            { name: 'key1', value: 'value1' },
-            { name: 'key2', value: 'value2' },
-          ],
-        },
-      ],
-    };
-
-    expect(state.origins).toHaveLength(1);
-    expect(state.origins![0].localStorage).toHaveLength(2);
   });
 });

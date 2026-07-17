@@ -9,6 +9,7 @@ process.env.APIFY_LOG_LEVEL = 'OFF';
 
 // Import and suppress Crawlee logging
 import { log, Configuration } from 'crawlee';
+import { setTimeout as delay } from 'node:timers/promises';
 log.setLevel(log.LEVELS.OFF);
 
 // Configure Crawlee to be silent
@@ -26,9 +27,10 @@ import { DocsConfig, loadConfig, isValidPublicUrl, normalizeUrl } from './config
 import { DocsCrawler } from './crawler/docs-crawler.js';
 import { AuthManager } from './crawler/auth.js';
 import { fetchFavicon } from './util/favicon.js';
-import { DocumentChunk, IndexingStatus } from './types.js';
+import { DocumentChunk, IndexingStatus, ProcessedDocument } from './types.js';
 import { generateDocId } from './util/docs.js';
 import { logger } from './util/logger.js';
+import { closeOutboundProxy } from './util/outbound-request.js';
 import {
   StorageStateSchema,
   safeJsonParse,
@@ -68,7 +70,7 @@ class WebDocsServer {
   private indexingQueue: IndexingQueueManager;
   private authManager!: AuthManager;
   /** Maps operation ID to progress token for MCP notifications */
-  private progressTokens: Map<string, ProgressToken> = new Map();
+  private progressTokens: Map<string, { token: ProgressToken }> = new Map();
   /** Tracks last notified progress to throttle notifications */
   private lastNotifiedProgress: Map<string, number> = new Map();
 
@@ -108,13 +110,14 @@ class WebDocsServer {
    * Throttled to avoid flooding - sends on 5% increments or status changes.
    */
   private async sendProgressNotification(status: IndexingStatus): Promise<void> {
-    const progressToken = this.progressTokens.get(status.id);
+    const registration = this.progressTokens.get(status.id);
 
     // Only send if we have a progress token from the client
-    if (!progressToken) {
+    if (!registration) {
       logger.debug(`[Progress] No token for ${status.id}, skipping notification`);
       return;
     }
+    const { token: progressToken } = registration;
 
     const progressPercent = Math.round(status.progress * 100);
     const lastProgress = this.lastNotifiedProgress.get(status.id) ?? -1;
@@ -155,7 +158,7 @@ class WebDocsServer {
     }
 
     // Clean up tracking for completed operations
-    if (isStatusChange) {
+    if (isStatusChange && this.progressTokens.get(status.id) === registration) {
       this.lastNotifiedProgress.delete(status.id);
       this.progressTokens.delete(status.id);
     }
@@ -726,31 +729,22 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       logger.info(`[WebDocsServer] Found existing auth session for ${normalizedUrl}, marking document as requiring auth`);
     }
 
-    // Store progress token if provided by client
-    if (progressToken !== undefined) {
-      this.progressTokens.set(docId, progressToken);
-      logger.info(`[Progress] Registered token for ${docId}: ${progressToken}`);
-    }
-
-    // Cancel any existing operation for this URL
-    const controller = await this.indexingQueue.startOperation(normalizedUrl);
-
-    // Start indexing process
-    this.statusTracker.startIndexing(docId, normalizedUrl, docTitle);
-
-    // Start indexing in the background with abort support
-    const operationPromise = this.indexAndAdd(docId, normalizedUrl, docTitle, false, controller.signal, pathPrefix, authInfo, tags, version)
-      .catch((error) => {
-        const err = error as Error;
-        if (err?.name !== 'AbortError') {
-          logger.error('[WebDocsServer] Background indexing failed:', error);
-        }
-      })
-      .finally(() => {
-        this.indexingQueue.completeOperation(normalizedUrl);
-      });
-
-    this.indexingQueue.registerOperation(normalizedUrl, controller, operationPromise);
+    const operation = await this.indexingQueue.runLatest(normalizedUrl, async (signal) => {
+      this.progressTokens.delete(docId);
+      this.lastNotifiedProgress.delete(docId);
+      if (progressToken !== undefined) {
+        this.progressTokens.set(docId, { token: progressToken });
+        logger.info(`[Progress] Registered token for ${docId}: ${progressToken}`);
+      }
+      this.statusTracker.startIndexing(docId, normalizedUrl, docTitle);
+      await this.indexAndAdd(docId, normalizedUrl, docTitle, false, signal, pathPrefix, authInfo, tags, version);
+    });
+    void operation.completion.catch((error) => {
+      const err = error as Error;
+      if (err?.name !== 'AbortError') {
+        logger.error('[WebDocsServer] Background indexing failed:', error);
+      }
+    });
 
     return {
       content: [
@@ -923,43 +917,24 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     const existingTags = doc.tags;
     const existingVersion = doc.version;
 
-    // Cancel any existing operation for this URL
-    const wasCancelled = this.indexingQueue.isIndexing(normalizedUrl);
-    const controller = await this.indexingQueue.startOperation(normalizedUrl);
-
     const docId = generateDocId(normalizedUrl, doc.title);
 
-    // Store progress token if provided by client
-    if (progressToken !== undefined) {
-      this.progressTokens.set(docId, progressToken);
-      logger.info(`[Progress] Registered token for ${docId}: ${progressToken}`);
-    }
-
-    this.statusTracker.startIndexing(docId, normalizedUrl, doc.title);
-
-    // Start reindexing in the background with abort support (preserving existing tags and version)
-    const operationPromise = this.indexAndAdd(
-      docId,
-      normalizedUrl,
-      doc.title,
-      true,
-      controller.signal,
-      doc.pathPrefix,
-      authInfo,
-      existingTags,
-      existingVersion
-    )
-      .catch((error) => {
-        const err = error as Error;
-        if (err?.name !== 'AbortError') {
-          logger.error('[WebDocsServer] Background reindexing failed:', error);
-        }
-      })
-      .finally(() => {
-        this.indexingQueue.completeOperation(normalizedUrl);
-      });
-
-    this.indexingQueue.registerOperation(normalizedUrl, controller, operationPromise);
+    const operation = await this.indexingQueue.runLatest(normalizedUrl, async (signal) => {
+      this.progressTokens.delete(docId);
+      this.lastNotifiedProgress.delete(docId);
+      if (progressToken !== undefined) {
+        this.progressTokens.set(docId, { token: progressToken });
+        logger.info(`[Progress] Registered token for ${docId}: ${progressToken}`);
+      }
+      this.statusTracker.startIndexing(docId, normalizedUrl, doc.title);
+      await this.indexAndAdd(docId, normalizedUrl, doc.title, true, signal, doc.pathPrefix, authInfo, existingTags, existingVersion);
+    });
+    void operation.completion.catch((error) => {
+      const err = error as Error;
+      if (err?.name !== 'AbortError') {
+        logger.error('[WebDocsServer] Background reindexing failed:', error);
+      }
+    });
 
     return {
       content: [
@@ -968,7 +943,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           text: JSON.stringify(
             {
               status: 'started',
-              message: wasCancelled
+              message: operation.replacedExisting
                 ? `Started re-indexing ${normalizedUrl}. Previous operation was cancelled.`
                 : `Started re-indexing ${normalizedUrl}`,
               docId,
@@ -1734,8 +1709,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     id: string,
     url: string,
     title: string,
-    reIndex: boolean = false,
-    signal?: AbortSignal,
+    reIndex: boolean,
+    signal: AbortSignal,
     pathPrefix?: string,
     authInfo?: { requiresAuth: boolean; authDomain: string },
     tags?: string[],
@@ -1743,9 +1718,11 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
   ) {
     // Helper to check if operation was cancelled
     const checkCancelled = () => {
-      if (signal?.aborted) {
+      if (signal.aborted) {
         logger.info(`[WebDocsServer] Operation cancelled for ${url}`);
-        this.statusTracker.cancelIndexing(id);
+        if (this.statusTracker.getStatus(id)?.status !== 'cancelled') {
+          this.statusTracker.cancelIndexing(id);
+        }
         const error = new Error('Operation cancelled');
         error.name = 'AbortError';
         throw error;
@@ -1759,6 +1736,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       // Check if document exists
       logger.debug(`[WebDocsServer] Checking if document exists: ${url}`);
       const existingDoc = await this.store.getDocument(url);
+      checkCancelled();
 
       if (existingDoc) {
         logger.debug(`[WebDocsServer] Document exists: ${url}`);
@@ -1789,6 +1767,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 
       // Load saved authentication session if available
       const savedSession = await this.authManager.loadSession(url);
+      checkCancelled();
       if (savedSession) {
         try {
           // Validate the session structure before using it
@@ -1808,33 +1787,43 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       let estimatedProgress = 0;
 
       logger.info(`[WebDocsServer] Starting page crawl for ${url}`);
-      for await (const page of crawler.crawl(url)) {
-        // Check for cancellation during crawl
-        if (signal?.aborted) {
-          logger.info(`[WebDocsServer] Crawl cancelled for ${url}`);
-          crawler.abort();
-          this.statusTracker.cancelIndexing(id);
-          const error = new Error('Operation cancelled');
-          error.name = 'AbortError';
-          throw error;
-        }
-
-        logger.debug(`[WebDocsServer] Found page ${processedPages + 1}: ${page.path}`);
-        processedPages++;
-        estimatedProgress += 1 / 2 ** processedPages;
-
-        this.statusTracker.updateProgress(
-          id,
-          0.15 * estimatedProgress + Math.min(0.35, (0.35 * processedPages) / 500),
-          `Finding subpages (${page.path})`
-        );
-        this.statusTracker.updateStats(id, { pagesFound: processedPages });
-
-        pages.push(page);
-
-        // Small delay to allow other operations
-        await new Promise((resolve) => setTimeout(resolve, 50));
+      const abortCrawler = (): void => crawler.abort();
+      signal.addEventListener('abort', abortCrawler, { once: true });
+      if (signal.aborted) {
+        abortCrawler();
       }
+      try {
+        for await (const page of crawler.crawl(url)) {
+          checkCancelled();
+
+          logger.debug(`[WebDocsServer] Found page ${processedPages + 1}: ${page.path}`);
+          processedPages++;
+          estimatedProgress += 1 / 2 ** processedPages;
+
+          this.statusTracker.updateProgress(
+            id,
+            0.15 * estimatedProgress + Math.min(0.35, (0.35 * processedPages) / 500),
+            `Finding subpages (${page.path})`
+          );
+          this.statusTracker.updateStats(id, { pagesFound: processedPages });
+
+          pages.push(page);
+
+          // Small delay to allow other operations
+          await delay(50, undefined, { signal });
+          checkCancelled();
+        }
+      }
+      catch (error) {
+        if (signal.aborted) {
+          checkCancelled();
+        }
+        throw error;
+      }
+      finally {
+        signal.removeEventListener('abort', abortCrawler);
+      }
+      checkCancelled();
 
       if (pages.length === 0) {
         logger.warn('[WebDocsServer] No pages found during crawl');
@@ -1872,11 +1861,17 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           });
         }
         catch (error) {
+          if (signal.aborted) {
+            checkCancelled();
+          }
           logger.error(`[WebDocsServer] Error processing page ${page.path}:`, error);
         }
 
+        checkCancelled();
+
         // Small delay
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await delay(20, undefined, { signal });
+        checkCancelled();
       }
 
       logger.info(`[WebDocsServer] Total chunks created: ${chunks.length}`);
@@ -1902,6 +1897,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
         );
       }
 
+      checkCancelled();
+
       if (embeddings.length === 0) {
         logger.warn(`[WebDocsServer] No content was extracted from ${url}`);
         logger.warn(`[WebDocsServer] Pages found: ${pages.length}`);
@@ -1912,38 +1909,33 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 
       checkCancelled();
 
-      // Delete old data if reindexing
-      if (reIndex && existingDoc) {
-        this.statusTracker.updateProgress(id, 0.8, 'Deleting old data');
-        await this.store.deleteDocument(url);
-      }
-
-      checkCancelled();
-
       // Get favicon
       const favicon = await fetchFavicon(new URL(url));
+      checkCancelled();
 
       // Store the data with retry logic
       this.statusTracker.updateProgress(id, 0.9, `Storing ${embeddings.length} chunks`);
-      await this.addDocumentWithRetry({
-        metadata: {
-          url,
-          title,
-          favicon: favicon ?? undefined,
-          lastIndexed: new Date(),
-          requiresAuth: authInfo?.requiresAuth,
-          authDomain: authInfo?.authDomain,
-          version,
-          pathPrefix,
+      await this.storeDocumentWithRetry(
+        {
+          metadata: {
+            url,
+            title,
+            favicon: favicon ?? undefined,
+            lastIndexed: new Date(),
+            requiresAuth: authInfo?.requiresAuth,
+            authDomain: authInfo?.authDomain,
+            version,
+            pathPrefix,
+          },
+          chunks: chunks.map((chunk, i) => ({
+            ...chunk,
+            vector: embeddings[i],
+          })),
         },
-        chunks: chunks.map((chunk, i) => ({
-          ...chunk,
-          vector: embeddings[i],
-        })),
-      });
-
-      // Always update tags when indexing (clears old tags if none provided)
-      await this.store.setTags(url, tags || []);
+        signal,
+        tags
+      );
+      checkCancelled();
       if (tags && tags.length > 0) {
         logger.info(`[WebDocsServer] Tags set for ${url}:`, tags);
       }
@@ -1966,7 +1958,10 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     }
     catch (error) {
       // Don't log AbortError as a real error
-      if (error instanceof Error && error.name === 'AbortError') {
+      if (signal.aborted || (error instanceof Error && error.name === 'AbortError')) {
+        if (signal.aborted && this.statusTracker.getStatus(id)?.status !== 'cancelled') {
+          this.statusTracker.cancelIndexing(id);
+        }
         logger.info(`[WebDocsServer] Indexing cancelled for ${url}`);
         return;
       }
@@ -1978,6 +1973,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 
         // Clear the expired session
         await this.authManager.clearSession(url);
+        checkCancelled();
         logger.info(`[WebDocsServer] Cleared expired session for ${url}`);
 
         // Report user-friendly error
@@ -1994,34 +1990,21 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
   }
 
   /**
-   * Add document with retry logic for transient database conflicts
+   * Store a document with retry logic for transient database conflicts.
    */
-  private async addDocumentWithRetry(
-    doc: {
-      metadata: {
-        url: string;
-        title: string;
-        favicon?: string;
-        lastIndexed: Date;
-        requiresAuth?: boolean;
-        authDomain?: string;
-        version?: string;
-        pathPrefix?: string;
-      };
-      chunks: DocumentChunk[];
-    },
-    maxRetries = 3
-  ): Promise<void> {
+  private async storeDocumentWithRetry(doc: ProcessedDocument, signal: AbortSignal, tags?: string[], maxRetries = 3): Promise<void> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      signal.throwIfAborted();
       try {
-        await this.store.addDocument(doc);
+        await this.store.addDocument(doc, { signal, tags: tags ?? [] });
         return;
       }
       catch (error) {
-        const isConflict = error instanceof Error && error.message?.includes('Commit conflict');
-        if (isConflict && attempt < maxRetries) {
-          logger.warn(`[WebDocsServer] Database conflict, retrying (${attempt}/${maxRetries})...`);
-          await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
+        const isRetryable =
+          error instanceof Error && (error.message.includes('Commit conflict') || error.message.startsWith('Replacement lease lost for '));
+        if (isRetryable && attempt < maxRetries) {
+          logger.warn(`[WebDocsServer] Storage conflict, retrying (${attempt}/${maxRetries})...`);
+          await delay(1000 * attempt, undefined, { signal });
           continue;
         }
         throw error;
@@ -2039,19 +2022,27 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 
     logger.info('Web Docs MCP server running on stdio');
   }
+
+  cancelOperations(): Promise<void> {
+    return this.indexingQueue.cancelAll();
+  }
 }
 
 // Start server
 const server = new WebDocsServer();
 server.run().catch((err) => logger.error('Server failed to start:', err));
 
-// Handle process signals - cancel all operations before shutdown
-process.on('SIGINT', async () => {
-  logger.info('Received SIGINT, cancelling operations and shutting down...');
-  process.exit(0);
-});
+async function shutdown(signal: 'SIGINT' | 'SIGTERM'): Promise<void> {
+  logger.info(`Received ${signal}, cancelling operations and shutting down...`);
+  try {
+    await Promise.allSettled([server.cancelOperations(), closeOutboundProxy()]);
+  }
+  finally {
+    process.exit(0);
+  }
+}
 
-process.on('SIGTERM', async () => {
-  logger.info('Received SIGTERM, cancelling operations and shutting down...');
-  process.exit(0);
-});
+// Handle process signals - cancel all operations before shutdown
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => void shutdown(signal));
+}
