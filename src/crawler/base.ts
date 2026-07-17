@@ -1,4 +1,5 @@
 import { URL } from 'url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { IGNORED_PATHS, RATE_LIMIT } from '../config.js';
 import { CrawlResult } from '../types.js';
 import { logger } from '../util/logger.js';
@@ -6,6 +7,8 @@ import { logger } from '../util/logger.js';
 export abstract class BaseCrawler {
   protected seenUrls: Set<string>;
   protected isAborting: boolean;
+  private readonly abortController = new AbortController();
+  protected readonly abortSignal = this.abortController.signal;
   private requestCount: number;
   private lastRequestTime: number;
   protected totalUrls: number;
@@ -134,7 +137,7 @@ export abstract class BaseCrawler {
     // If we've hit the rate limit, wait until the next window
     if (this.requestCount > RATE_LIMIT.maxRequests) {
       const waitTime = RATE_LIMIT.timeWindow - (now - this.lastRequestTime);
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
+      await delay(waitTime, undefined, { signal: this.abortSignal });
       this.requestCount = 1;
       this.lastRequestTime = Date.now();
       return;
@@ -143,7 +146,7 @@ export abstract class BaseCrawler {
     // Ensure minimum delay between requests
     const timeSinceLastRequest = now - this.lastRequestTime;
     if (timeSinceLastRequest < RATE_LIMIT.minDelay) {
-      await new Promise((resolve) => setTimeout(resolve, RATE_LIMIT.minDelay - timeSinceLastRequest));
+      await delay(RATE_LIMIT.minDelay - timeSinceLastRequest, undefined, { signal: this.abortSignal });
     }
 
     this.lastRequestTime = Date.now();
@@ -173,5 +176,6 @@ export abstract class BaseCrawler {
 
   abort(): void {
     this.isAborting = true;
+    this.abortController.abort();
   }
 }

@@ -145,7 +145,7 @@ export class GitHubCrawler extends BaseCrawler {
     }
 
     try {
-      const response = await fetchPublicUrl(url, { headers });
+      const response = await fetchPublicUrl(url, { headers, signal: this.abortSignal });
 
       if (!response.ok) {
         if (response.status === 403) {
@@ -178,7 +178,7 @@ export class GitHubCrawler extends BaseCrawler {
     const headers: HeadersInit = this.githubToken ? { Authorization: `token ${this.githubToken}` } : {};
 
     try {
-      const response = await fetchPublicUrl(url, { headers });
+      const response = await fetchPublicUrl(url, { headers, signal: this.abortSignal });
 
       if (!response.ok) {
         throw new Error(`Failed to fetch file content: ${response.status}`);
