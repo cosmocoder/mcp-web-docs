@@ -22,6 +22,7 @@ type ReplacementInternals = {
     lease_expires_at: number;
     cleanup_generations: string;
   }): Promise<void>;
+  parseCleanupGenerations(value: string): string[];
   getJournalVisibilityFilter(): Promise<string>;
   createFTSIndex(): Promise<void>;
 };
@@ -314,6 +315,34 @@ describe('DocumentStore', () => {
       expect(collection?.documents.map((document) => document.url)).toEqual([url]);
       expect(await storedContents(store, url)).toEqual(['new replacement content 0', 'new replacement content 1']);
     });
+
+    it.each(['add', 'delete'] as const)(
+      'keeps the old document visible when %s preparation fails after lease acquisition',
+      async (operation) => {
+        const url = 'https://example.com/prepare-failure';
+        await store.addDocument(createDocumentWithContent(url, 'Original', 'old prepare failure content'));
+
+        const leaseDb = replacementInternals().sqliteLeaseDb!;
+        const writerRun = vi.spyOn(replacementInternals().sqliteDb!, 'run');
+        const run = leaseDb.run.bind(leaseDb);
+        vi.spyOn(leaseDb, 'run').mockImplementation(async (sql, ...params) => {
+          if (String(sql).includes('SET cleanup_generations = ?')) {
+            throw new Error('injected journal preparation failure');
+          }
+          return run(sql, ...params);
+        });
+
+        const failedOperation =
+          operation === 'add'
+            ? store.addDocument(createDocumentWithContent(url, 'Replacement', 'new prepare failure content'))
+            : store.deleteDocument(url);
+        await expect(failedOperation).rejects.toThrow('injected journal preparation failure');
+        expect(writerRun).not.toHaveBeenCalledWith('ROLLBACK');
+        expect(await leaseDb.get('SELECT url FROM document_replacements WHERE url = ?', [url])).toBeUndefined();
+        expect(await store.getDocument(url)).toMatchObject({ title: 'Original' });
+        expect(await storedContents(store, url)).toEqual(['old prepare failure content']);
+      }
+    );
 
     it('leaves the old document intact when staging fails', async () => {
       const url = 'https://example.com/merge-failure';
@@ -701,7 +730,7 @@ describe('DocumentStore', () => {
       await sqliteDb.run('DELETE FROM document_replacements WHERE url = ?', [url]);
     });
 
-    it('keeps a late stale append intrinsically hidden after successor cleanup', async () => {
+    it('keeps a late stale append hidden and reaps it during recovery', async () => {
       const url = 'https://example.com/late-stale-append';
       const original = createDocumentWithContent(url, 'Original', 'old late append test content');
       await store.addDocument(original);
@@ -742,6 +771,12 @@ describe('DocumentStore', () => {
       const rows = await winnerTable.query().where(`url = '${url}'`).toArray();
       expect(rows.some((row) => row.generation === staleJournal!.generation && row.published === false)).toBe(true);
       expect(await storedContents(successor, url)).toEqual(['winner late append test content']);
+
+      const recoveredStore = await openPeerStore();
+      const recoveredTable = replacementInternals(recoveredStore).lanceTable!;
+      await recoveredTable.checkoutLatest();
+      expect(await recoveredTable.countRows(`url = '${url}' AND generation = '${staleJournal!.generation}'`)).toBe(0);
+      expect(await storedContents(recoveredStore, url)).toEqual(['winner late append test content']);
     });
 
     it.each(['published', 'deleting'] as const)('does not let stale %s cleanup delete a successor generation', async (state) => {
@@ -877,6 +912,10 @@ describe('DocumentStore', () => {
         url,
       ]);
       expect(journal).toBeUndefined();
+    });
+
+    it('rejects a malformed durable cleanup generation list', () => {
+      expect(() => replacementInternals().parseCleanupGenerations('{bad json')).toThrow();
     });
   });
 

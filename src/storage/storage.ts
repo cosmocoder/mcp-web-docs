@@ -239,6 +239,7 @@ export class DocumentStore implements StorageProvider {
         }
 
         await this.recoverDocumentReplacements();
+        await this.reapOrphanedUnpublishedGenerations();
         await this.createFTSIndex();
 
         // Verify table is accessible
@@ -497,10 +498,12 @@ export class DocumentStore implements StorageProvider {
     const ownerId = randomUUID();
     const newRows = this.toLanceRows(doc, generation);
     const lease = await this.acquireReplacementLease(url, generation, ownerId, signal);
-    const preparedJournal = await this.captureCleanupGenerations(lease);
-    const stopHeartbeat = this.startReplacementHeartbeat(preparedJournal);
+    let stopHeartbeat: () => Promise<void> = () => Promise.resolve();
+    let transactionStarted = false;
 
     try {
+      const preparedJournal = await this.captureCleanupGenerations(lease);
+      stopHeartbeat = this.startReplacementHeartbeat(preparedJournal);
       // The committed journal advances reader data_version before staged rows
       // can become queryable.
       signal?.throwIfAborted();
@@ -516,6 +519,7 @@ export class DocumentStore implements StorageProvider {
       await this.renewReplacementLease(preparedJournal);
 
       await sqliteDb.run('BEGIN TRANSACTION');
+      transactionStarted = true;
       signal?.throwIfAborted();
       await this.upsertMetadata(doc.metadata);
       if (tags !== undefined) {
@@ -534,6 +538,7 @@ export class DocumentStore implements StorageProvider {
       }
       signal?.throwIfAborted();
       await sqliteDb.run('COMMIT');
+      transactionStarted = false;
 
       await this.finishDocumentReplacementBestEffort({
         ...preparedJournal,
@@ -545,11 +550,13 @@ export class DocumentStore implements StorageProvider {
       await stopHeartbeat().catch((heartbeatError: unknown) => {
         logger.warn(`[DocumentStore] Replacement heartbeat stopped with an error for ${url}:`, heartbeatError);
       });
-      try {
-        await sqliteDb.run('ROLLBACK');
-      }
-      catch {
-        // No active transaction.
+      if (transactionStarted) {
+        try {
+          await sqliteDb.run('ROLLBACK');
+        }
+        catch {
+          // The transaction may already have been rolled back by SQLite.
+        }
       }
 
       let durableJournal: ReplacementJournalRow | undefined;
@@ -767,6 +774,33 @@ export class DocumentStore implements StorageProvider {
         await this.finishDocumentReplacement({ ...journal, owner_id: ownerId, lease_expires_at: leaseExpiresAt });
         logger.info(`[DocumentStore] Recovered ${journal.state} replacement for ${journal.url}`);
       }
+    }
+  }
+
+  private async reapOrphanedUnpublishedGenerations(): Promise<void> {
+    if (!this.sqliteReadDb || !this.lanceTable) {
+      return;
+    }
+
+    try {
+      await this.lanceTable.checkoutLatest();
+      const rows = await this.lanceTable.query().where('published = false').select(['generation']).toArray();
+      const orphaned = new Set(rows.map((row) => String(row.generation)));
+      if (orphaned.size === 0) {
+        return;
+      }
+
+      const journals = await this.sqliteReadDb.all<Array<{ generation: string }>>('SELECT generation FROM document_replacements');
+      for (const { generation } of journals) {
+        orphaned.delete(generation);
+      }
+      if (orphaned.size > 0) {
+        const generations = [...orphaned].map((generation) => `'${escapeFilterValue(generation)}'`).join(', ');
+        await this.lanceTable.delete(`published = false AND generation IN (${generations})`);
+      }
+    }
+    catch (error) {
+      logger.warn('[DocumentStore] Orphaned unpublished generation cleanup deferred:', error);
     }
   }
 
@@ -1369,11 +1403,13 @@ export class DocumentStore implements StorageProvider {
     const generation = `delete:${randomUUID()}`;
     const ownerId = randomUUID();
     const lease = await this.acquireReplacementLease(url, generation, ownerId);
-    const preparedJournal = await this.captureCleanupGenerations(lease);
+    let transactionStarted = false;
 
     try {
+      const preparedJournal = await this.captureCleanupGenerations(lease);
       await this.renewReplacementLease(preparedJournal);
       await sqliteDb.run('BEGIN TRANSACTION');
+      transactionStarted = true;
 
       // Delete tags first (in case foreign key cascade isn't enabled)
       await sqliteDb.run('DELETE FROM document_tags WHERE url = ?', [url]);
@@ -1390,6 +1426,7 @@ export class DocumentStore implements StorageProvider {
       }
 
       await sqliteDb.run('COMMIT');
+      transactionStarted = false;
       await this.finishDocumentReplacementBestEffort({
         ...preparedJournal,
         state: 'deleting',
@@ -1400,11 +1437,13 @@ export class DocumentStore implements StorageProvider {
       logger.debug(`[DocumentStore] Document deleted successfully`);
     }
     catch (error) {
-      try {
-        await sqliteDb.run('ROLLBACK');
-      }
-      catch {
-        // No active transaction.
+      if (transactionStarted) {
+        try {
+          await sqliteDb.run('ROLLBACK');
+        }
+        catch {
+          // The transaction may already have been rolled back by SQLite.
+        }
       }
       const durableJournal = await sqliteReadDb.get<ReplacementJournalRow>(
         'SELECT * FROM document_replacements WHERE url = ? AND generation = ? AND owner_id = ?',

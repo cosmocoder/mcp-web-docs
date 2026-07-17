@@ -1995,9 +1995,10 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
         return;
       }
       catch (error) {
-        const isConflict = error instanceof Error && error.message?.includes('Commit conflict');
-        if (isConflict && attempt < maxRetries) {
-          logger.warn(`[WebDocsServer] Database conflict, retrying (${attempt}/${maxRetries})...`);
+        const isRetryable =
+          error instanceof Error && (error.message.includes('Commit conflict') || error.message.startsWith('Replacement lease lost for '));
+        if (isRetryable && attempt < maxRetries) {
+          logger.warn(`[WebDocsServer] Storage conflict, retrying (${attempt}/${maxRetries})...`);
           await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
           continue;
         }
