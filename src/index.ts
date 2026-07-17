@@ -26,7 +26,7 @@ import { DocsConfig, loadConfig, isValidPublicUrl, normalizeUrl } from './config
 import { DocsCrawler } from './crawler/docs-crawler.js';
 import { AuthManager } from './crawler/auth.js';
 import { fetchFavicon } from './util/favicon.js';
-import { DocumentChunk, IndexingStatus } from './types.js';
+import { DocumentChunk, IndexingStatus, ProcessedDocument } from './types.js';
 import { generateDocId } from './util/docs.js';
 import { logger } from './util/logger.js';
 import { closeOutboundProxy } from './util/outbound-request.js';
@@ -1913,37 +1913,30 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 
       checkCancelled();
 
-      // Delete old data if reindexing
-      if (reIndex && existingDoc) {
-        this.statusTracker.updateProgress(id, 0.8, 'Deleting old data');
-        await this.store.deleteDocument(url);
-      }
-
-      checkCancelled();
-
       // Get favicon
       const favicon = await fetchFavicon(new URL(url));
 
       // Store the data with retry logic
       this.statusTracker.updateProgress(id, 0.9, `Storing ${embeddings.length} chunks`);
-      await this.addDocumentWithRetry({
-        metadata: {
-          url,
-          title,
-          favicon: favicon ?? undefined,
-          lastIndexed: new Date(),
-          requiresAuth: authInfo?.requiresAuth,
-          authDomain: authInfo?.authDomain,
-          version,
+      await this.storeDocumentWithRetry(
+        {
+          metadata: {
+            url,
+            title,
+            favicon: favicon ?? undefined,
+            lastIndexed: new Date(),
+            requiresAuth: authInfo?.requiresAuth,
+            authDomain: authInfo?.authDomain,
+            version,
+          },
+          chunks: chunks.map((chunk, i) => ({
+            ...chunk,
+            vector: embeddings[i],
+          })),
         },
-        chunks: chunks.map((chunk, i) => ({
-          ...chunk,
-          vector: embeddings[i],
-        })),
-      });
-
-      // Always update tags when indexing (clears old tags if none provided)
-      await this.store.setTags(url, tags || []);
+        signal,
+        tags
+      );
       if (tags && tags.length > 0) {
         logger.info(`[WebDocsServer] Tags set for ${url}:`, tags);
       }
@@ -1994,32 +1987,19 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
   }
 
   /**
-   * Add document with retry logic for transient database conflicts
+   * Store a document with retry logic for transient database conflicts.
    */
-  private async addDocumentWithRetry(
-    doc: {
-      metadata: {
-        url: string;
-        title: string;
-        favicon?: string;
-        lastIndexed: Date;
-        requiresAuth?: boolean;
-        authDomain?: string;
-        version?: string;
-      };
-      chunks: DocumentChunk[];
-    },
-    maxRetries = 3
-  ): Promise<void> {
+  private async storeDocumentWithRetry(doc: ProcessedDocument, signal?: AbortSignal, tags?: string[], maxRetries = 3): Promise<void> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        await this.store.addDocument(doc);
+        await this.store.addDocument(doc, { signal, tags: tags ?? [] });
         return;
       }
       catch (error) {
-        const isConflict = error instanceof Error && error.message?.includes('Commit conflict');
-        if (isConflict && attempt < maxRetries) {
-          logger.warn(`[WebDocsServer] Database conflict, retrying (${attempt}/${maxRetries})...`);
+        const isRetryable =
+          error instanceof Error && (error.message.includes('Commit conflict') || error.message.startsWith('Replacement lease lost for '));
+        if (isRetryable && attempt < maxRetries) {
+          logger.warn(`[WebDocsServer] Storage conflict, retrying (${attempt}/${maxRetries})...`);
           await new Promise((resolve) => setTimeout(resolve, 1000 * attempt)); // Exponential backoff
           continue;
         }
