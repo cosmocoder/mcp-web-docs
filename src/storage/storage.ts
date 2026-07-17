@@ -566,9 +566,6 @@ export class DocumentStore implements StorageProvider {
 
       if (durableJournal) {
         await this.finishDocumentReplacementBestEffort(durableJournal);
-        if (durableJournal.state === 'published') {
-          return;
-        }
       }
       else {
         await this.deleteUnpublishedGenerationBestEffort(url, generation);
