@@ -172,4 +172,26 @@ describe('IndexingQueueManager', () => {
     await afterCancellation.completion;
     expect(afterCancellationStarted).toBe(true);
   });
+
+  it('bounds cancelAll when an operation ignores cancellation', async () => {
+    const queue = new IndexingQueueManager(10);
+    const started = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    let signal!: AbortSignal;
+    const operation = await queue.runLatest('https://example.com', async (operationSignal) => {
+      signal = operationSignal;
+      started.resolve();
+      await released.promise;
+    });
+    await started.promise;
+
+    await expect(queue.cancelAll()).rejects.toThrow('Timed out cancelling all indexing operations');
+    expect(signal.aborted).toBe(true);
+
+    const next = await queue.runLatest('https://other.com', async () => {});
+    await next.completion;
+
+    released.resolve();
+    await operation.completion;
+  });
 });

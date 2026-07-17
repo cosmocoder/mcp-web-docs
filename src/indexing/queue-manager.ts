@@ -36,7 +36,7 @@ export class IndexingQueueManager {
       if (existing) {
         logger.debug(`[IndexingQueue] Cancelling existing operation for ${url}`);
         existing.controller.abort();
-        await this.awaitCancellation(existing.completion, url);
+        await this.awaitCancellation(existing.completion, `the existing indexing operation for ${url}`);
         if (this.cancellation) {
           throw new Error(CANCELLATION_IN_PROGRESS_MESSAGE);
         }
@@ -72,13 +72,13 @@ export class IndexingQueueManager {
     return result;
   }
 
-  private async awaitCancellation(completion: Promise<void>, url: string): Promise<void> {
+  private async awaitCancellation(completion: Promise<void>, description: string): Promise<void> {
     const timerController = new AbortController();
     try {
       await Promise.race([
         completion.catch(() => undefined),
         delay(this.cancellationTimeoutMs, undefined, { signal: timerController.signal }).then(() => {
-          throw new Error(`Timed out cancelling the existing indexing operation for ${url}`);
+          throw new Error(`Timed out cancelling ${description}`);
         }),
       ]);
     }
@@ -100,14 +100,15 @@ export class IndexingQueueManager {
   }
 
   private async drainOperations(): Promise<void> {
-    while (this.activeOperations.size > 0 || this.transitions.size > 0) {
-      const operations = [...this.activeOperations.values()];
-      const transitions = [...this.transitions.values()];
-      logger.debug(`[IndexingQueue] Cancelling ${operations.length} operations and draining ${transitions.length} transitions`);
-      for (const operation of operations) {
-        operation.controller.abort();
-      }
-      await Promise.allSettled([...operations.map((operation) => operation.completion), ...transitions]);
+    const operations = [...this.activeOperations.values()];
+    const transitions = [...this.transitions.values()];
+    logger.debug(`[IndexingQueue] Cancelling ${operations.length} operations and draining ${transitions.length} transitions`);
+    for (const operation of operations) {
+      operation.controller.abort();
     }
+    await this.awaitCancellation(
+      Promise.allSettled([...operations.map((operation) => operation.completion), ...transitions]).then(() => undefined),
+      'all indexing operations'
+    );
   }
 }

@@ -2021,6 +2021,10 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 
     logger.info('Web Docs MCP server running on stdio');
   }
+
+  cancelOperations(): Promise<void> {
+    return this.indexingQueue.cancelAll();
+  }
 }
 
 // Start server
@@ -2030,7 +2034,7 @@ server.run().catch((err) => logger.error('Server failed to start:', err));
 async function shutdown(signal: 'SIGINT' | 'SIGTERM'): Promise<void> {
   logger.info(`Received ${signal}, cancelling operations and shutting down...`);
   try {
-    await closeOutboundProxy();
+    await Promise.allSettled([server.cancelOperations(), closeOutboundProxy()]);
   }
   finally {
     process.exit(0);
