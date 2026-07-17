@@ -1,10 +1,13 @@
 import { PlaywrightCrawlerOptions, log } from 'crawlee';
+import { getOutboundProxyUrl } from '../util/outbound-request.js';
 
 // Suppress Crawlee's stdout logging for MCP compatibility
 // MCP servers must only output JSON-RPC messages to stdout
 log.setLevel(log.LEVELS.OFF);
 
-export const getBrowserConfig = (requestQueue: PlaywrightCrawlerOptions['requestQueue']): Partial<PlaywrightCrawlerOptions> => ({
+export const getBrowserConfig = async (
+  requestQueue: PlaywrightCrawlerOptions['requestQueue']
+): Promise<Partial<PlaywrightCrawlerOptions>> => ({
   maxRequestsPerCrawl: 1000,
   requestQueue,
   maxConcurrency: 5,
@@ -12,6 +15,11 @@ export const getBrowserConfig = (requestQueue: PlaywrightCrawlerOptions['request
   maxRequestRetries: 2,
   navigationTimeoutSecs: 30,
   requestHandlerTimeoutSecs: 60,
+  launchContext: {
+    launchOptions: {
+      proxy: { server: await getOutboundProxyUrl(), bypass: '<-loopback>' },
+    },
+  },
   browserPoolOptions: {
     maxOpenPagesPerBrowser: 3,
     useFingerprints: true,

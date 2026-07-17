@@ -27,9 +27,10 @@ import { DocsConfig, loadConfig, isValidPublicUrl, normalizeUrl } from './config
 import { DocsCrawler } from './crawler/docs-crawler.js';
 import { AuthManager } from './crawler/auth.js';
 import { fetchFavicon } from './util/favicon.js';
-import { DocumentChunk, IndexingStatus } from './types.js';
+import { DocumentChunk, IndexingStatus, ProcessedDocument } from './types.js';
 import { generateDocId } from './util/docs.js';
 import { logger } from './util/logger.js';
+import { closeOutboundProxy } from './util/outbound-request.js';
 import {
   StorageStateSchema,
   safeJsonParse,
@@ -1911,22 +1912,13 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 
       checkCancelled();
 
-      // Delete old data if reindexing
-      if (reIndex && existingDoc) {
-        this.statusTracker.updateProgress(id, 0.8, 'Deleting old data');
-        await this.store.deleteDocument(url);
-        checkCancelled();
-      }
-
-      checkCancelled();
-
       // Get favicon
       const favicon = await fetchFavicon(new URL(url));
       checkCancelled();
 
       // Store the data with retry logic
       this.statusTracker.updateProgress(id, 0.9, `Storing ${embeddings.length} chunks`);
-      await this.addDocumentWithRetry(
+      await this.storeDocumentWithRetry(
         {
           metadata: {
             url,
@@ -1942,12 +1934,9 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
             vector: embeddings[i],
           })),
         },
-        signal
+        signal,
+        tags
       );
-      checkCancelled();
-
-      // Always update tags when indexing (clears old tags if none provided)
-      await this.store.setTags(url, tags || []);
       checkCancelled();
       if (tags && tags.length > 0) {
         logger.info(`[WebDocsServer] Tags set for ${url}:`, tags);
@@ -2003,34 +1992,20 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
   }
 
   /**
-   * Add document with retry logic for transient database conflicts
+   * Store a document with retry logic for transient database conflicts.
    */
-  private async addDocumentWithRetry(
-    doc: {
-      metadata: {
-        url: string;
-        title: string;
-        favicon?: string;
-        lastIndexed: Date;
-        requiresAuth?: boolean;
-        authDomain?: string;
-        version?: string;
-      };
-      chunks: DocumentChunk[];
-    },
-    signal: AbortSignal,
-    maxRetries = 3
-  ): Promise<void> {
+  private async storeDocumentWithRetry(doc: ProcessedDocument, signal: AbortSignal, tags?: string[], maxRetries = 3): Promise<void> {
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       signal.throwIfAborted();
       try {
-        await this.store.addDocument(doc);
+        await this.store.addDocument(doc, { signal, tags: tags ?? [] });
         return;
       }
       catch (error) {
-        const isConflict = error instanceof Error && error.message?.includes('Commit conflict');
-        if (isConflict && attempt < maxRetries) {
-          logger.warn(`[WebDocsServer] Database conflict, retrying (${attempt}/${maxRetries})...`);
+        const isRetryable =
+          error instanceof Error && (error.message.includes('Commit conflict') || error.message.startsWith('Replacement lease lost for '));
+        if (isRetryable && attempt < maxRetries) {
+          logger.warn(`[WebDocsServer] Storage conflict, retrying (${attempt}/${maxRetries})...`);
           await delay(1000 * attempt, undefined, { signal });
           continue;
         }
@@ -2055,13 +2030,17 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 const server = new WebDocsServer();
 server.run().catch((err) => logger.error('Server failed to start:', err));
 
-// Handle process signals - cancel all operations before shutdown
-process.on('SIGINT', async () => {
-  logger.info('Received SIGINT, cancelling operations and shutting down...');
-  process.exit(0);
-});
+async function shutdown(signal: 'SIGINT' | 'SIGTERM'): Promise<void> {
+  logger.info(`Received ${signal}, cancelling operations and shutting down...`);
+  try {
+    await closeOutboundProxy();
+  }
+  finally {
+    process.exit(0);
+  }
+}
 
-process.on('SIGTERM', async () => {
-  logger.info('Received SIGTERM, cancelling operations and shutting down...');
-  process.exit(0);
-});
+// Handle process signals - cancel all operations before shutdown
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => void shutdown(signal));
+}

@@ -28,7 +28,6 @@ const {
   mockRunLatest,
   mockStoreAddDocument,
   mockStoreGetDocument,
-  mockStoreSetTags,
   requestHandlers,
 } = vi.hoisted(() => ({
   mockCrawlerAbort: vi.fn(),
@@ -45,7 +44,6 @@ const {
   mockRunLatest: vi.fn(),
   mockStoreAddDocument: vi.fn().mockResolvedValue(undefined),
   mockStoreGetDocument: vi.fn().mockResolvedValue(null),
-  mockStoreSetTags: vi.fn().mockResolvedValue(undefined),
   requestHandlers: [] as ToolHandler[],
 }));
 
@@ -82,7 +80,7 @@ vi.mock('./storage/storage.js', () => ({
       searchByText: vi.fn().mockResolvedValue([]),
       addDocument: mockStoreAddDocument,
       deleteDocument: vi.fn().mockResolvedValue(undefined),
-      setTags: mockStoreSetTags,
+      setTags: vi.fn().mockResolvedValue(undefined),
       listAllTags: vi.fn().mockResolvedValue([]),
     };
   }),
@@ -513,7 +511,7 @@ describe('WebDocsServer', () => {
       }
     });
 
-    it('does not write tags or complete when cancellation arrives during document storage', async () => {
+    it('does not complete when cancellation arrives during document storage', async () => {
       const add = Promise.withResolvers<void>();
       const addStarted = Promise.withResolvers<void>();
       const controller = new AbortController();
@@ -539,8 +537,7 @@ describe('WebDocsServer', () => {
         await completion;
 
         expect(cancelIndexing).toHaveBeenCalledOnce();
-        expect(mockStoreAddDocument).toHaveBeenCalledOnce();
-        expect(mockStoreSetTags).not.toHaveBeenCalled();
+        expect(mockStoreAddDocument).toHaveBeenCalledWith(expect.any(Object), { signal: controller.signal, tags: [] });
         expect(completeIndexing).not.toHaveBeenCalled();
         expect(failIndexing).not.toHaveBeenCalled();
       }
@@ -578,7 +575,6 @@ describe('WebDocsServer', () => {
 
         expect(cancelIndexing).toHaveBeenCalledOnce();
         expect(mockStoreAddDocument).toHaveBeenCalledOnce();
-        expect(mockStoreSetTags).not.toHaveBeenCalled();
         expect(completeIndexing).not.toHaveBeenCalled();
       }
       finally {
