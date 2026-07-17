@@ -21,6 +21,7 @@ type ToolHandler = (request: { params: { name: string; arguments?: Record<string
 const {
   mockCrawlerAbort,
   mockCrawlerCrawl,
+  mockCrawlerSetPathPrefix,
   mockClearSession,
   mockFetchFavicon,
   mockNotification,
@@ -34,6 +35,7 @@ const {
   mockCrawlerCrawl: vi.fn().mockImplementation(async function* () {
     yield { url: 'https://example.com', path: '/', content: '<h1>Test</h1>', title: 'Test' };
   }),
+  mockCrawlerSetPathPrefix: vi.fn(),
   mockClearSession: vi.fn().mockResolvedValue(undefined),
   mockFetchFavicon: vi.fn().mockResolvedValue('https://example.com/favicon.ico'),
   mockNotification: vi.fn().mockResolvedValue(undefined),
@@ -82,6 +84,7 @@ vi.mock('./storage/storage.js', () => ({
       deleteDocument: vi.fn().mockResolvedValue(undefined),
       setTags: vi.fn().mockResolvedValue(undefined),
       listAllTags: vi.fn().mockResolvedValue([]),
+      optimize: vi.fn().mockResolvedValue({ compacted: false, cleanedUp: false }),
     };
   }),
 }));
@@ -116,6 +119,7 @@ vi.mock('./crawler/docs-crawler.js', () => ({
     return {
       crawl: mockCrawlerCrawl,
       abort: mockCrawlerAbort,
+      setPathPrefix: mockCrawlerSetPathPrefix,
       setStorageState: vi.fn(),
     };
   }),
@@ -580,7 +584,9 @@ describe('WebDocsServer', () => {
         lastIndexed: new Date(),
         requiresAuth: false,
         tags: ['docs'],
+        pathPrefix: '/api/v2',
       });
+      mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk);
       const startIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'startIndexing');
       let completion!: Promise<void>;
       mockRunLatest.mockImplementationOnce(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
@@ -599,6 +605,11 @@ describe('WebDocsServer', () => {
       expect(payload.message).toContain('Previous operation was cancelled');
       expect(mockRunLatest).toHaveBeenCalledOnce();
       await completion;
+      expect(mockCrawlerSetPathPrefix).toHaveBeenCalledWith('/api/v2');
+      expect(mockStoreAddDocument).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: '/api/v2' }) }),
+        expect.objectContaining({ tags: ['docs'] })
+      );
     });
   });
 

@@ -1,8 +1,10 @@
-import { DocumentStore } from './storage.js';
-import { createMockEmbeddings } from '../__mocks__/embeddings.js';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { DocumentStore } from './storage.js';
+import { createMockEmbeddings } from '../__mocks__/embeddings.js';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProcessedDocument, DocumentChunk } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
@@ -1413,6 +1415,31 @@ describe('DocumentStore', () => {
   });
 
   describe('database migrations', () => {
+    it('should leave legacy documents unrestricted', async () => {
+      const legacyDbPath = join(tempDir, 'legacy.db');
+      const legacyDb = await open({ filename: legacyDbPath, driver: sqlite3.Database });
+      await legacyDb.exec(`
+        CREATE TABLE documents (
+          url TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          favicon TEXT,
+          last_indexed DATETIME NOT NULL
+        );
+      `);
+      await legacyDb.run('INSERT INTO documents (url, title, last_indexed) VALUES (?, ?, ?)', [
+        'https://legacy.example.com',
+        'Legacy Docs',
+        new Date().toISOString(),
+      ]);
+      await legacyDb.close();
+
+      const legacyStore = new DocumentStore(legacyDbPath, join(tempDir, 'legacy-vectors'), mockEmbeddings, 100);
+      openStores.add(legacyStore);
+      await legacyStore.initialize();
+
+      expect((await legacyStore.getDocument('https://legacy.example.com'))?.pathPrefix).toBeUndefined();
+    });
+
     it('should create schema_migrations table on initialize', async () => {
       // Store is already initialized in beforeEach
       // Verify by adding a document with auth fields (which requires migration to have run)
@@ -1504,6 +1531,22 @@ describe('DocumentStore', () => {
       expect(withAuth?.authDomain).toBe('auth-columns.com');
       expect(withoutAuth?.requiresAuth).toBe(false);
       expect(withoutAuth?.authDomain).toBeUndefined();
+    });
+  });
+
+  describe('crawl path prefix metadata', () => {
+    it('should return the stored prefix from get, list, and collection queries', async () => {
+      const url = 'https://example.com/api';
+      const doc = createTestDocument(url, 'API Docs');
+      doc.metadata.pathPrefix = '/api/v2';
+
+      await store.addDocument(doc);
+      await store.createCollection('API Collection');
+      await store.addToCollection('API Collection', [url]);
+
+      expect((await store.getDocument(url))?.pathPrefix).toBe('/api/v2');
+      expect((await store.listDocuments()).find((item) => item.url === url)?.pathPrefix).toBe('/api/v2');
+      expect((await store.getCollection('API Collection'))?.documents[0].pathPrefix).toBe('/api/v2');
     });
   });
 

@@ -913,7 +913,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
         }
       : undefined;
 
-    // Preserve existing tags and version during reindex
+    // Preserve existing crawl settings during reindex
     const existingTags = doc.tags;
     const existingVersion = doc.version;
 
@@ -927,7 +927,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
         logger.info(`[Progress] Registered token for ${docId}: ${progressToken}`);
       }
       this.statusTracker.startIndexing(docId, normalizedUrl, doc.title);
-      await this.indexAndAdd(docId, normalizedUrl, doc.title, true, signal, undefined, authInfo, existingTags, existingVersion);
+      await this.indexAndAdd(docId, normalizedUrl, doc.title, true, signal, doc.pathPrefix, authInfo, existingTags, existingVersion);
     });
     void operation.completion.catch((error) => {
       const err = error as Error;
@@ -1925,6 +1925,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
             requiresAuth: authInfo?.requiresAuth,
             authDomain: authInfo?.authDomain,
             version,
+            pathPrefix,
           },
           chunks: chunks.map((chunk, i) => ({
             ...chunk,

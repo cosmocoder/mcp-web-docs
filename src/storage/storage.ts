@@ -426,6 +426,13 @@ export class DocumentStore implements StorageProvider {
         );
       `,
     },
+    {
+      version: 6,
+      description: 'Persist crawl path prefix',
+      sql: `
+        ALTER TABLE documents ADD COLUMN path_prefix TEXT;
+      `,
+    },
   ];
 
   /**
@@ -764,15 +771,16 @@ export class DocumentStore implements StorageProvider {
     }
 
     await this.sqliteDb.run(
-      `INSERT INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(url) DO UPDATE SET
          title = excluded.title,
          favicon = excluded.favicon,
          last_indexed = excluded.last_indexed,
          requires_auth = excluded.requires_auth,
          auth_domain = excluded.auth_domain,
-         version = excluded.version`,
+         version = excluded.version,
+         path_prefix = excluded.path_prefix`,
       [
         metadata.url,
         metadata.title,
@@ -781,6 +789,7 @@ export class DocumentStore implements StorageProvider {
         metadata.requiresAuth ? 1 : 0,
         metadata.authDomain ?? null,
         metadata.version ?? null,
+        metadata.pathPrefix ?? null,
       ]
     );
   }
@@ -1398,10 +1407,11 @@ export class DocumentStore implements StorageProvider {
           requires_auth: number | null;
           auth_domain: string | null;
           version: string | null;
+          path_prefix: string | null;
           tags_json: string;
         }>
       >(
-        `SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version,
+        `SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version, d.path_prefix,
                 COALESCE((SELECT json_group_array(dt.tag) FROM document_tags dt WHERE dt.url = d.url), '[]') AS tags_json
          FROM documents d
          ORDER BY d.last_indexed DESC`
@@ -1418,6 +1428,7 @@ export class DocumentStore implements StorageProvider {
         authDomain: row.auth_domain ?? undefined,
         tags: this.parseDocumentTags(row.tags_json),
         version: row.version ?? undefined,
+        pathPrefix: row.path_prefix ?? undefined,
       }));
     }
     catch (error) {
@@ -1518,9 +1529,10 @@ export class DocumentStore implements StorageProvider {
         requires_auth: number | null;
         auth_domain: string | null;
         version: string | null;
+        path_prefix: string | null;
         tags_json: string;
       }>(
-        `SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version,
+        `SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version, d.path_prefix,
                 COALESCE((SELECT json_group_array(dt.tag) FROM document_tags dt WHERE dt.url = d.url), '[]') AS tags_json
          FROM documents d
          WHERE d.url = ?`,
@@ -1549,6 +1561,7 @@ export class DocumentStore implements StorageProvider {
         authDomain: row.auth_domain ?? undefined,
         tags: this.parseDocumentTags(row.tags_json),
         version: row.version ?? undefined,
+        pathPrefix: row.path_prefix ?? undefined,
       };
     }
     catch (error) {
@@ -1938,11 +1951,12 @@ export class DocumentStore implements StorageProvider {
         requires_auth: number | null;
         auth_domain: string | null;
         version: string | null;
+        path_prefix: string | null;
         tags_json: string;
       }>
     >(
       `
-      SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version,
+      SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version, d.path_prefix,
              COALESCE((SELECT json_group_array(dt.tag) FROM document_tags dt WHERE dt.url = d.url), '[]') AS tags_json
       FROM documents d
       INNER JOIN collection_documents cd ON d.url = cd.url
@@ -1961,6 +1975,7 @@ export class DocumentStore implements StorageProvider {
       authDomain: doc.auth_domain ?? undefined,
       tags: this.parseDocumentTags(doc.tags_json),
       version: doc.version ?? undefined,
+      pathPrefix: doc.path_prefix ?? undefined,
     }));
 
     logger.debug(`[DocumentStore] Collection "${normalizedName}" has ${documents.length} documents`);
