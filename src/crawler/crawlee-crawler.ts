@@ -79,11 +79,7 @@ export class CrawleeCrawler extends BaseCrawler {
   private navigationAttempts = new WeakMap<object, NavigationAttempt>();
 
   private cleanupNavigationListener(request: object): void {
-    const attempt = this.navigationAttempts.get(request);
-    attempt?.cleanup?.();
-    if (attempt) {
-      attempt.cleanup = undefined;
-    }
+    this.navigationAttempts.get(request)?.cleanup?.();
   }
 
   /**
@@ -377,12 +373,6 @@ export class CrawleeCrawler extends BaseCrawler {
     // If we have storage state (auth cookies), configure the browser to use them
     if (this.storageState) {
       logger.info(`[CrawleeCrawler] Using authenticated session with ${this.storageState.cookies?.length || 0} cookies`);
-      crawlerOptions.launchContext = {
-        ...crawlerOptions.launchContext,
-        launchOptions: {
-          ...crawlerOptions.launchContext?.launchOptions,
-        },
-      };
       crawlerOptions.browserPoolOptions = {
         ...crawlerOptions.browserPoolOptions,
         preLaunchHooks: [
@@ -485,12 +475,6 @@ export class CrawleeCrawler extends BaseCrawler {
             !isNavigationCancellationError(failedRequest.failure()?.errorText ?? '')
           ) {
             const failureSequence = ++navigationSequence;
-            if (typeof failedRequest.url !== 'function') {
-              mainFrameNavigationError = new OutboundRequestFailedError(
-                `Navigation failed: ${failedRequest.failure()?.errorText ?? 'unknown network error'}`
-              );
-              return;
-            }
             const check = classifyOutboundFailure(failedRequest.url())
               .then((error) => {
                 if (navigationSequence === failureSequence) {

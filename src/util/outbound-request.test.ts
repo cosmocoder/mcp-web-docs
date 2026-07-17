@@ -37,6 +37,26 @@ function latestProxyServer(): MockProxyServerInstance {
   return mockProxyServer.instances.at(-1)!;
 }
 
+function mockIncomingRequest(): IncomingMessage {
+  return Object.assign(new EventEmitter(), { socket: new EventEmitter() }) as unknown as IncomingMessage;
+}
+
+function prepareProxyRequest({
+  hostname = 'example.com',
+  request = mockIncomingRequest(),
+  connectionId = 1,
+}: { hostname?: string; request?: IncomingMessage; connectionId?: number } = {}) {
+  return latestProxyServer().options.prepareRequestFunction!({
+    hostname,
+    port: 443,
+    isHttp: false,
+    connectionId,
+    request,
+    username: '',
+    password: '',
+  });
+}
+
 describe('outbound request security', () => {
   beforeEach(() => {
     fetchMock.resetMocks();
@@ -76,20 +96,8 @@ describe('outbound request security', () => {
 
   it('surfaces a proxy-blocked target as a request failure', async () => {
     const proxy = await createOutboundProxy(resolver([{ address: '127.0.0.1', family: 4 }]));
-    const prepareRequest = latestProxyServer().options.prepareRequestFunction!;
-    const request = Object.assign(new EventEmitter(), { socket: new EventEmitter() }) as unknown as IncomingMessage;
 
-    await expect(
-      prepareRequest({
-        hostname: 'example.com',
-        port: 443,
-        isHttp: false,
-        connectionId: 1,
-        request,
-        username: '',
-        password: '',
-      })
-    ).rejects.toMatchObject({ name: 'RequestError', statusCode: 403 });
+    await expect(prepareProxyRequest()).rejects.toMatchObject({ name: 'RequestError', statusCode: 403 });
     await proxy.close();
 
     fetchMock.mockResponseOnce('Blocked outbound destination', {
@@ -102,20 +110,8 @@ describe('outbound request security', () => {
   it.each(['EAI_AGAIN', 'ENOTFOUND'])('classifies resolver error %s as an unblocked proxy failure', async (code) => {
     const lookup = vi.fn().mockRejectedValue(Object.assign(new Error(code), { code })) as unknown as Resolver;
     const proxy = await createOutboundProxy(lookup);
-    const prepareRequest = latestProxyServer().options.prepareRequestFunction!;
-    const request = Object.assign(new EventEmitter(), { socket: new EventEmitter() }) as unknown as IncomingMessage;
 
-    await expect(
-      prepareRequest({
-        hostname: 'example.com',
-        port: 443,
-        isHttp: false,
-        connectionId: 1,
-        request,
-        username: '',
-        password: '',
-      })
-    ).rejects.toMatchObject({
+    await expect(prepareProxyRequest()).rejects.toMatchObject({
       name: 'RequestError',
       statusCode: 502,
       headers: { 'x-mcp-web-docs-failed': '1' },
@@ -157,18 +153,7 @@ describe('outbound request security', () => {
       .mockResolvedValueOnce([{ address: '8.8.8.8', family: 4 }])
       .mockResolvedValueOnce([{ address: '127.0.0.1', family: 4 }]) as unknown as Resolver;
     const proxy = await createOutboundProxy(lookup);
-    const prepareRequest = latestProxyServer().options.prepareRequestFunction!;
-    const socket = new EventEmitter();
-    const request = Object.assign(new EventEmitter(), { socket }) as unknown as IncomingMessage;
-    const target = await prepareRequest({
-      hostname: 'example.com',
-      port: 443,
-      isHttp: false,
-      connectionId: 1,
-      request,
-      username: '',
-      password: '',
-    });
+    const target = await prepareProxyRequest();
 
     const connectedAddress = await new Promise<string>((resolve, reject) => {
       target!.dnsLookup!('example.com', { all: false }, (error, address) => {
@@ -195,20 +180,12 @@ describe('outbound request security', () => {
         })
     ) as unknown as Resolver;
     const proxy = await createOutboundProxy(lookup);
-    const prepareRequest = latestProxyServer().options.prepareRequestFunction!;
-    const requests = Array.from(
-      { length: 65 },
-      () => Object.assign(new EventEmitter(), { socket: new EventEmitter() }) as unknown as IncomingMessage
-    );
+    const requests = Array.from({ length: 65 }, mockIncomingRequest);
     const lookups = requests.map((request, index) =>
-      prepareRequest({
+      prepareProxyRequest({
         hostname: `host-${index}.example.com`,
-        port: 443,
-        isHttp: false,
         connectionId: index,
         request,
-        username: '',
-        password: '',
       })
     );
 

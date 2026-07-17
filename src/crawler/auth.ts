@@ -58,10 +58,6 @@ function monitorMainFrameNavigations(page: Page): { throwIfError: () => Promise<
     if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
       const errorText = request.failure()?.errorText ?? 'unknown network error';
       if (!isNavigationCancellationError(errorText)) {
-        if (typeof request.url !== 'function') {
-          stopPage(new OutboundRequestFailedError(`Navigation failed: ${errorText}`));
-          return;
-        }
         const check = classifyOutboundFailure(request.url())
           .then(stopPage)
           .catch(() => stopPage(new OutboundRequestFailedError(`Navigation failed: ${errorText}`)))

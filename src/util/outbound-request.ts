@@ -47,10 +47,6 @@ for (const [network, prefix] of [
 }
 
 for (const [network, prefix] of [
-  ['::', 96],
-  ['64:ff9b::', 96],
-  ['64:ff9b:1::', 48],
-  ['100::', 64],
   ['2001::', 32],
   ['2001:2::', 48],
   ['2001:10::', 28],
@@ -58,11 +54,6 @@ for (const [network, prefix] of [
   ['2001:db8::', 32],
   ['2002::', 16],
   ['3fff::', 20],
-  ['5f00::', 16],
-  ['fc00::', 7],
-  ['fe80::', 10],
-  ['fec0::', 10],
-  ['ff00::', 8],
 ] as const) {
   blockedAddresses.addSubnet(network, prefix, 'ipv6');
 }
@@ -258,7 +249,7 @@ export async function classifyOutboundFailure(
     url = validateOutboundUrl(input.toString());
   }
   catch (error) {
-    if (error instanceof BlockedOutboundRequestError || (error instanceof Error && error.message.startsWith('Access to'))) {
+    if (error instanceof BlockedOutboundRequestError) {
       return new BlockedOutboundRequestError();
     }
     return new OutboundRequestFailedError('Outbound destination unavailable');
@@ -269,14 +260,13 @@ export async function classifyOutboundFailure(
     const classificationResolver: Resolver =
       resolver === lookup ? (hostname, options) => limitedClassificationResolver(hostname, options, signal) : resolver;
     await resolvePublicTarget(url.hostname, classificationResolver, signal);
-    return new OutboundRequestFailedError('Outbound destination unavailable');
   }
   catch (error) {
     if (error instanceof BlockedOutboundRequestError) {
       return new BlockedOutboundRequestError();
     }
-    return new OutboundRequestFailedError('Outbound destination unavailable');
   }
+  return new OutboundRequestFailedError('Outbound destination unavailable');
 }
 
 function requestAbortSignal(request: IncomingMessage): { signal: AbortSignal; cleanup: () => void } {

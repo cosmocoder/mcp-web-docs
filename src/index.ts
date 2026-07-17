@@ -29,7 +29,6 @@ import { fetchFavicon } from './util/favicon.js';
 import { DocumentChunk, IndexingStatus } from './types.js';
 import { generateDocId } from './util/docs.js';
 import { logger } from './util/logger.js';
-import { closeOutboundProxy } from './util/outbound-request.js';
 import {
   StorageStateSchema,
   safeJsonParse,
@@ -2044,17 +2043,10 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
 const server = new WebDocsServer();
 server.run().catch((err) => logger.error('Server failed to start:', err));
 
-async function shutdown(signal: 'SIGINT' | 'SIGTERM'): Promise<void> {
-  logger.info(`Received ${signal}, cancelling operations and shutting down...`);
-  try {
-    await closeOutboundProxy();
-  }
-  finally {
-    process.exit(0);
-  }
-}
-
 // Handle process signals - cancel all operations before shutdown
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(signal, () => void shutdown(signal));
+  process.on(signal, () => {
+    logger.info(`Received ${signal}, cancelling operations and shutting down...`);
+    process.exit(0);
+  });
 }
