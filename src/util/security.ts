@@ -254,10 +254,31 @@ export type ValidatedStoredSession = z.infer<typeof StoredSessionSchema>;
 /**
  * Schema for GitHub API file response
  */
+function hasOrigin(value: string, origin: string): boolean {
+  try {
+    return new URL(value).origin === origin;
+  }
+  catch {
+    return false;
+  }
+}
+
 export const GitHubFileSchema = z.object({
   path: z.string(),
   type: z.enum(['file', 'dir']),
   url: z.string(),
+  html_url: z
+    .string()
+    .url()
+    .refine((value) => hasOrigin(value, 'https://github.com'))
+    .nullable()
+    .optional(),
+  download_url: z
+    .string()
+    .url()
+    .refine((value) => hasOrigin(value, 'https://raw.githubusercontent.com'))
+    .nullable()
+    .optional(),
   content: z.string().optional(),
 });
 
