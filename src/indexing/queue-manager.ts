@@ -3,7 +3,6 @@ import { normalizeUrl } from '../config.js';
 import { logger } from '../util/logger.js';
 
 const DEFAULT_CANCELLATION_TIMEOUT_MS = 5_000;
-const CANCELLATION_IN_PROGRESS_MESSAGE = 'Indexing operations are being cancelled';
 
 interface ActiveOperation {
   controller: AbortController;
@@ -20,26 +19,23 @@ export class IndexingQueueManager {
   private readonly activeOperations = new Map<string, ActiveOperation>();
   private readonly transitions = new Map<string, Promise<void>>();
   private cancellation?: Promise<void>;
+  private closed = false;
 
   constructor(private readonly cancellationTimeoutMs = DEFAULT_CANCELLATION_TIMEOUT_MS) {}
 
   runLatest(url: string, operation: (signal: AbortSignal) => Promise<void>): Promise<IndexingOperationHandle> {
-    if (this.cancellation) {
-      return Promise.reject(new Error(CANCELLATION_IN_PROGRESS_MESSAGE));
+    if (this.closed) {
+      return Promise.reject(new Error('Indexing queue is closed'));
     }
     const normalizedUrl = normalizeUrl(url);
     return this.runTransition(normalizedUrl, async () => {
-      if (this.cancellation) {
-        throw new Error(CANCELLATION_IN_PROGRESS_MESSAGE);
-      }
+      this.assertOpen();
       const existing = this.activeOperations.get(normalizedUrl);
       if (existing) {
         logger.debug(`[IndexingQueue] Cancelling existing operation for ${url}`);
         existing.controller.abort();
         await this.awaitCancellation(existing.completion, `the existing indexing operation for ${url}`);
-        if (this.cancellation) {
-          throw new Error(CANCELLATION_IN_PROGRESS_MESSAGE);
-        }
+        this.assertOpen();
       }
 
       const controller = new AbortController();
@@ -54,6 +50,12 @@ export class IndexingQueueManager {
       logger.debug(`[IndexingQueue] Registered operation for ${url}`);
       return { completion, replacedExisting: existing !== undefined };
     });
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new Error('Indexing queue is closed');
+    }
   }
 
   private runTransition<T>(normalizedUrl: string, transition: () => Promise<T>): Promise<T> {
@@ -88,15 +90,8 @@ export class IndexingQueueManager {
   }
 
   cancelAll(): Promise<void> {
-    if (this.cancellation) {
-      return this.cancellation;
-    }
-    this.cancellation = Promise.resolve()
-      .then(() => this.drainOperations())
-      .finally(() => {
-        this.cancellation = undefined;
-      });
-    return this.cancellation;
+    this.closed = true;
+    return (this.cancellation ??= Promise.resolve().then(() => this.drainOperations()));
   }
 
   private async drainOperations(): Promise<void> {

@@ -25,40 +25,68 @@ const {
   mockCrawlerAbort,
   mockCrawlerCrawl,
   mockCrawlerSetPathPrefix,
+  mockAuthCleanup,
+  mockAuthHasSession,
+  mockAuthInitialize,
   mockClearSession,
+  mockCloseOutboundProxy,
   mockDatasetOpen,
   mockFetchFavicon,
+  mockIsValidPublicUrl,
+  mockLoadConfig,
   mockNotification,
   mockProcessorProcess,
+  mockQueueCancelAll,
   mockRunLatest,
+  mockServerClose,
+  mockServerConnect,
   mockStoreAddDocument,
   mockStoreDeleteDocument,
   mockStoreGetCollectionUrls,
   mockStoreGetDocument,
   mockStoreSearchByText,
   requestHandlers,
+  testConfig,
 } = vi.hoisted(() => ({
   mockCrawlerAbort: vi.fn(),
   mockCrawlerCrawl: vi.fn().mockImplementation(async function* () {
     yield { url: 'https://example.com', path: '/', content: 'Test', contentFormat: 'text', title: 'Test' };
   }),
   mockCrawlerSetPathPrefix: vi.fn(),
+  mockAuthCleanup: vi.fn().mockResolvedValue(undefined),
+  mockAuthHasSession: vi.fn().mockResolvedValue(false),
+  mockAuthInitialize: vi.fn().mockResolvedValue(undefined),
   mockClearSession: vi.fn().mockResolvedValue(undefined),
+  mockCloseOutboundProxy: vi.fn().mockResolvedValue(undefined),
   mockDatasetOpen: vi.fn().mockResolvedValue({ drop: vi.fn().mockResolvedValue(undefined) }),
   mockFetchFavicon: vi.fn().mockResolvedValue('https://example.com/favicon.ico'),
+  mockIsValidPublicUrl: vi.fn().mockReturnValue(true),
+  mockLoadConfig: vi.fn(),
   mockNotification: vi.fn().mockResolvedValue(undefined),
   mockProcessorProcess: vi.fn().mockResolvedValue({
     metadata: { url: 'https://example.com', title: 'Test', lastIndexed: new Date() },
     chunks: [] as DocumentChunk[],
   }),
+  mockQueueCancelAll: vi.fn().mockResolvedValue(undefined),
   mockRunLatest: vi.fn(),
+  mockServerClose: vi.fn().mockResolvedValue(undefined),
+  mockServerConnect: vi.fn().mockResolvedValue(undefined),
   mockStoreAddDocument: vi.fn().mockResolvedValue(undefined),
   mockStoreDeleteDocument: vi.fn().mockResolvedValue(undefined),
   mockStoreGetCollectionUrls: vi.fn().mockResolvedValue([]),
   mockStoreGetDocument: vi.fn().mockResolvedValue(null),
   mockStoreSearchByText: vi.fn().mockResolvedValue([]),
   requestHandlers: [] as ToolHandler[],
+  testConfig: {
+    maxChunkSize: 1000,
+    cacheSize: 100,
+    dataDir: '/tmp/test',
+    dbPath: '/tmp/test/docs.db',
+    vectorDbPath: '/tmp/test/vectors',
+  },
 }));
+
+mockLoadConfig.mockResolvedValue(testConfig);
 
 mockRunLatest.mockImplementation(async (_url: string, operation: (signal: AbortSignal) => Promise<void>) => {
   const completion = Promise.resolve().then(() => operation(new AbortController().signal));
@@ -75,7 +103,8 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
         notification: mockNotification,
         onerror: null,
       },
-      connect: vi.fn().mockResolvedValue(undefined),
+      connect: mockServerConnect,
+      close: mockServerClose,
     };
   }),
 }));
@@ -103,8 +132,14 @@ vi.mock('./storage/storage.js', () => ({
 
 vi.mock('./indexing/queue-manager.js', () => ({
   IndexingQueueManager: function () {
+    let closed = false;
     return {
-      runLatest: mockRunLatest,
+      runLatest: (...args: Parameters<typeof mockRunLatest>) =>
+        closed ? Promise.reject(new Error('Indexing queue is closed')) : mockRunLatest(...args),
+      cancelAll: () => {
+        closed = true;
+        return mockQueueCancelAll();
+      },
     };
   },
 }));
@@ -140,8 +175,9 @@ vi.mock('./crawler/docs-crawler.js', () => ({
 vi.mock('./crawler/auth.js', () => ({
   AuthManager: vi.fn().mockImplementation(function () {
     return {
-      initialize: vi.fn().mockResolvedValue(undefined),
-      hasSession: vi.fn().mockResolvedValue(false),
+      initialize: mockAuthInitialize,
+      cleanup: mockAuthCleanup,
+      hasSession: mockAuthHasSession,
       loadSession: vi.fn().mockResolvedValue(null),
       clearSession: mockClearSession,
       performInteractiveLogin: vi.fn().mockResolvedValue(undefined),
@@ -151,19 +187,17 @@ vi.mock('./crawler/auth.js', () => ({
 }));
 
 vi.mock('./config.js', () => ({
-  loadConfig: vi.fn().mockResolvedValue({
-    maxChunkSize: 1000,
-    cacheSize: 100,
-    dataDir: '/tmp/test',
-    dbPath: '/tmp/test/docs.db',
-    vectorDbPath: '/tmp/test/vectors',
-  }),
-  isValidPublicUrl: vi.fn().mockReturnValue(true),
+  loadConfig: mockLoadConfig,
+  isValidPublicUrl: mockIsValidPublicUrl,
   normalizeUrl: vi.fn().mockImplementation((url: string) => url.replace(/\/$/, '')),
 }));
 
 vi.mock('./util/favicon.js', () => ({
   fetchFavicon: mockFetchFavicon,
+}));
+
+vi.mock('./util/outbound-request.js', () => ({
+  closeOutboundProxy: mockCloseOutboundProxy,
 }));
 
 vi.mock('./util/docs.js', () => ({
@@ -1287,6 +1321,146 @@ describe('WebDocsServer', () => {
 
         expect(authInfo).toBeUndefined();
       });
+    });
+  });
+
+  describe('process shutdown', () => {
+    const captureProcess = () => {
+      const handlers = new Map<string, NodeJS.SignalsListener>();
+      vi.spyOn(process, 'once').mockImplementation(((event: string, listener: NodeJS.SignalsListener) => {
+        handlers.set(event, listener);
+        return process;
+      }) as typeof process.once);
+      const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined as never) as typeof process.exit);
+      return { handlers, exit };
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      mockServerConnect.mockResolvedValue(undefined);
+      mockServerClose.mockResolvedValue(undefined);
+      mockQueueCancelAll.mockResolvedValue(undefined);
+      mockAuthInitialize.mockResolvedValue(undefined);
+      mockAuthCleanup.mockResolvedValue(undefined);
+      mockAuthHasSession.mockResolvedValue(false);
+      mockCloseOutboundProxy.mockResolvedValue(undefined);
+      mockIsValidPublicUrl.mockReturnValue(true);
+      mockLoadConfig.mockResolvedValue(testConfig);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('deduplicates mixed signals and starts every cleanup while indexing settles', async () => {
+      const cancellation = Promise.withResolvers<void>();
+      mockQueueCancelAll.mockReturnValue(cancellation.promise);
+      const { handlers, exit } = captureProcess();
+
+      vi.resetModules();
+      const { IndexingStatusTracker: StatusTracker } = await import('./indexing/status.js');
+      const stop = vi.spyOn(StatusTracker.prototype, 'stop');
+      await import('./index.js');
+      await vi.waitFor(() => expect(mockServerConnect).toHaveBeenCalledOnce());
+
+      handlers.get('SIGINT')?.('SIGINT');
+      handlers.get('SIGTERM')?.('SIGTERM');
+      await vi.waitFor(() => expect(mockQueueCancelAll).toHaveBeenCalledOnce());
+
+      expect(mockServerClose).toHaveBeenCalledOnce();
+      expect(mockServerClose.mock.invocationCallOrder[0]).toBeLessThan(mockQueueCancelAll.mock.invocationCallOrder[0]);
+      expect(stop).toHaveBeenCalledOnce();
+      expect(mockAuthCleanup).toHaveBeenCalledOnce();
+      expect(mockCloseOutboundProxy).toHaveBeenCalledOnce();
+      expect(exit).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(1);
+
+      cancellation.resolve();
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+
+      expect(exit).toHaveBeenCalledOnce();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('does not connect when shutdown starts during initialization', async () => {
+      const config = Promise.withResolvers<typeof testConfig>();
+      mockLoadConfig.mockReturnValue(config.promise);
+      const { handlers, exit } = captureProcess();
+
+      vi.resetModules();
+      await import('./index.js');
+      handlers.get('SIGTERM')?.('SIGTERM');
+      await Promise.resolve();
+
+      config.resolve(testConfig);
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+
+      expect(mockServerConnect).not.toHaveBeenCalled();
+      expect(mockAuthCleanup).toHaveBeenCalledOnce();
+    });
+
+    it('cleans up safely when initialization fails before auth exists', async () => {
+      const config = Promise.withResolvers<typeof testConfig>();
+      mockLoadConfig.mockReturnValue(config.promise);
+      const { handlers, exit } = captureProcess();
+
+      vi.resetModules();
+      await import('./index.js');
+      handlers.get('SIGINT')?.('SIGINT');
+      config.reject(new Error('configuration unavailable'));
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+
+      expect(mockAuthCleanup).not.toHaveBeenCalled();
+    });
+
+    it('drains a tool call accepted while the transport is closing', async () => {
+      const preflight = Promise.withResolvers<boolean>();
+      const serverClose = Promise.withResolvers<void>();
+      mockAuthHasSession.mockReturnValue(preflight.promise);
+      mockServerClose.mockReturnValue(serverClose.promise);
+      const { handlers, exit } = captureProcess();
+
+      vi.resetModules();
+      await import('./index.js');
+      await vi.waitFor(() => expect(mockServerConnect).toHaveBeenCalledOnce());
+
+      handlers.get('SIGTERM')?.('SIGTERM');
+      await vi.waitFor(() => expect(mockQueueCancelAll).toHaveBeenCalledOnce());
+
+      const toolHandler = requestHandlers.at(-1)!;
+      const toolCall = toolHandler({
+        params: { name: 'add_documentation', arguments: { url: 'https://example.com' } },
+      });
+      const rejection = expect(toolCall).rejects.toThrow('Indexing queue is closed');
+
+      serverClose.resolve();
+      await Promise.resolve();
+      expect(exit).not.toHaveBeenCalled();
+
+      preflight.resolve(false);
+      await rejection;
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+    });
+
+    it('exits once with failure when graceful shutdown times out', async () => {
+      const cancellation = Promise.withResolvers<void>();
+      mockQueueCancelAll.mockReturnValue(cancellation.promise);
+      const { handlers, exit } = captureProcess();
+
+      vi.resetModules();
+      await import('./index.js');
+      await vi.waitFor(() => expect(mockServerConnect).toHaveBeenCalledOnce());
+
+      handlers.get('SIGINT')?.('SIGINT');
+      handlers.get('SIGTERM')?.('SIGTERM');
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(exit).toHaveBeenCalledWith(1);
+
+      cancellation.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(exit).toHaveBeenCalledOnce();
     });
   });
 });
