@@ -22,29 +22,6 @@ describe('GitHubCrawler', () => {
     vi.spyOn(crawler as any, 'rateLimit').mockResolvedValue(undefined);
   });
 
-  describe('constructor', () => {
-    it('should initialize with default values', () => {
-      const defaultCrawler = new GitHubCrawler();
-      expect(defaultCrawler).toBeDefined();
-    });
-
-    it('should accept custom maxDepth and maxRequestsPerCrawl', () => {
-      const customCrawler = new GitHubCrawler(10, 500);
-      expect(customCrawler).toBeDefined();
-    });
-
-    it('should accept GitHub token', () => {
-      const tokenCrawler = new GitHubCrawler(4, 1000, 'github_token_123');
-      expect(tokenCrawler).toBeDefined();
-    });
-
-    it('should accept progress callback', () => {
-      const progressFn = vi.fn();
-      const progressCrawler = new GitHubCrawler(4, 1000, undefined, progressFn);
-      expect(progressCrawler).toBeDefined();
-    });
-  });
-
   describe('crawl', () => {
     it('should reject invalid GitHub URLs', async () => {
       const results: CrawlResult[] = [];
@@ -204,7 +181,7 @@ describe('GitHubCrawler', () => {
     });
 
     it('should use GitHub token in headers when provided', async () => {
-      const tokenCrawler = new GitHubCrawler(4, 1000, 'test_token_123');
+      const tokenCrawler = new GitHubCrawler('test_token_123');
       // Mock rateLimit for new crawler instance
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       vi.spyOn(tokenCrawler as any, 'rateLimit').mockResolvedValue(undefined);

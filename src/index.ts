@@ -1740,11 +1740,9 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       checkCancelled();
 
       // Start crawling
-      logger.info(
-        `[WebDocsServer] Starting crawl with depth=${this.config.maxDepth}, maxRequests=${this.config.maxRequestsPerCrawl}${pathPrefix ? `, pathPrefix=${pathPrefix}` : ''}`
-      );
+      logger.info(`[WebDocsServer] Starting crawl${pathPrefix ? ` with pathPrefix=${pathPrefix}` : ''}`);
       this.statusTracker.updateProgress(operationId, 0, 'Finding subpages');
-      const crawler = new DocsCrawler(this.config.maxDepth, this.config.maxRequestsPerCrawl, this.config.githubToken);
+      const crawler = new DocsCrawler(this.config.githubToken);
 
       // Set path prefix restriction if provided
       if (pathPrefix) {

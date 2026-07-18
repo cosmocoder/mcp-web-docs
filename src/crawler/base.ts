@@ -15,11 +15,7 @@ export abstract class BaseCrawler {
   protected processedUrls: number;
   protected onProgress?: (progress: number, description: string) => void;
 
-  constructor(
-    protected readonly maxDepth: number = 4,
-    protected readonly maxRequestsPerCrawl: number = 1000,
-    onProgress?: (progress: number, description: string) => void
-  ) {
+  constructor(onProgress?: (progress: number, description: string) => void) {
     this.seenUrls = new Set();
     this.isAborting = false;
     this.requestCount = 0;
@@ -48,7 +44,7 @@ export abstract class BaseCrawler {
     this.updateProgress(`Processing page ${this.processedUrls} of ${this.totalUrls}`);
   }
 
-  abstract crawl(url: string, maxDepth?: number): AsyncGenerator<CrawlResult, void, unknown>;
+  abstract crawl(url: string): AsyncGenerator<CrawlResult, void, unknown>;
 
   protected shouldCrawl(urlString: string): boolean {
     try {

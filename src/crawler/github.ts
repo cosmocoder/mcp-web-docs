@@ -18,12 +18,10 @@ export class GitHubCrawler extends BaseCrawler {
   private readonly DOCUMENTATION_PATHS = ['docs', 'doc', 'documentation', 'wiki', 'guide', 'guides', 'tutorial', 'tutorials'];
 
   constructor(
-    maxDepth: number = 4,
-    maxRequestsPerCrawl: number = 1000,
     private readonly githubToken?: string,
     onProgress?: (progress: number, description: string) => void
   ) {
-    super(maxDepth, maxRequestsPerCrawl, onProgress);
+    super(onProgress);
   }
 
   async *crawl(url: string): AsyncGenerator<CrawlResult, void, unknown> {

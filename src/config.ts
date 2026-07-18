@@ -6,10 +6,7 @@ import { validatePublicUrl } from './util/security.js';
 
 export interface DocsConfig {
   githubToken?: string;
-  maxDepth: number;
-  maxRequestsPerCrawl: number;
   maxChunkSize: number;
-  maxConcurrentRequests: number;
   cacheSize: number;
   dataDir: string;
   dbPath: string;
@@ -19,10 +16,7 @@ export interface DocsConfig {
 const DATA_DIR = join(homedir(), '.mcp-web-docs');
 
 const DEFAULT_CONFIG: DocsConfig = {
-  maxDepth: 4,
-  maxRequestsPerCrawl: 1000, // Match DocsCrawler default for better coverage
   maxChunkSize: 1000,
-  maxConcurrentRequests: 3, // Allow concurrent requests for better performance while maintaining stability
   cacheSize: 1000,
   dataDir: DATA_DIR,
   dbPath: join(DATA_DIR, 'docs.db'),
@@ -102,25 +96,6 @@ export const RATE_LIMIT = {
   maxRequests: 60, // Increased for better throughput
   timeWindow: 60 * 1000, // 1 minute
   minDelay: 250, // Reduced delay between requests
-};
-
-// Queue configuration
-export const QUEUE_OPTIONS = {
-  maxRequestRetries: 2,
-  retryDelay: 1000,
-  maxRequestsPerCrawl: 2000, // Increased from default 1000
-};
-
-// GitHub API rate limits
-export const GITHUB_RATE_LIMIT = {
-  unauthenticated: {
-    maxRequests: 60,
-    timeWindow: 60 * 60 * 1000, // 1 hour
-  },
-  authenticated: {
-    maxRequests: 5000,
-    timeWindow: 60 * 60 * 1000, // 1 hour
-  },
 };
 
 // Utility function to validate URLs

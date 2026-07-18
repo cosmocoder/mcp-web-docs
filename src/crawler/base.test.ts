@@ -78,24 +78,9 @@ describe('BaseCrawler', () => {
   });
 
   describe('constructor', () => {
-    it('should initialize with default values', () => {
-      const defaultCrawler = new TestCrawler();
-      expect(defaultCrawler).toBeDefined();
-    });
-
-    it('should accept custom maxDepth', () => {
-      const customCrawler = new TestCrawler(10);
-      expect(customCrawler).toBeDefined();
-    });
-
-    it('should accept custom maxRequestsPerCrawl', () => {
-      const customCrawler = new TestCrawler(4, 500);
-      expect(customCrawler).toBeDefined();
-    });
-
     it('should accept progress callback', () => {
       const progressFn = vi.fn();
-      const customCrawler = new TestCrawler(4, 1000, progressFn);
+      const customCrawler = new TestCrawler(progressFn);
       customCrawler.testUpdateProgress('Testing');
       expect(progressFn).toHaveBeenCalled();
     });
@@ -246,7 +231,7 @@ describe('BaseCrawler', () => {
   describe('progress tracking', () => {
     it('should call progress callback with updateProgress', () => {
       const progressFn = vi.fn();
-      const progressCrawler = new TestCrawler(4, 1000, progressFn);
+      const progressCrawler = new TestCrawler(progressFn);
 
       progressCrawler.testUpdateProgress('Processing...');
 
@@ -255,7 +240,7 @@ describe('BaseCrawler', () => {
 
     it('should track discovered URLs', () => {
       const progressFn = vi.fn();
-      const progressCrawler = new TestCrawler(4, 1000, progressFn);
+      const progressCrawler = new TestCrawler(progressFn);
 
       progressCrawler.testAddDiscoveredUrls(5);
 
@@ -264,7 +249,7 @@ describe('BaseCrawler', () => {
 
     it('should track processed URLs', () => {
       const progressFn = vi.fn();
-      const progressCrawler = new TestCrawler(4, 1000, progressFn);
+      const progressCrawler = new TestCrawler(progressFn);
 
       progressCrawler.testMarkUrlProcessed('https://example.com/page1');
 

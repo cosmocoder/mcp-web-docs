@@ -152,8 +152,6 @@ vi.mock('./crawler/auth.js', () => ({
 
 vi.mock('./config.js', () => ({
   loadConfig: vi.fn().mockResolvedValue({
-    maxDepth: 3,
-    maxRequestsPerCrawl: 100,
     maxChunkSize: 1000,
     cacheSize: 100,
     dataDir: '/tmp/test',
