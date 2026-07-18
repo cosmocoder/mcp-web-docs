@@ -203,6 +203,24 @@ describe('DocumentStore', () => {
       expect(closes.map((close) => close.mock.calls.length)).toEqual([2, 1, 1, 1, 1]);
     });
 
+    it('waits for an in-flight mutation before closing resources', async () => {
+      const blockedAdd = blockNextLanceAdd();
+      const tableClose = vi.spyOn(replacementInternals().lanceTable!, 'close');
+      const mutation = store.addDocument(createTestDocument('https://example.com/in-flight', 'In Flight'));
+      await blockedAdd.staged;
+
+      const close = store.close();
+      try {
+        await nextTurn();
+        expect(tableClose).not.toHaveBeenCalled();
+      }
+      finally {
+        blockedAdd.release();
+        await Promise.all([mutation, close]);
+      }
+      expect(tableClose).toHaveBeenCalledOnce();
+    });
+
     it('preserves initialization failure when resource cleanup also fails', async () => {
       const failingStore = new DocumentStore(
         join(tempDir, 'init-failure', 'docs.db'),
@@ -1294,21 +1312,22 @@ describe('DocumentStore', () => {
       expect(withVectors[0]?.vector).toBeDefined();
     });
 
-    it('should filter by type', async () => {
-      // Add document with specific type
-      const doc = createTestDocument('https://example.com/api', 'API Reference');
-      doc.chunks[0].metadata.type = 'api';
-      await store.addDocument(doc);
+    it('should combine exact URL and type filters', async () => {
+      const scopedApi = createTestDocument('https://example.com/api', 'API Reference');
+      const outOfScopeApi = createTestDocument('https://example.com/internal-api', 'Internal API');
+      scopedApi.chunks[0].metadata.type = 'api';
+      outOfScopeApi.chunks[0].metadata.type = 'api';
+      await store.addDocument(scopedApi);
+      await store.addDocument(outOfScopeApi);
 
       const queryVector = await mockEmbeddings.embed('api');
       const results = await store.searchDocuments(queryVector, {
         limit: 10,
         filterByType: 'api',
+        filterUrls: [scopedApi.metadata.url, 'https://example.com/python'],
       });
 
-      results.forEach((result) => {
-        expect(result.metadata.type).toBe('api');
-      });
+      expect(results.map((result) => result.url)).toEqual([scopedApi.metadata.url]);
     });
 
     it('should prefilter pure vector search to exact URLs before applying the limit', async () => {

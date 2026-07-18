@@ -341,6 +341,11 @@ const VersionSchema = z
   .max(50)
   .regex(/^[a-zA-Z0-9._-]+$/, 'Version must contain only alphanumeric characters, dots, hyphens, and underscores');
 
+const PathPrefixSchema = z
+  .string()
+  .max(500)
+  .refine((val) => val.startsWith('/'), 'Path prefix must start with /');
+
 /**
  * Schema for add_documentation tool arguments
  */
@@ -352,11 +357,7 @@ export const AddDocumentationArgsSchema = z.object({
     .regex(/^[a-zA-Z0-9-_]+$/, 'ID must contain only alphanumeric characters, hyphens, and underscores')
     .max(100)
     .optional(),
-  pathPrefix: z
-    .string()
-    .max(500)
-    .refine((val) => val.startsWith('/'), 'Path prefix must start with /')
-    .optional(),
+  pathPrefix: PathPrefixSchema.optional(),
   tags: TagsArraySchema.optional(),
   version: VersionSchema.optional(),
   auth: z
@@ -411,6 +412,7 @@ export type SearchDocumentationArgs = z.infer<typeof SearchDocumentationArgsSche
  */
 export const ReindexDocumentationArgsSchema = z.object({
   url: z.string().url().max(2048),
+  pathPrefix: PathPrefixSchema.nullable().optional(),
 });
 
 export type ReindexDocumentationArgs = z.infer<typeof ReindexDocumentationArgsSchema>;

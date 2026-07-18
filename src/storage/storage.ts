@@ -321,6 +321,8 @@ export class DocumentStore implements StorageProvider {
   }
 
   async close(): Promise<void> {
+    await this.mutationTail.catch(() => undefined);
+
     const errors: unknown[] = [];
     const closeResource = async (
       name: string,
