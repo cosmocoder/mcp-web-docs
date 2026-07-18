@@ -1234,16 +1234,15 @@ describe('DocumentStore', () => {
       const url = 'https://example.com/cache-test';
       await store.addDocument(createTestDocument(url, 'Cache Test'));
 
-      // Search to populate cache
-      await store.searchByText('cache test');
+      const cachedResults = await store.searchByText('cache test');
+      expect(cachedResults.some((result) => result.url === url)).toBe(true);
 
       // Delete document
       await store.deleteDocument(url);
 
       // Search again - should not find the document
-      const results = await store.searchByText('cache test');
-      const hasDeletedDoc = results.some((r) => r.url === url);
-      expect(hasDeletedDoc).toBe(false);
+      const refreshedResults = await store.searchByText('cache test');
+      expect(refreshedResults.some((result) => result.url === url)).toBe(false);
     });
   });
 
@@ -1355,12 +1354,14 @@ describe('DocumentStore', () => {
 
     it('should use caching for repeated queries', async () => {
       const query = 'unique cache test query';
+      const embedSpy = vi.spyOn(mockEmbeddings, 'embed');
 
       const results1 = await store.searchByText(query);
       const results2 = await store.searchByText(query);
 
       // Results should be identical (from cache)
       expect(results1).toEqual(results2);
+      expect(embedSpy).toHaveBeenCalledTimes(1);
     });
 
     it('should respect limit option', async () => {
@@ -2106,17 +2107,25 @@ describe('DocumentStore', () => {
       expect(typeof result.cleanedUp).toBe('boolean');
     });
 
-    it('should clear search cache after optimization', async () => {
-      // Add document and search to populate cache
-      await store.addDocument(createTestDocument('https://example.com/cache', 'Cache Test'));
-      await store.searchByText('cache test');
+    it('should not cache a search that started before optimization', async () => {
+      const query = 'in-flight optimization cache';
+      const embed = mockEmbeddings.embed.bind(mockEmbeddings);
+      const searchStarted = Promise.withResolvers<void>();
+      const releaseSearch = Promise.withResolvers<void>();
+      const embedSpy = vi.spyOn(mockEmbeddings, 'embed').mockImplementationOnce(async (text) => {
+        searchStarted.resolve();
+        await releaseSearch.promise;
+        return embed(text);
+      });
 
-      // Run optimization (which should clear cache)
+      const inFlightSearch = store.searchByText(query);
+      await searchStarted.promise;
       await store.optimize();
+      releaseSearch.resolve();
+      await inFlightSearch;
 
-      // Search should still work (but cache was cleared)
-      const results = await store.searchByText('cache test');
-      expect(Array.isArray(results)).toBe(true);
+      await store.searchByText(query);
+      expect(embedSpy).toHaveBeenCalledTimes(2);
     });
 
     it('should preserve data after optimization', async () => {

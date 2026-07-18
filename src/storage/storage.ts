@@ -130,6 +130,7 @@ export class DocumentStore implements StorageProvider {
   private lanceConn?: LanceDBConnection;
   private lanceTable?: LanceDBTable;
   private readonly searchCache: QuickLRU<string, SearchResult[]>;
+  private searchCacheGeneration = 0;
   private ftsIndexCreated = false;
   // ponytail: one per-store FIFO; split only if mutation throughput becomes a measured bottleneck.
   private mutationTail: Promise<void> = Promise.resolve();
@@ -1166,8 +1167,11 @@ export class DocumentStore implements StorageProvider {
   }
 
   async searchByText(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
+    const cacheGeneration = this.searchCacheGeneration;
     const { result, dataVersion } = await this.withStableSearch((version) => this.searchByTextOnce(query, options, version));
-    this.searchCache.set(this.textSearchCacheKey(query, options, dataVersion), result);
+    if (cacheGeneration === this.searchCacheGeneration) {
+      this.searchCache.set(this.textSearchCacheKey(query, options, dataVersion), result);
+    }
     return result;
   }
 
@@ -1487,7 +1491,6 @@ export class DocumentStore implements StorageProvider {
         lease_expires_at: leaseExpiresAt,
       });
 
-      this.clearCacheForUrl(url);
       logger.debug(`[DocumentStore] Document deleted successfully`);
     }
     catch (error) {
@@ -1506,7 +1509,6 @@ export class DocumentStore implements StorageProvider {
       if (durableJournal) {
         await this.finishDocumentReplacementBestEffort(durableJournal);
         if (durableJournal.state === 'deleting') {
-          this.clearCacheForUrl(url);
           return;
         }
       }
@@ -1625,9 +1627,6 @@ export class DocumentStore implements StorageProvider {
       await this.replaceDocumentTags(url, tags);
 
       await this.sqliteDb.run('COMMIT');
-
-      // Clear cached search results that may be affected by tag changes
-      this.clearCacheForUrl(url);
 
       logger.debug(`[DocumentStore] Tags set successfully for ${url}`);
     }
@@ -2168,16 +2167,6 @@ export class DocumentStore implements StorageProvider {
     return rows.map((row) => row.url);
   }
 
-  private clearCacheForUrl(url: string): void {
-    // Clear all cache entries that might contain results for this URL
-    for (const key of this.searchCache.keys()) {
-      const results = this.searchCache.get(key);
-      if (results?.some((result) => result.url === url)) {
-        this.searchCache.delete(key);
-      }
-    }
-  }
-
   /**
    * Validates that vectors are properly stored and retrievable from LanceDB
    * @returns Promise<boolean> True if vectors are valid, false otherwise
@@ -2288,6 +2277,7 @@ export class DocumentStore implements StorageProvider {
       }
 
       // Clear the search cache after optimization as data may have changed
+      this.searchCacheGeneration++;
       this.searchCache.clear();
 
       logger.info('[DocumentStore] Optimization complete:', result);
