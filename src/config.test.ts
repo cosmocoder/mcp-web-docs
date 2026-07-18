@@ -3,7 +3,6 @@ import {
   isValidPublicUrl,
   normalizeUrl,
   isGitHubUrl,
-  isMarkdownPath,
   IGNORED_PATHS,
   RATE_LIMIT,
   QUEUE_OPTIONS,
@@ -125,34 +124,6 @@ describe('Configuration Utilities', () => {
     it('should return false for invalid URLs', () => {
       expect(isGitHubUrl('not-a-url')).toBe(false);
       expect(isGitHubUrl('')).toBe(false);
-    });
-  });
-
-  describe('isMarkdownPath', () => {
-    it('should identify markdown file extensions', () => {
-      expect(isMarkdownPath('README.md')).toBe(true);
-      expect(isMarkdownPath('docs/guide.md')).toBe(true);
-      expect(isMarkdownPath('CHANGELOG.MD')).toBe(true);
-      expect(isMarkdownPath('file.mdx')).toBe(true);
-      expect(isMarkdownPath('file.markdown')).toBe(true);
-    });
-
-    it('should not identify non-markdown paths', () => {
-      expect(isMarkdownPath('file.txt')).toBe(false);
-      expect(isMarkdownPath('file.html')).toBe(false);
-      expect(isMarkdownPath('file.js')).toBe(false);
-      expect(isMarkdownPath('markdown')).toBe(false);
-    });
-
-    it('should handle paths without extensions', () => {
-      expect(isMarkdownPath('README')).toBe(false);
-      expect(isMarkdownPath('docs/guide')).toBe(false);
-    });
-
-    it('should handle edge cases', () => {
-      expect(isMarkdownPath('.md')).toBe(true);
-      expect(isMarkdownPath('file.md.bak')).toBe(false);
-      expect(isMarkdownPath('file.md/path')).toBe(false);
     });
   });
 

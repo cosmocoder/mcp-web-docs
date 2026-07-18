@@ -118,6 +118,9 @@ jobs:
         with:
           node-version-file: 'package.json'
 
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
       - name: Tests for shard ${{ matrix.shardIndex }} of ${{ matrix.shardTotal }}
         run: npm run test:coverage -- --shard=${{ matrix.shardIndex }}/${{ matrix.shardTotal }}
 

@@ -2,21 +2,25 @@ import type { CrawlResult } from '../types.js';
 import { DocsCrawler } from './docs-crawler.js';
 
 const mockGitHubCrawl = vi.fn();
+const mockGitHubAbort = vi.fn();
 vi.mock('./github.js', () => ({
   GitHubCrawler: function () {
     return {
       crawl: mockGitHubCrawl,
+      abort: mockGitHubAbort,
     };
   },
 }));
 
 const mockCrawleeCrawl = vi.fn();
+const mockCrawleeAbort = vi.fn();
 const mockSetStorageState = vi.fn();
 const mockSetPathPrefix = vi.fn();
 vi.mock('./crawlee-crawler.js', () => ({
   CrawleeCrawler: function () {
     return {
       crawl: mockCrawleeCrawl,
+      abort: mockCrawleeAbort,
       setStorageState: mockSetStorageState,
       setPathPrefix: mockSetPathPrefix,
     };
@@ -46,7 +50,13 @@ describe('DocsCrawler', () => {
     describe('GitHub URLs', () => {
       it('should use GitHubCrawler for github.com URLs', async () => {
         const mockResults: CrawlResult[] = [
-          { url: 'https://github.com/owner/repo/README.md', path: 'README.md', content: '# README', title: 'README' },
+          {
+            url: 'https://github.com/owner/repo/README.md',
+            path: 'README.md',
+            content: '# README',
+            contentFormat: 'markdown',
+            title: 'README',
+          },
         ];
 
         mockGitHubCrawl.mockImplementation(async function* () {
@@ -68,7 +78,7 @@ describe('DocsCrawler', () => {
 
       it('should return github type for GitHub URLs', async () => {
         mockGitHubCrawl.mockImplementation(async function* () {
-          yield { url: 'https://github.com/owner/repo', path: '/', content: 'test', title: 'Test' };
+          yield { url: 'https://github.com/owner/repo', path: '/', content: 'test', contentFormat: 'markdown', title: 'Test' };
         });
 
         const generator = crawler.crawl('https://github.com/owner/repo');
@@ -103,8 +113,8 @@ describe('DocsCrawler', () => {
     describe('Non-GitHub URLs', () => {
       it('should use CrawleeCrawler for non-GitHub URLs', async () => {
         const mockResults: CrawlResult[] = [
-          { url: 'https://docs.example.com/guide', path: '/guide', content: '<h1>Guide</h1>', title: 'Guide' },
-          { url: 'https://docs.example.com/api', path: '/api', content: '<h1>API</h1>', title: 'API' },
+          { url: 'https://docs.example.com/guide', path: '/guide', content: 'Guide', contentFormat: 'text', title: 'Guide' },
+          { url: 'https://docs.example.com/api', path: '/api', content: 'API', contentFormat: 'text', title: 'API' },
         ];
 
         mockCrawleeCrawl.mockImplementation(async function* () {
@@ -123,7 +133,7 @@ describe('DocsCrawler', () => {
 
       it('should return crawlee type regardless of page count', async () => {
         mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
         });
 
         const results: CrawlResult[] = [];
@@ -158,35 +168,44 @@ describe('DocsCrawler', () => {
     });
 
     describe('abort', () => {
-      it('should stop crawling when aborted', async () => {
-        mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
-          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', title: 'Page 2' };
-          yield { url: 'https://example.com/page3', path: '/page3', content: 'Page 3', title: 'Page 3' };
+      it.each([
+        {
+          name: 'GitHub',
+          url: 'https://github.com/owner/repo',
+          crawl: mockGitHubCrawl,
+          abort: mockGitHubAbort,
+          contentFormat: 'markdown' as const,
+        },
+        {
+          name: 'Crawlee',
+          url: 'https://example.com',
+          crawl: mockCrawleeCrawl,
+          abort: mockCrawleeAbort,
+          contentFormat: 'text' as const,
+        },
+      ])('delegates to the active $name crawler before its first page', async ({ url, crawl, abort, contentFormat }) => {
+        const entered = Promise.withResolvers<void>();
+        const released = Promise.withResolvers<void>();
+        crawl.mockImplementation(async function* () {
+          entered.resolve();
+          await released.promise;
+          yield { url, path: '/', content: 'Page', contentFormat, title: 'Page' };
         });
 
-        const results: CrawlResult[] = [];
-        const generator = crawler.crawl('https://example.com');
-
-        // Get first result
-        const first = await generator.next();
-        if (!first.done) {
-          results.push(first.value);
-        }
-
-        // Abort
+        const next = crawler.crawl(url).next();
+        await entered.promise;
         crawler.abort();
 
-        // Generator should stop yielding after abort (depending on implementation)
-        // The test verifies abort() method exists and is callable
-        expect(results).toHaveLength(1);
+        expect(abort).toHaveBeenCalledOnce();
+        released.resolve();
+        await expect(next).resolves.toMatchObject({ done: true });
       });
 
       it('should return early when already aborting', async () => {
         crawler.abort();
 
         mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
         });
 
         const generator = crawler.crawl('https://example.com');
@@ -218,8 +237,8 @@ describe('DocsCrawler', () => {
         crawler.setStorageState(storageState);
 
         mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
-          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', title: 'Page 2' };
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
+          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'text', title: 'Page 2' };
         });
 
         // eslint-disable-next-line @typescript-eslint/no-unused-vars

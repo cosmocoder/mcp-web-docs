@@ -68,7 +68,7 @@ src/
 ├── config.ts         # Configuration loading
 ├── types.ts          # TypeScript interfaces
 ├── crawler/          # Web crawling (Playwright/Crawlee)
-├── processor/        # Content processing (HTML, Markdown)
+├── processor/        # Markdown and extracted-text processing
 ├── storage/          # SQLite + LanceDB storage
 ├── embeddings/       # FastEmbed vector generation
 ├── indexing/         # Status tracking, queue management
@@ -284,27 +284,24 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
 
    ```typescript
    // my-extractor.ts
-   import type { ContentExtractor, ExtractionResult } from './content-extractor-types.js';
+   import type { ContentExtractor, ExtractedContent } from './content-extractor-types.js';
    
-   export const MyExtractor: ContentExtractor = {
-     name: 'MyExtractor',
-   
-     detect(url: string, $: cheerio.CheerioAPI): boolean {
-       return url.includes('my-site.com');
-     },
-   
-     async extract(url: string, $: cheerio.CheerioAPI): Promise<ExtractionResult> {
+   export class MyExtractor implements ContentExtractor {
+     async extractContent(document: Document): Promise<ExtractedContent> {
        return {
-         title: 'Page Title',
-         content: 'Extracted markdown content',
+         content: document.querySelector('main')?.textContent?.trim() ?? '',
+         contentFormat: 'text',
+         metadata: { type: 'overview' },
        };
-     },
-   };
+     }
+   }
    ```
 
-2. Register in `src/crawler/content-extractors.ts`
+   `contentFormat` must match the returned content: use `text` for extracted text or `markdown` for Markdown.
 
-3. Add to `FORMATTED_CONTENT_EXTRACTORS` in `src/processor/processor.ts`
+2. Register it in `src/crawler/content-extractors.ts`
+
+3. Add its detection rule to `src/crawler/site-rules.ts` before the default rule
 
 4. Write tests in `src/crawler/my-extractor.test.ts`
 

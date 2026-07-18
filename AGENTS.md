@@ -38,7 +38,7 @@ This document provides comprehensive guidance for AI coding agents working on th
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
 │  │   Crawler   │  │  Processor  │  │      Storage        │  │
 │  │  (Crawlee)  │  │ (Markdown,  │  │  ┌───────────────┐  │  │
-│  │             │  │  HTML, etc) │  │  │   LanceDB     │  │  │
+│  │             │  │    text)    │  │  │   LanceDB     │  │  │
 │  │ - Playwright│  │             │  │  │   (Vectors)   │  │  │
 │  │ - Auth      │  │ - Chunking  │  │  └───────────────┘  │  │
 │  │ - Extractors│  │ - Metadata  │  │  ┌───────────────┐  │  │
@@ -85,8 +85,7 @@ src/
 │
 ├── processor/
 │   ├── processor.ts      # Main document processor
-│   ├── content.ts        # HTML content processing
-│   ├── markdown.ts       # Markdown processing
+│   ├── markdown.ts       # Markdown and extracted-text processing
 │   └── metadata-parser.ts # Metadata extraction
 │
 ├── embeddings/
@@ -131,8 +130,7 @@ The main MCP server class handling:
 ### `src/processor/` - Content Processing
 
 - **`processor.ts`**: `WebDocumentProcessor` - converts `CrawlResult` to `ProcessedDocument`
-- **`content.ts`**: HTML parsing with Cheerio, content extraction
-- **`markdown.ts`**: Markdown-to-structured-content conversion
+- **`markdown.ts`**: Markdown and extracted-text conversion
 
 ### `src/storage/` - Data Persistence
 
@@ -413,28 +411,23 @@ npm run prettier # Format with Prettier
 
 ```typescript
 // my-extractor.ts
-import type { ContentExtractor, ExtractionResult } from './content-extractor-types.js';
+import type { ContentExtractor, ExtractedContent } from './content-extractor-types.js';
 
-export const MyExtractor: ContentExtractor = {
-  name: 'MyExtractor',
-
-  detect(url: string, $: cheerio.CheerioAPI): boolean {
-    // Return true if this extractor should handle the page
-    return url.includes('my-site.com');
-  },
-
-  async extract(url: string, $: cheerio.CheerioAPI): Promise<ExtractionResult> {
-    // Extract and return formatted content
+export class MyExtractor implements ContentExtractor {
+  async extractContent(document: Document): Promise<ExtractedContent> {
     return {
-      title: 'Page Title',
-      content: 'Extracted markdown content',
+      content: document.querySelector('main')?.textContent?.trim() ?? '',
+      contentFormat: 'text',
+      metadata: { type: 'overview' },
     };
-  },
-};
+  }
+}
 ```
 
-2. Register in `src/crawler/content-extractors.ts`
-3. Add to `FORMATTED_CONTENT_EXTRACTORS` in `src/processor/processor.ts`
+`contentFormat` must match the returned content: use `text` for extracted text or `markdown` for Markdown.
+
+2. Register it in `src/crawler/content-extractors.ts`
+3. Add its detection rule to `src/crawler/site-rules.ts` before the default rule
 4. Write tests in `src/crawler/my-extractor.test.ts`
 
 ### Adding a New Tool
@@ -515,7 +508,8 @@ private static readonly MIGRATIONS: Array<{
 interface CrawlResult {
   url: string;
   path: string;
-  content: string; // HTML or markdown content
+  content: string; // Markdown or extracted text
+  contentFormat: 'markdown' | 'text';
   title: string;
   extractorUsed?: string;
 }

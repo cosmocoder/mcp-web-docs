@@ -2,13 +2,16 @@ import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import * as lancedb from '@lancedb/lancedb';
 import { PhraseQuery, MatchQuery, BooleanQuery, Occur } from '@lancedb/lancedb';
-import { Field, FixedSizeList, Float32, Schema, Utf8, Int32 } from 'apache-arrow';
+import { Bool, Field, FixedSizeList, Float32, Schema, Utf8, Int32 } from 'apache-arrow';
 import QuickLRU from 'quick-lru';
+import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { mkdir } from 'fs/promises';
 import { dirname } from 'path';
 import {
   Collection,
   CollectionWithDocuments,
+  AddDocumentOptions,
   DocumentMetadata,
   ProcessedDocument,
   SearchResult,
@@ -23,6 +26,8 @@ type LanceDBConnection = Awaited<ReturnType<typeof lancedb.connect>>;
 type LanceDBTable = Awaited<ReturnType<LanceDBConnection['openTable']>>;
 
 type LanceDbRow = {
+  generation: string;
+  published: boolean;
   url: string;
   title: string;
   content: string;
@@ -39,6 +44,22 @@ type LanceDbRow = {
   codeBlocks: string;
   props: string;
 };
+
+type ReplacementJournalRow = {
+  url: string;
+  generation: string;
+  state: 'prepared' | 'published' | 'deleting';
+  owner_id: string;
+  lease_expires_at: number;
+  cleanup_generations: string;
+};
+
+const SEARCH_VISIBILITY_RETRY_WINDOW_MS = 2_000;
+const SEARCH_VISIBILITY_RETRY_MAX_BACKOFF_MS = 25;
+// Long enough for normal Lance writes; renewed while staging is in flight.
+const REPLACEMENT_LEASE_MS = 30_000;
+const REPLACEMENT_HEARTBEAT_MS = 10_000;
+const REPLACEMENT_LEASE_POLL_MS = 25;
 
 /**
  * Query preprocessing result for improved search
@@ -82,11 +103,8 @@ function buildExactUrlCondition(urls: string[]): string {
   return `url IN (${urls.map((url) => `'${escapeFilterValue(url)}'`).join(', ')})`;
 }
 
-function buildSearchWhereClause(
-  options: Pick<SearchOptions, 'filterByType' | 'filterUrl' | 'filterUrls'>,
-  tagFilteredUrls?: string[]
-): string | undefined {
-  const conditions: string[] = [];
+function buildSearchWhereClause(visibilityFilter: string, options: SearchOptions, tagFilteredUrls?: string[]): string {
+  const conditions: string[] = [`(${visibilityFilter})`];
 
   if (options.filterByType) {
     conditions.push(`type = '${escapeFilterValue(options.filterByType)}'`);
@@ -102,15 +120,19 @@ function buildSearchWhereClause(
     conditions.push(buildExactUrlCondition(tagFilteredUrls));
   }
 
-  return conditions.length > 0 ? conditions.join(' AND ') : undefined;
+  return conditions.join(' AND ');
 }
 
 export class DocumentStore implements StorageProvider {
   private sqliteDb?: Database;
+  private sqliteReadDb?: Database;
+  private sqliteLeaseDb?: Database;
   private lanceConn?: LanceDBConnection;
   private lanceTable?: LanceDBTable;
   private readonly searchCache: QuickLRU<string, SearchResult[]>;
   private ftsIndexCreated = false;
+  // ponytail: one per-store FIFO; split only if mutation throughput becomes a measured bottleneck.
+  private mutationTail: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly dbPath: string,
@@ -124,6 +146,34 @@ export class DocumentStore implements StorageProvider {
       maxCacheSize,
     });
     this.searchCache = new QuickLRU({ maxSize: maxCacheSize });
+  }
+
+  private runMutation<T>(mutation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (signal?.aborted) {
+      return Promise.reject(signal.reason);
+    }
+
+    let onAbort: (() => void) | undefined;
+    const result = this.mutationTail.then(() => {
+      if (onAbort) {
+        signal?.removeEventListener('abort', onAbort);
+      }
+      signal?.throwIfAborted();
+      return mutation();
+    });
+    this.mutationTail = result.then(
+      () => undefined,
+      () => undefined
+    );
+    if (!signal) {
+      return result;
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener('abort', onAbort, { once: true });
+      result.then(resolve, reject);
+    });
   }
 
   async initialize(): Promise<void> {
@@ -177,6 +227,22 @@ export class DocumentStore implements StorageProvider {
       // Run database migrations
       await this.runMigrations();
 
+      // Reads use a separate connection so they never observe this instance's
+      // uncommitted publication transaction.
+      this.sqliteReadDb = await open({
+        filename: this.dbPath,
+        driver: sqlite3.Database,
+      });
+      await this.sqliteReadDb.exec('PRAGMA busy_timeout = 5000;');
+
+      // Lease renewal uses its own writer so slow Lance staging cannot block
+      // heartbeats behind this instance's publication connection.
+      this.sqliteLeaseDb = await open({
+        filename: this.dbPath,
+        driver: sqlite3.Database,
+      });
+      await this.sqliteLeaseDb.exec('PRAGMA busy_timeout = 5000;');
+
       // Initialize LanceDB with error handling
       try {
         logger.debug(`[DocumentStore] Connecting to LanceDB at ${this.vectorDbPath}`);
@@ -194,6 +260,8 @@ export class DocumentStore implements StorageProvider {
           const vectorType = new FixedSizeList(this.embeddings.dimensions, new Field('item', new Float32(), true));
 
           const schema = new Schema([
+            new Field('generation', new Utf8(), false),
+            new Field('published', new Bool(), false),
             new Field('url', new Utf8(), false),
             new Field('title', new Utf8(), false),
             new Field('content', new Utf8(), false),
@@ -214,17 +282,19 @@ export class DocumentStore implements StorageProvider {
           // Create empty table with schema
           this.lanceTable = await this.lanceConn.createEmptyTable('chunks', schema, { mode: 'create' });
           logger.debug(`[DocumentStore] New chunks table created successfully`);
-
-          // Create FTS index for better text search
-          await this.createFTSIndex();
         }
         else {
           logger.debug(`[DocumentStore] Using existing chunks table`);
           this.lanceTable = await this.lanceConn.openTable('chunks');
 
-          // Try to create FTS index if it doesn't exist
-          await this.createFTSIndex();
+          // Tables created before replacement journaling need a generation marker.
+          await this.ensureLanceColumn('generation', "'legacy'");
+          await this.ensureLanceColumn('published', 'true');
         }
+
+        await this.recoverDocumentReplacements();
+        await this.reapOrphanedUnpublishedGenerations();
+        await this.createFTSIndex();
 
         // Verify table is accessible
         const rowCount = await this.lanceTable.countRows();
@@ -239,7 +309,64 @@ export class DocumentStore implements StorageProvider {
     }
     catch (error) {
       logger.error('[DocumentStore] Error initializing storage:', error);
+      try {
+        await this.close();
+      }
+      catch (cleanupError) {
+        logger.warn('[DocumentStore] Storage cleanup after initialization failure was incomplete:', cleanupError);
+      }
       throw error;
+    }
+  }
+
+  async close(): Promise<void> {
+    const errors: unknown[] = [];
+    const closeResource = async (
+      name: string,
+      resource: { close(): void | Promise<void> } | undefined,
+      clear: () => void
+    ): Promise<void> => {
+      if (!resource) {
+        return;
+      }
+      try {
+        await resource.close();
+        clear();
+      }
+      catch (error) {
+        errors.push(error);
+        logger.warn(`[DocumentStore] Failed to close ${name}:`, error);
+      }
+    };
+
+    await closeResource('LanceDB table', this.lanceTable, () => (this.lanceTable = undefined));
+    await closeResource('LanceDB connection', this.lanceConn, () => (this.lanceConn = undefined));
+    await closeResource('SQLite reader', this.sqliteReadDb, () => (this.sqliteReadDb = undefined));
+    await closeResource('SQLite lease writer', this.sqliteLeaseDb, () => (this.sqliteLeaseDb = undefined));
+    await closeResource('SQLite writer', this.sqliteDb, () => (this.sqliteDb = undefined));
+
+    if (errors.length > 0) {
+      throw new AggregateError(errors, 'Failed to close one or more storage resources');
+    }
+  }
+
+  private async ensureLanceColumn(name: string, valueSql: string): Promise<void> {
+    if (!this.lanceTable) {
+      throw new Error('Storage not initialized');
+    }
+    const schema = await this.lanceTable.schema();
+    if (schema.fields.some((field) => field.name === name)) {
+      return;
+    }
+    try {
+      await this.lanceTable.addColumns([{ name, valueSql }]);
+    }
+    catch (error) {
+      await this.lanceTable.checkoutLatest();
+      const refreshedSchema = await this.lanceTable.schema();
+      if (!refreshedSchema.fields.some((field) => field.name === name)) {
+        throw error;
+      }
     }
   }
 
@@ -309,6 +436,27 @@ export class DocumentStore implements StorageProvider {
         CREATE INDEX IF NOT EXISTS idx_collection_documents_url ON collection_documents(url);
       `,
     },
+    {
+      version: 5,
+      description: 'Add document replacement journal',
+      sql: `
+        CREATE TABLE IF NOT EXISTS document_replacements (
+          url TEXT PRIMARY KEY,
+          generation TEXT NOT NULL,
+          state TEXT NOT NULL CHECK (state IN ('prepared', 'published', 'deleting')),
+          owner_id TEXT NOT NULL,
+          lease_expires_at INTEGER NOT NULL,
+          cleanup_generations TEXT NOT NULL
+        );
+      `,
+    },
+    {
+      version: 6,
+      description: 'Persist crawl path prefix',
+      sql: `
+        ALTER TABLE documents ADD COLUMN path_prefix TEXT;
+      `,
+    },
   ];
 
   /**
@@ -368,7 +516,7 @@ export class DocumentStore implements StorageProvider {
         }
 
         // Record successful migration
-        await this.sqliteDb.run('INSERT INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)', [
+        await this.sqliteDb.run('INSERT OR IGNORE INTO schema_migrations (version, applied_at, description) VALUES (?, ?, ?)', [
           migration.version,
           new Date().toISOString(),
           migration.description,
@@ -383,104 +531,462 @@ export class DocumentStore implements StorageProvider {
     }
   }
 
-  async addDocument(doc: ProcessedDocument): Promise<void> {
+  /**
+   * Stage a complete generation in LanceDB, then publish it through SQLite.
+   * Search only reads the published generation, so failed staging never leaks.
+   */
+  addDocument(doc: ProcessedDocument, options: AddDocumentOptions = {}): Promise<void> {
+    return this.runMutation(() => this.addDocumentUnlocked(doc, options), options.signal);
+  }
+
+  private async addDocumentUnlocked(doc: ProcessedDocument, options: AddDocumentOptions): Promise<void> {
+    const { signal, tags } = options;
     logger.debug(`[DocumentStore] Starting addDocument for:`, {
       url: doc.metadata.url,
       title: doc.metadata.title,
       chunks: doc.chunks.length,
     });
 
-    // Add diagnostic logging for vector dimensions
     if (doc.chunks.length > 0) {
       logger.debug(`[DocumentStore] Sample vector dimensions: ${doc.chunks[0].vector.length}`);
       logger.debug(`[DocumentStore] Sample vector first 5 values: ${doc.chunks[0].vector.slice(0, 5)}`);
     }
 
-    // Validate storage initialization
-    if (!this.sqliteDb) {
-      logger.debug('[DocumentStore] SQLite not initialized during addDocument');
-      throw new Error('SQLite storage not initialized');
+    const sqliteDb = this.sqliteDb;
+    const sqliteReadDb = this.sqliteReadDb;
+    if (!sqliteDb || !sqliteReadDb || !this.sqliteLeaseDb || !this.lanceTable) {
+      throw new Error('Storage not initialized');
     }
-    if (!this.lanceTable) {
-      logger.debug('[DocumentStore] LanceDB not initialized during addDocument');
-      throw new Error('LanceDB storage not initialized');
-    }
+
+    const url = doc.metadata.url;
+    const generation = randomUUID();
+    const ownerId = randomUUID();
+    const newRows = this.toLanceRows(doc, generation);
+    const lease = await this.acquireReplacementLease(url, generation, ownerId, signal);
+    let stopHeartbeat: () => Promise<void> = () => Promise.resolve();
+    let transactionStarted = false;
 
     try {
-      // Check if document already exists
-      const existing = await this.getDocument(doc.metadata.url);
-      if (existing) {
-        logger.debug(`[DocumentStore] Existing document found, will update:`, existing);
+      const preparedJournal = await this.captureCleanupGenerations(lease);
+      stopHeartbeat = this.startReplacementHeartbeat(preparedJournal);
+      // The committed journal advances reader data_version before staged rows
+      // can become queryable.
+      signal?.throwIfAborted();
+      if (newRows.length > 0) {
+        await this.lanceTable.add(newRows);
       }
+      await this.renewReplacementLease(preparedJournal);
+      await this.lanceTable.update({
+        where: `url = '${escapeFilterValue(url)}' AND generation = '${escapeFilterValue(generation)}'`,
+        values: { published: true },
+      });
+      await stopHeartbeat();
+      await this.renewReplacementLease(preparedJournal);
 
-      logger.debug(`[DocumentStore] Starting SQLite transaction`);
-      await this.sqliteDb.run('BEGIN TRANSACTION');
-
-      // Add metadata to SQLite
-      await this.sqliteDb.run(
-        'INSERT OR REPLACE INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [
-          doc.metadata.url,
-          doc.metadata.title,
-          doc.metadata.favicon,
-          doc.metadata.lastIndexed.toISOString(),
-          doc.metadata.requiresAuth ? 1 : 0,
-          doc.metadata.authDomain || null,
-          doc.metadata.version || null,
-        ]
+      await sqliteDb.run('BEGIN TRANSACTION');
+      transactionStarted = true;
+      signal?.throwIfAborted();
+      await this.upsertMetadata(doc.metadata);
+      if (tags !== undefined) {
+        await this.replaceDocumentTags(url, tags);
+      }
+      signal?.throwIfAborted();
+      const publicationLeaseExpiresAt = Date.now() + REPLACEMENT_LEASE_MS;
+      const publication = await sqliteDb.run(
+        `UPDATE document_replacements
+         SET state = 'published', lease_expires_at = ?
+         WHERE url = ? AND generation = ? AND owner_id = ? AND state = 'prepared'`,
+        [publicationLeaseExpiresAt, url, generation, ownerId]
       );
-      logger.debug(
-        `[DocumentStore] Added metadata to SQLite (requiresAuth: ${doc.metadata.requiresAuth}, authDomain: ${doc.metadata.authDomain}, version: ${doc.metadata.version})`
-      );
+      if (publication.changes !== 1) {
+        throw new Error(`Replacement lease lost for ${url}`);
+      }
+      signal?.throwIfAborted();
+      await sqliteDb.run('COMMIT');
+      transactionStarted = false;
 
-      // Delete existing chunks for this document (using escaped value to prevent injection)
-      await this.lanceTable.delete(`url = '${escapeFilterValue(doc.metadata.url)}'`);
-      logger.debug(`[DocumentStore] Deleted existing chunks`);
-
-      // Add new chunks to LanceDB
-      const rows = doc.chunks.map((chunk) => ({
-        url: doc.metadata.url,
-        title: doc.metadata.title,
-        content: chunk.content,
-        path: chunk.path,
-        startLine: chunk.startLine,
-        endLine: chunk.endLine,
-        vector: chunk.vector,
-        type: chunk.metadata.type,
-        lastUpdated: new Date().toISOString(),
-        version: '',
-        framework: '',
-        language: '',
-        // Serialize code blocks and props as JSON strings
-        codeBlocks: JSON.stringify(chunk.metadata.codeBlocks || []),
-        props: JSON.stringify(chunk.metadata.props || []),
-      })) as LanceDbRow[];
-
-      logger.debug(`[DocumentStore] Adding ${rows.length} chunks to LanceDB`);
-      await this.lanceTable.add(rows);
-
-      // Verify data was added
-      const rowCount = await this.lanceTable.countRows();
-      logger.debug(`[DocumentStore] Table now contains ${rowCount} rows`);
-
-      // Commit transaction
-      await this.sqliteDb.run('COMMIT');
-      logger.debug(`[DocumentStore] Committed transaction`);
-
-      // Clear search cache for this URL
-      this.clearCacheForUrl(doc.metadata.url);
+      await this.finishDocumentReplacementBestEffort({
+        ...preparedJournal,
+        state: 'published',
+        lease_expires_at: publicationLeaseExpiresAt,
+      });
     }
     catch (error) {
-      // Rollback on error
-      if (this.sqliteDb) {
-        await this.sqliteDb.run('ROLLBACK');
+      await stopHeartbeat().catch((heartbeatError: unknown) => {
+        logger.warn(`[DocumentStore] Replacement heartbeat stopped with an error for ${url}:`, heartbeatError);
+      });
+      if (transactionStarted) {
+        try {
+          await sqliteDb.run('ROLLBACK');
+        }
+        catch {
+          // The transaction may already have been rolled back by SQLite.
+        }
       }
+
+      let durableJournal: ReplacementJournalRow | undefined;
+      try {
+        durableJournal = await sqliteReadDb.get<ReplacementJournalRow>(
+          'SELECT * FROM document_replacements WHERE url = ? AND generation = ? AND owner_id = ?',
+          [url, generation, ownerId]
+        );
+      }
+      catch (journalError) {
+        logger.error(`[DocumentStore] Could not determine durable replacement state for ${url}:`, journalError);
+        throw error;
+      }
+
+      if (durableJournal) {
+        await this.finishDocumentReplacementBestEffort(durableJournal);
+      }
+      else {
+        await this.deleteUnpublishedGenerationBestEffort(url, generation);
+      }
+
       logger.error('[DocumentStore] Error adding document:', error);
       throw error;
     }
   }
 
+  private async acquireReplacementLease(
+    url: string,
+    generation: string,
+    ownerId: string,
+    signal?: AbortSignal
+  ): Promise<ReplacementJournalRow> {
+    if (!this.sqliteLeaseDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    while (true) {
+      signal?.throwIfAborted();
+      const now = Date.now();
+      const leaseExpiresAt = now + REPLACEMENT_LEASE_MS;
+      const insertion = await this.sqliteLeaseDb.run(
+        `INSERT OR IGNORE INTO document_replacements
+           (url, generation, state, owner_id, lease_expires_at, cleanup_generations)
+         VALUES (?, ?, 'prepared', ?, ?, '[]')`,
+        [url, generation, ownerId, leaseExpiresAt]
+      );
+      if (insertion.changes === 1) {
+        return { url, generation, state: 'prepared', owner_id: ownerId, lease_expires_at: leaseExpiresAt, cleanup_generations: '[]' };
+      }
+
+      const existing = await this.sqliteLeaseDb.get<ReplacementJournalRow>('SELECT * FROM document_replacements WHERE url = ?', [url]);
+      if (!existing) {
+        continue;
+      }
+
+      if (existing.lease_expires_at <= now) {
+        const claim = await this.sqliteLeaseDb.run(
+          `UPDATE document_replacements
+           SET owner_id = ?, lease_expires_at = ?
+           WHERE url = ? AND generation = ? AND owner_id = ? AND state = ? AND lease_expires_at <= ?`,
+          [ownerId, leaseExpiresAt, url, existing.generation, existing.owner_id, existing.state, now]
+        );
+        if (claim.changes === 1) {
+          await this.finishDocumentReplacement({ ...existing, owner_id: ownerId, lease_expires_at: leaseExpiresAt });
+        }
+        continue;
+      }
+
+      await delay(Math.max(1, Math.min(REPLACEMENT_LEASE_POLL_MS, existing.lease_expires_at - now)), undefined, { signal });
+    }
+  }
+
+  private async captureCleanupGenerations(journal: ReplacementJournalRow): Promise<ReplacementJournalRow> {
+    if (!this.lanceTable || !this.sqliteLeaseDb) {
+      throw new Error('Storage not initialized');
+    }
+    await this.lanceTable.checkoutLatest();
+    const rows = await this.lanceTable
+      .query()
+      .where(`url = '${escapeFilterValue(journal.url)}'`)
+      .select(['generation'])
+      .toArray();
+    const cleanupGenerations = JSON.stringify([...new Set(rows.map((row) => String(row.generation)))].sort());
+    const leaseExpiresAt = Date.now() + REPLACEMENT_LEASE_MS;
+    const update = await this.sqliteLeaseDb.run(
+      `UPDATE document_replacements
+       SET cleanup_generations = ?, lease_expires_at = ?
+       WHERE url = ? AND generation = ? AND owner_id = ? AND state = 'prepared'`,
+      [cleanupGenerations, leaseExpiresAt, journal.url, journal.generation, journal.owner_id]
+    );
+    if (update.changes !== 1) {
+      throw new Error(`Replacement lease lost for ${journal.url}`);
+    }
+    return { ...journal, cleanup_generations: cleanupGenerations, lease_expires_at: leaseExpiresAt };
+  }
+
+  private startReplacementHeartbeat(journal: ReplacementJournalRow): () => Promise<void> {
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let renewal = Promise.resolve();
+    let renewalError: unknown;
+
+    const schedule = (): void => {
+      timer = setTimeout(() => {
+        renewal = this.renewReplacementLease(journal)
+          .catch((error: unknown) => {
+            renewalError = error;
+          })
+          .finally(() => {
+            if (!stopped && !renewalError) {
+              schedule();
+            }
+          });
+      }, REPLACEMENT_HEARTBEAT_MS);
+      timer.unref();
+    };
+    schedule();
+
+    return async (): Promise<void> => {
+      stopped = true;
+      if (timer) {
+        clearTimeout(timer);
+      }
+      await renewal;
+      if (renewalError) {
+        throw renewalError;
+      }
+    };
+  }
+
+  private async renewReplacementLease(journal: ReplacementJournalRow): Promise<void> {
+    if (!this.sqliteLeaseDb) {
+      throw new Error('Storage not initialized');
+    }
+    const renewal = await this.sqliteLeaseDb.run(
+      `UPDATE document_replacements
+       SET lease_expires_at = ?
+       WHERE url = ? AND generation = ? AND owner_id = ? AND state = ?`,
+      [Date.now() + REPLACEMENT_LEASE_MS, journal.url, journal.generation, journal.owner_id, journal.state]
+    );
+    if (renewal.changes !== 1) {
+      throw new Error(`Replacement lease lost for ${journal.url}`);
+    }
+  }
+
+  private toLanceRows(doc: ProcessedDocument, generation: string): LanceDbRow[] {
+    const lastUpdated = new Date().toISOString();
+    return doc.chunks.map((chunk) => ({
+      generation,
+      published: false,
+      url: doc.metadata.url,
+      title: doc.metadata.title,
+      content: chunk.content,
+      path: chunk.path,
+      startLine: chunk.startLine,
+      endLine: chunk.endLine,
+      vector: chunk.vector,
+      type: chunk.metadata.type,
+      lastUpdated,
+      version: chunk.metadata.version ?? '',
+      framework: chunk.metadata.framework ?? '',
+      language: chunk.metadata.language ?? '',
+      codeBlocks: JSON.stringify(chunk.metadata.codeBlocks || []),
+      props: JSON.stringify(chunk.metadata.props || []),
+    }));
+  }
+
+  private async upsertMetadata(metadata: ProcessedDocument['metadata']): Promise<void> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    await this.sqliteDb.run(
+      `INSERT INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(url) DO UPDATE SET
+         title = excluded.title,
+         favicon = excluded.favicon,
+         last_indexed = excluded.last_indexed,
+         requires_auth = excluded.requires_auth,
+         auth_domain = excluded.auth_domain,
+         version = excluded.version,
+         path_prefix = excluded.path_prefix`,
+      [
+        metadata.url,
+        metadata.title,
+        metadata.favicon ?? null,
+        metadata.lastIndexed.toISOString(),
+        metadata.requiresAuth ? 1 : 0,
+        metadata.authDomain ?? null,
+        metadata.version ?? null,
+        metadata.pathPrefix ?? null,
+      ]
+    );
+  }
+
+  private async recoverDocumentReplacements(): Promise<void> {
+    if (!this.sqliteReadDb || !this.sqliteLeaseDb || !this.lanceTable) {
+      return;
+    }
+
+    const now = Date.now();
+    const journals = await this.sqliteReadDb.all<ReplacementJournalRow[]>(
+      'SELECT * FROM document_replacements WHERE lease_expires_at <= ?',
+      [now]
+    );
+    for (const journal of journals) {
+      const ownerId = randomUUID();
+      const leaseExpiresAt = Date.now() + REPLACEMENT_LEASE_MS;
+      const claim = await this.sqliteLeaseDb.run(
+        `UPDATE document_replacements
+         SET owner_id = ?, lease_expires_at = ?
+         WHERE url = ? AND generation = ? AND owner_id = ? AND state = ? AND lease_expires_at <= ?`,
+        [ownerId, leaseExpiresAt, journal.url, journal.generation, journal.owner_id, journal.state, Date.now()]
+      );
+      if (claim.changes === 1) {
+        await this.finishDocumentReplacement({ ...journal, owner_id: ownerId, lease_expires_at: leaseExpiresAt });
+        logger.info(`[DocumentStore] Recovered ${journal.state} replacement for ${journal.url}`);
+      }
+    }
+  }
+
+  private async reapOrphanedUnpublishedGenerations(): Promise<void> {
+    if (!this.sqliteReadDb || !this.lanceTable) {
+      return;
+    }
+
+    try {
+      await this.lanceTable.checkoutLatest();
+      const rows = await this.lanceTable.query().where('published = false').select(['generation']).toArray();
+      const orphaned = new Set(rows.map((row) => String(row.generation)));
+      if (orphaned.size === 0) {
+        return;
+      }
+
+      const journals = await this.sqliteReadDb.all<Array<{ generation: string }>>('SELECT generation FROM document_replacements');
+      for (const { generation } of journals) {
+        orphaned.delete(generation);
+      }
+      if (orphaned.size > 0) {
+        const generations = [...orphaned].map((generation) => `'${escapeFilterValue(generation)}'`).join(', ');
+        await this.lanceTable.delete(`published = false AND generation IN (${generations})`);
+      }
+    }
+    catch (error) {
+      logger.warn('[DocumentStore] Orphaned unpublished generation cleanup deferred:', error);
+    }
+  }
+
+  private async finishDocumentReplacement(journal: ReplacementJournalRow): Promise<void> {
+    if (!this.sqliteLeaseDb || !this.lanceTable) {
+      throw new Error('Storage not initialized');
+    }
+
+    await this.renewReplacementLease(journal);
+
+    const url = escapeFilterValue(journal.url);
+    const cleanupGenerations =
+      journal.state === 'prepared' ? [journal.generation] : this.parseCleanupGenerations(journal.cleanup_generations);
+    for (const generation of cleanupGenerations) {
+      await this.lanceTable.delete(`url = '${url}' AND generation = '${escapeFilterValue(generation)}'`);
+    }
+    const deletion = await this.sqliteLeaseDb.run(
+      'DELETE FROM document_replacements WHERE url = ? AND generation = ? AND owner_id = ? AND state = ?',
+      [journal.url, journal.generation, journal.owner_id, journal.state]
+    );
+    if (deletion.changes !== 1) {
+      throw new Error(`Replacement lease lost for ${journal.url}`);
+    }
+  }
+
+  private parseCleanupGenerations(value: string): string[] {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed) || !parsed.every((generation) => typeof generation === 'string')) {
+      throw new Error('Invalid replacement cleanup generations');
+    }
+    return [...new Set(parsed)];
+  }
+
+  private async deleteUnpublishedGenerationBestEffort(url: string, generation: string): Promise<void> {
+    try {
+      await this.lanceTable?.delete(
+        `url = '${escapeFilterValue(url)}' AND generation = '${escapeFilterValue(generation)}' AND published = false`
+      );
+    }
+    catch (error) {
+      logger.warn(`[DocumentStore] Stale replacement generation cleanup deferred for ${url}:`, error);
+    }
+  }
+
+  private async finishDocumentReplacementBestEffort(journal: ReplacementJournalRow): Promise<void> {
+    try {
+      await this.finishDocumentReplacement(journal);
+    }
+    catch (error) {
+      logger.warn(`[DocumentStore] ${journal.state} replacement cleanup deferred for ${journal.url}:`, error);
+    }
+  }
+
+  private async getJournalVisibilityFilter(): Promise<string> {
+    if (!this.sqliteReadDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const journals = await this.sqliteReadDb.all<ReplacementJournalRow[]>('SELECT * FROM document_replacements');
+    const journalFilters = journals
+      .map(({ url, generation, state }) => {
+        const escapedUrl = escapeFilterValue(url);
+        const escapedGeneration = escapeFilterValue(generation);
+        if (state === 'prepared') {
+          return `(url != '${escapedUrl}' OR generation != '${escapedGeneration}')`;
+        }
+        if (state === 'published') {
+          return `(url != '${escapedUrl}' OR generation = '${escapedGeneration}')`;
+        }
+        return `url != '${escapedUrl}'`;
+      })
+      .join(' AND ');
+    return journalFilters ? `published = true AND ${journalFilters}` : 'published = true';
+  }
+
+  private async withStableSearch<T>(operation: (dataVersion: number) => Promise<T>): Promise<{ result: T; dataVersion: number }> {
+    let deadline: number | undefined;
+    let backoffMs = 1;
+
+    while (true) {
+      const dataVersion = await this.getDataVersion();
+      if (!this.lanceTable) {
+        throw new Error('Storage not initialized');
+      }
+      // Other DocumentStore instances hold their own Lance table handle; refresh
+      // it to the latest committed table version before evaluating this snapshot.
+      await this.lanceTable.checkoutLatest();
+      const result = await operation(dataVersion);
+      if (dataVersion === (await this.getDataVersion())) {
+        return { result, dataVersion };
+      }
+      deadline ??= Date.now() + SEARCH_VISIBILITY_RETRY_WINDOW_MS;
+      if (Date.now() >= deadline) {
+        throw new Error('Search visibility kept changing; please retry');
+      }
+      await delay(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, SEARCH_VISIBILITY_RETRY_MAX_BACKOFF_MS);
+    }
+  }
+
+  private async getDataVersion(): Promise<number> {
+    if (!this.sqliteReadDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    // PRAGMA data_version is connection-relative: comparing successive reads
+    // on this reader detects commits from this instance's writer and other processes.
+    const row = await this.sqliteReadDb.get<{ data_version: number }>('PRAGMA data_version');
+    if (!row) {
+      throw new Error('Could not read SQLite data version');
+    }
+    return row.data_version;
+  }
+
   async searchDocuments(queryVector: number[], options: SearchOptions = {}): Promise<SearchResult[]> {
+    return (await this.withStableSearch(() => this.searchDocumentsOnce(queryVector, options))).result;
+  }
+
+  private async searchDocumentsOnce(queryVector: number[], options: SearchOptions): Promise<SearchResult[]> {
     if (!this.lanceTable) {
       throw new Error('Storage not initialized');
     }
@@ -555,13 +1061,9 @@ export class DocumentStore implements StorageProvider {
         logger.debug(`[DocumentStore] Tag filter matched ${tagFilteredUrls.length} documents for vector search`);
       }
 
-      // Create search query
-      let query = this.lanceTable.search(queryVector).limit(limit);
-
-      const whereClause = buildSearchWhereClause(options, tagFilteredUrls);
-      if (whereClause) {
-        query = query.where(whereClause);
-      }
+      const visibilityFilter = await this.getJournalVisibilityFilter();
+      const whereClause = buildSearchWhereClause(visibilityFilter, options, tagFilteredUrls);
+      const query = this.lanceTable.search(queryVector).where(whereClause).limit(limit);
 
       const results = await query.toArray();
 
@@ -664,9 +1166,19 @@ export class DocumentStore implements StorageProvider {
   }
 
   async searchByText(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
+    const { result, dataVersion } = await this.withStableSearch((version) => this.searchByTextOnce(query, options, version));
+    this.searchCache.set(this.textSearchCacheKey(query, options, dataVersion), result);
+    return result;
+  }
+
+  private textSearchCacheKey(query: string, options: SearchOptions, dataVersion: number): string {
+    return `text:${dataVersion}:${query}:${JSON.stringify(options)}`;
+  }
+
+  private async searchByTextOnce(query: string, options: SearchOptions, dataVersion: number): Promise<SearchResult[]> {
     logger.debug(`[DocumentStore] Searching documents by text:`, { query, options });
 
-    const cacheKey = `text:${query}:${JSON.stringify(options)}`;
+    const cacheKey = this.textSearchCacheKey(query, options, dataVersion);
     const cached = this.searchCache.get(cacheKey);
     if (cached) {
       logger.debug(`[DocumentStore] Returning cached results`);
@@ -676,9 +1188,7 @@ export class DocumentStore implements StorageProvider {
     const { limit = 10, filterUrls, filterByTags } = options;
 
     if (filterUrls?.length === 0) {
-      const emptyResults: SearchResult[] = [];
-      this.searchCache.set(cacheKey, emptyResults);
-      return emptyResults;
+      return [];
     }
 
     // If filtering by tags, get the list of URLs that have all those tags
@@ -689,13 +1199,13 @@ export class DocumentStore implements StorageProvider {
         // No documents match the tag filter, cache and return empty results
         logger.debug(`[DocumentStore] No documents match tag filter:`, filterByTags);
         const emptyResults: SearchResult[] = [];
-        this.searchCache.set(cacheKey, emptyResults);
         return emptyResults;
       }
       logger.debug(`[DocumentStore] Tag filter matched ${tagFilteredUrls.length} documents`);
     }
 
-    const whereClause = buildSearchWhereClause(options, tagFilteredUrls);
+    const visibilityFilter = await this.getJournalVisibilityFilter();
+    const whereClause = buildSearchWhereClause(visibilityFilter, options, tagFilteredUrls);
 
     try {
       if (!this.lanceTable) {
@@ -730,30 +1240,26 @@ export class DocumentStore implements StorageProvider {
 
           const boolQuery = new BooleanQuery(queries);
 
-          let ftsQuery = this.lanceTable
+          const ftsQuery = this.lanceTable
             .query()
             .fullTextSearch(boolQuery)
+            .where(whereClause)
             .limit(limit * 2);
-
-          if (whereClause) {
-            ftsQuery = ftsQuery.where(whereClause);
-          }
 
           const ftsResults = await ftsQuery.toArray();
           logger.debug(`[DocumentStore] Phrase-based FTS returned ${ftsResults.length} results`);
 
           if (ftsResults.length > 0) {
             // Combine with vector search for semantic relevance
-            let vectorQuery = this.lanceTable.search(queryVector).limit(limit * 2);
-            if (whereClause) {
-              vectorQuery = vectorQuery.where(whereClause);
-            }
+            const vectorQuery = this.lanceTable
+              .search(queryVector)
+              .where(whereClause)
+              .limit(limit * 2);
             const vectorResults = await vectorQuery.toArray();
 
             const mergedResults = this.mergeAndRankResults(ftsResults, vectorResults, limit);
             const searchResults = this.formatSearchResults(mergedResults);
 
-            this.searchCache.set(cacheKey, searchResults);
             return searchResults;
           }
         }
@@ -770,23 +1276,20 @@ export class DocumentStore implements StorageProvider {
           // Add fuzziness for typo tolerance
           const matchQuery = new MatchQuery(processedQuery.cleanedQuery, 'content', { fuzziness: 1 });
 
-          let ftsQuery = this.lanceTable
+          const ftsQuery = this.lanceTable
             .query()
             .fullTextSearch(matchQuery)
+            .where(whereClause)
             .limit(limit * 2);
-
-          if (whereClause) {
-            ftsQuery = ftsQuery.where(whereClause);
-          }
 
           const ftsResults = await ftsQuery.toArray();
           logger.debug(`[DocumentStore] FTS returned ${ftsResults.length} results`);
 
           // Always combine with vector search for best results
-          let vectorQuery = this.lanceTable.search(queryVector).limit(limit * 2);
-          if (whereClause) {
-            vectorQuery = vectorQuery.where(whereClause);
-          }
+          const vectorQuery = this.lanceTable
+            .search(queryVector)
+            .where(whereClause)
+            .limit(limit * 2);
           const vectorResults = await vectorQuery.toArray();
           logger.debug(`[DocumentStore] Vector search returned ${vectorResults.length} results`);
 
@@ -794,7 +1297,6 @@ export class DocumentStore implements StorageProvider {
           const mergedResults = this.mergeAndRankResults(ftsResults, vectorResults, limit);
           if (mergedResults.length > 0) {
             const searchResults = this.formatSearchResults(mergedResults);
-            this.searchCache.set(cacheKey, searchResults);
             return searchResults;
           }
         }
@@ -806,9 +1308,7 @@ export class DocumentStore implements StorageProvider {
 
       // Strategy 3: Fallback to pure vector search (semantic similarity)
       logger.debug('[DocumentStore] Falling back to pure vector search');
-      const results = await this.searchDocuments(queryVector, options);
-      this.searchCache.set(cacheKey, results);
-      return results;
+      return this.searchDocumentsOnce(queryVector, options);
     }
     catch (error) {
       logger.error('[DocumentStore] Error searching documents by text:', error);
@@ -896,14 +1396,14 @@ export class DocumentStore implements StorageProvider {
   }
 
   async listDocuments(): Promise<DocumentMetadata[]> {
-    if (!this.sqliteDb) {
+    if (!this.sqliteReadDb) {
       throw new Error('Storage not initialized');
     }
 
     logger.debug(`[DocumentStore] Listing documents`);
 
     try {
-      const rows = await this.sqliteDb.all<
+      const rows = await this.sqliteReadDb.all<
         Array<{
           url: string;
           title: string;
@@ -912,13 +1412,17 @@ export class DocumentStore implements StorageProvider {
           requires_auth: number | null;
           auth_domain: string | null;
           version: string | null;
+          path_prefix: string | null;
+          tags_json: string;
         }>
-      >('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain, version FROM documents ORDER BY last_indexed DESC');
+      >(
+        `SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version, d.path_prefix,
+                COALESCE((SELECT json_group_array(dt.tag) FROM document_tags dt WHERE dt.url = d.url), '[]') AS tags_json
+         FROM documents d
+         ORDER BY d.last_indexed DESC`
+      );
 
       logger.debug(`[DocumentStore] Found ${rows.length} documents`);
-
-      // Fetch tags for all documents
-      const tagsMap = await this.getAllDocumentTags();
 
       return rows.map((row) => ({
         url: row.url,
@@ -927,8 +1431,9 @@ export class DocumentStore implements StorageProvider {
         lastIndexed: new Date(row.last_indexed),
         requiresAuth: row.requires_auth === 1,
         authDomain: row.auth_domain ?? undefined,
-        tags: tagsMap.get(row.url) || [],
+        tags: this.parseDocumentTags(row.tags_json),
         version: row.version ?? undefined,
+        pathPrefix: row.path_prefix ?? undefined,
       }));
     }
     catch (error) {
@@ -937,50 +1442,73 @@ export class DocumentStore implements StorageProvider {
     }
   }
 
-  /**
-   * Get all tags for all documents as a Map
-   */
-  private async getAllDocumentTags(): Promise<Map<string, string[]>> {
-    if (!this.sqliteDb) {
-      return new Map();
-    }
-
-    const rows = await this.sqliteDb.all<Array<{ url: string; tag: string }>>('SELECT url, tag FROM document_tags ORDER BY url, tag');
-
-    const tagsMap = new Map<string, string[]>();
-    for (const row of rows) {
-      const existing = tagsMap.get(row.url) || [];
-      existing.push(row.tag);
-      tagsMap.set(row.url, existing);
-    }
-
-    return tagsMap;
+  deleteDocument(url: string): Promise<void> {
+    return this.runMutation(() => this.deleteDocumentUnlocked(url));
   }
 
-  async deleteDocument(url: string): Promise<void> {
-    if (!this.sqliteDb || !this.lanceTable) {
+  private async deleteDocumentUnlocked(url: string): Promise<void> {
+    const sqliteDb = this.sqliteDb;
+    const sqliteReadDb = this.sqliteReadDb;
+    if (!sqliteDb || !sqliteReadDb || !this.sqliteLeaseDb || !this.lanceTable) {
       throw new Error('Storage not initialized');
     }
 
     logger.debug(`[DocumentStore] Deleting document: ${url}`);
+    const generation = `delete:${randomUUID()}`;
+    const ownerId = randomUUID();
+    const lease = await this.acquireReplacementLease(url, generation, ownerId);
+    let transactionStarted = false;
 
     try {
-      await this.sqliteDb.run('BEGIN TRANSACTION');
+      const preparedJournal = await this.captureCleanupGenerations(lease);
+      await this.renewReplacementLease(preparedJournal);
+      await sqliteDb.run('BEGIN TRANSACTION');
+      transactionStarted = true;
 
       // Delete tags first (in case foreign key cascade isn't enabled)
-      await this.sqliteDb.run('DELETE FROM document_tags WHERE url = ?', [url]);
-      await this.sqliteDb.run('DELETE FROM documents WHERE url = ?', [url]);
-      await this.lanceTable.delete(`url = '${escapeFilterValue(url)}'`);
+      await sqliteDb.run('DELETE FROM document_tags WHERE url = ?', [url]);
+      await sqliteDb.run('DELETE FROM documents WHERE url = ?', [url]);
+      const leaseExpiresAt = Date.now() + REPLACEMENT_LEASE_MS;
+      const transition = await sqliteDb.run(
+        `UPDATE document_replacements
+         SET state = 'deleting', lease_expires_at = ?
+         WHERE url = ? AND generation = ? AND owner_id = ? AND state = 'prepared'`,
+        [leaseExpiresAt, url, generation, ownerId]
+      );
+      if (transition.changes !== 1) {
+        throw new Error(`Replacement lease lost for ${url}`);
+      }
 
-      await this.sqliteDb.run('COMMIT');
+      await sqliteDb.run('COMMIT');
+      transactionStarted = false;
+      await this.finishDocumentReplacementBestEffort({
+        ...preparedJournal,
+        state: 'deleting',
+        lease_expires_at: leaseExpiresAt,
+      });
 
-      // Clear cache for this URL
       this.clearCacheForUrl(url);
       logger.debug(`[DocumentStore] Document deleted successfully`);
     }
     catch (error) {
-      if (this.sqliteDb) {
-        await this.sqliteDb.run('ROLLBACK');
+      if (transactionStarted) {
+        try {
+          await sqliteDb.run('ROLLBACK');
+        }
+        catch {
+          // The transaction may already have been rolled back by SQLite.
+        }
+      }
+      const durableJournal = await sqliteReadDb.get<ReplacementJournalRow>(
+        'SELECT * FROM document_replacements WHERE url = ? AND generation = ? AND owner_id = ?',
+        [url, generation, ownerId]
+      );
+      if (durableJournal) {
+        await this.finishDocumentReplacementBestEffort(durableJournal);
+        if (durableJournal.state === 'deleting') {
+          this.clearCacheForUrl(url);
+          return;
+        }
       }
       logger.error('[DocumentStore] Error deleting document:', error);
       throw error;
@@ -988,23 +1516,17 @@ export class DocumentStore implements StorageProvider {
   }
 
   async getDocument(url: string): Promise<DocumentMetadata | null> {
-    if (!this.sqliteDb) {
+    if (!this.sqliteReadDb) {
       throw new Error('Storage not initialized');
     }
 
     logger.debug(`[DocumentStore] Getting document: ${url}`);
 
     try {
-      // Check if SQLite is properly initialized
-      if (!this.sqliteDb) {
-        logger.debug('[DocumentStore] SQLite not initialized during getDocument');
-        throw new Error('Storage not initialized');
-      }
-
       // Log the query being executed
       logger.debug(`[DocumentStore] Executing SQLite query for URL: ${url}`);
 
-      const row = await this.sqliteDb.get<{
+      const row = await this.sqliteReadDb.get<{
         url: string;
         title: string;
         favicon: string | null;
@@ -1012,7 +1534,15 @@ export class DocumentStore implements StorageProvider {
         requires_auth: number | null;
         auth_domain: string | null;
         version: string | null;
-      }>('SELECT url, title, favicon, last_indexed, requires_auth, auth_domain, version FROM documents WHERE url = ?', [url]);
+        path_prefix: string | null;
+        tags_json: string;
+      }>(
+        `SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version, d.path_prefix,
+                COALESCE((SELECT json_group_array(dt.tag) FROM document_tags dt WHERE dt.url = d.url), '[]') AS tags_json
+         FROM documents d
+         WHERE d.url = ?`,
+        [url]
+      );
 
       if (!row) {
         logger.debug(`[DocumentStore] Document not found in SQLite: ${url}`);
@@ -1025,9 +1555,6 @@ export class DocumentStore implements StorageProvider {
         logger.debug(`[DocumentStore] Found ${chunks} chunks in LanceDB for ${url}`);
       }
 
-      // Fetch tags for this document
-      const tags = await this.getDocumentTags(url);
-
       logger.debug(`[DocumentStore] Document found in SQLite:`, row);
 
       return {
@@ -1037,8 +1564,9 @@ export class DocumentStore implements StorageProvider {
         lastIndexed: new Date(row.last_indexed),
         requiresAuth: row.requires_auth === 1,
         authDomain: row.auth_domain ?? undefined,
-        tags,
+        tags: this.parseDocumentTags(row.tags_json),
         version: row.version ?? undefined,
+        pathPrefix: row.path_prefix ?? undefined,
       };
     }
     catch (error) {
@@ -1047,17 +1575,25 @@ export class DocumentStore implements StorageProvider {
     }
   }
 
-  /**
-   * Get tags for a specific document
-   */
-  private async getDocumentTags(url: string): Promise<string[]> {
-    if (!this.sqliteDb) {
+  private parseDocumentTags(value: string): string[] {
+    try {
+      const parsed: unknown = JSON.parse(value);
+      return Array.isArray(parsed) && parsed.every((tag) => typeof tag === 'string') ? parsed.sort() : [];
+    }
+    catch {
       return [];
     }
+  }
 
-    const rows = await this.sqliteDb.all<Array<{ tag: string }>>('SELECT tag FROM document_tags WHERE url = ? ORDER BY tag', [url]);
-
-    return rows.map((row) => row.tag);
+  private async replaceDocumentTags(url: string, tags: string[]): Promise<void> {
+    if (!this.sqliteDb) {
+      throw new Error('Storage not initialized');
+    }
+    await this.sqliteDb.run('DELETE FROM document_tags WHERE url = ?', [url]);
+    const normalizedTags = [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
+    for (const tag of normalizedTags) {
+      await this.sqliteDb.run('INSERT INTO document_tags (url, tag) VALUES (?, ?)', [url, tag]);
+    }
   }
 
   /**
@@ -1065,7 +1601,11 @@ export class DocumentStore implements StorageProvider {
    * @param url - The URL of the documentation site
    * @param tags - Array of tags to assign (empty array removes all tags)
    */
-  async setTags(url: string, tags: string[]): Promise<void> {
+  setTags(url: string, tags: string[]): Promise<void> {
+    return this.runMutation(() => this.setTagsUnlocked(url, tags));
+  }
+
+  private async setTagsUnlocked(url: string, tags: string[]): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1082,14 +1622,7 @@ export class DocumentStore implements StorageProvider {
         throw new Error('Documentation not found');
       }
 
-      // Delete existing tags
-      await this.sqliteDb.run('DELETE FROM document_tags WHERE url = ?', [url]);
-
-      // Insert new tags (deduplicated and normalized)
-      const uniqueTags = [...new Set(tags.map((t) => t.trim().toLowerCase()).filter((t) => t.length > 0))];
-      for (const tag of uniqueTags) {
-        await this.sqliteDb.run('INSERT INTO document_tags (url, tag) VALUES (?, ?)', [url, tag]);
-      }
+      await this.replaceDocumentTags(url, tags);
 
       await this.sqliteDb.run('COMMIT');
 
@@ -1117,14 +1650,14 @@ export class DocumentStore implements StorageProvider {
    * @returns Array of tags with counts, sorted by count descending
    */
   async listAllTags(): Promise<Array<{ tag: string; count: number }>> {
-    if (!this.sqliteDb) {
+    if (!this.sqliteReadDb) {
       throw new Error('Storage not initialized');
     }
 
     logger.debug(`[DocumentStore] Listing all tags`);
 
     try {
-      const rows = await this.sqliteDb.all<Array<{ tag: string; count: number }>>(
+      const rows = await this.sqliteReadDb.all<Array<{ tag: string; count: number }>>(
         'SELECT tag, COUNT(*) as count FROM document_tags GROUP BY tag ORDER BY count DESC, tag ASC'
       );
 
@@ -1144,7 +1677,7 @@ export class DocumentStore implements StorageProvider {
    * @returns Array of matching document URLs
    */
   async getUrlsByTags(tags: string[]): Promise<string[]> {
-    if (!this.sqliteDb || tags.length === 0) {
+    if (!this.sqliteReadDb || tags.length === 0) {
       return [];
     }
 
@@ -1167,7 +1700,7 @@ export class DocumentStore implements StorageProvider {
         HAVING COUNT(DISTINCT tag) = ?
       `;
 
-      const rows = await this.sqliteDb.all<Array<{ url: string }>>(query, [...normalizedTags, normalizedTags.length]);
+      const rows = await this.sqliteReadDb.all<Array<{ url: string }>>(query, [...normalizedTags, normalizedTags.length]);
 
       logger.debug(`[DocumentStore] Found ${rows.length} URLs matching all tags`);
 
@@ -1187,7 +1720,11 @@ export class DocumentStore implements StorageProvider {
    * @param description - Optional description
    * @throws Error if collection already exists
    */
-  async createCollection(name: string, description?: string): Promise<void> {
+  createCollection(name: string, description?: string): Promise<void> {
+    return this.runMutation(() => this.createCollectionUnlocked(name, description));
+  }
+
+  private async createCollectionUnlocked(name: string, description?: string): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1221,7 +1758,11 @@ export class DocumentStore implements StorageProvider {
    * @param name - Name of the collection to delete
    * @throws Error if collection doesn't exist
    */
-  async deleteCollection(name: string): Promise<void> {
+  deleteCollection(name: string): Promise<void> {
+    return this.runMutation(() => this.deleteCollectionUnlocked(name));
+  }
+
+  private async deleteCollectionUnlocked(name: string): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1245,7 +1786,11 @@ export class DocumentStore implements StorageProvider {
    * @param updates - Fields to update
    * @throws Error if collection doesn't exist
    */
-  async updateCollection(name: string, updates: { newName?: string; description?: string }): Promise<void> {
+  updateCollection(name: string, updates: { newName?: string; description?: string }): Promise<void> {
+    return this.runMutation(() => this.updateCollectionUnlocked(name, updates));
+  }
+
+  private async updateCollectionUnlocked(name: string, updates: { newName?: string; description?: string }): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1341,13 +1886,13 @@ export class DocumentStore implements StorageProvider {
    * @returns Array of collections sorted by name
    */
   async listCollections(): Promise<Collection[]> {
-    if (!this.sqliteDb) {
+    if (!this.sqliteReadDb) {
       throw new Error('Storage not initialized');
     }
 
     logger.debug(`[DocumentStore] Listing collections`);
 
-    const rows = await this.sqliteDb.all<
+    const rows = await this.sqliteReadDb.all<
       Array<{
         name: string;
         description: string | null;
@@ -1381,7 +1926,7 @@ export class DocumentStore implements StorageProvider {
    * @returns Collection with documents, or null if not found
    */
   async getCollection(name: string): Promise<CollectionWithDocuments | null> {
-    if (!this.sqliteDb) {
+    if (!this.sqliteReadDb) {
       throw new Error('Storage not initialized');
     }
 
@@ -1389,7 +1934,7 @@ export class DocumentStore implements StorageProvider {
     logger.debug(`[DocumentStore] Getting collection: ${normalizedName}`);
 
     // Get collection metadata
-    const row = await this.sqliteDb.get<{
+    const row = await this.sqliteReadDb.get<{
       name: string;
       description: string | null;
       created_at: string;
@@ -1402,7 +1947,7 @@ export class DocumentStore implements StorageProvider {
     }
 
     // Get documents in the collection
-    const docRows = await this.sqliteDb.all<
+    const docRows = await this.sqliteReadDb.all<
       Array<{
         url: string;
         title: string;
@@ -1411,10 +1956,13 @@ export class DocumentStore implements StorageProvider {
         requires_auth: number | null;
         auth_domain: string | null;
         version: string | null;
+        path_prefix: string | null;
+        tags_json: string;
       }>
     >(
       `
-      SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version
+      SELECT d.url, d.title, d.favicon, d.last_indexed, d.requires_auth, d.auth_domain, d.version, d.path_prefix,
+             COALESCE((SELECT json_group_array(dt.tag) FROM document_tags dt WHERE dt.url = d.url), '[]') AS tags_json
       FROM documents d
       INNER JOIN collection_documents cd ON d.url = cd.url
       WHERE cd.collection_name = ?
@@ -1423,9 +1971,6 @@ export class DocumentStore implements StorageProvider {
       [normalizedName]
     );
 
-    // Fetch tags for all documents
-    const tagsMap = await this.getAllDocumentTags();
-
     const documents: DocumentMetadata[] = docRows.map((doc) => ({
       url: doc.url,
       title: doc.title,
@@ -1433,8 +1978,9 @@ export class DocumentStore implements StorageProvider {
       lastIndexed: new Date(doc.last_indexed),
       requiresAuth: doc.requires_auth === 1,
       authDomain: doc.auth_domain ?? undefined,
-      tags: tagsMap.get(doc.url) || [],
+      tags: this.parseDocumentTags(doc.tags_json),
       version: doc.version ?? undefined,
+      pathPrefix: doc.path_prefix ?? undefined,
     }));
 
     logger.debug(`[DocumentStore] Collection "${normalizedName}" has ${documents.length} documents`);
@@ -1455,7 +2001,14 @@ export class DocumentStore implements StorageProvider {
    * @param urls - URLs of documents to add
    * @throws Error if collection doesn't exist
    */
-  async addToCollection(name: string, urls: string[]): Promise<{ added: string[]; notFound: string[]; alreadyInCollection: string[] }> {
+  addToCollection(name: string, urls: string[]): Promise<{ added: string[]; notFound: string[]; alreadyInCollection: string[] }> {
+    return this.runMutation(() => this.addToCollectionUnlocked(name, urls));
+  }
+
+  private async addToCollectionUnlocked(
+    name: string,
+    urls: string[]
+  ): Promise<{ added: string[]; notFound: string[]; alreadyInCollection: string[] }> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1535,7 +2088,11 @@ export class DocumentStore implements StorageProvider {
    * @param urls - URLs of documents to remove
    * @throws Error if collection doesn't exist
    */
-  async removeFromCollection(name: string, urls: string[]): Promise<{ removed: string[]; notInCollection: string[] }> {
+  removeFromCollection(name: string, urls: string[]): Promise<{ removed: string[]; notInCollection: string[] }> {
+    return this.runMutation(() => this.removeFromCollectionUnlocked(name, urls));
+  }
+
+  private async removeFromCollectionUnlocked(name: string, urls: string[]): Promise<{ removed: string[]; notInCollection: string[] }> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
@@ -1597,14 +2154,14 @@ export class DocumentStore implements StorageProvider {
    * @returns Array of document URLs
    */
   async getCollectionUrls(name: string): Promise<string[]> {
-    if (!this.sqliteDb) {
+    if (!this.sqliteReadDb) {
       throw new Error('Storage not initialized');
     }
 
     const normalizedName = name.trim();
     logger.debug(`[DocumentStore] Getting URLs for collection: ${normalizedName}`);
 
-    const rows = await this.sqliteDb.all<Array<{ url: string }>>('SELECT url FROM collection_documents WHERE collection_name = ?', [
+    const rows = await this.sqliteReadDb.all<Array<{ url: string }>>('SELECT url FROM collection_documents WHERE collection_name = ?', [
       normalizedName,
     ]);
 
@@ -1632,8 +2189,9 @@ export class DocumentStore implements StorageProvider {
     }
 
     try {
+      const visibilityFilter = await this.getJournalVisibilityFilter();
       // Get total row count
-      const rowCount = await this.lanceTable.countRows();
+      const rowCount = await this.lanceTable.countRows(visibilityFilter);
       logger.debug(`[DocumentStore] Vector validation: Table contains ${rowCount} rows`);
 
       if (rowCount === 0) {
@@ -1642,7 +2200,8 @@ export class DocumentStore implements StorageProvider {
       }
 
       // Get a sample row using a query
-      const sample = await this.lanceTable.query().limit(1).toArray();
+      const sampleQuery = this.lanceTable.query().where(visibilityFilter).limit(1);
+      const sample = await sampleQuery.toArray();
       if (sample.length === 0) {
         logger.debug('[DocumentStore] Vector validation: No rows returned from query');
         return false;
@@ -1661,7 +2220,8 @@ export class DocumentStore implements StorageProvider {
       const testVector = new Array(this.embeddings.dimensions).fill(0).map(() => Math.random());
       logger.debug(`[DocumentStore] Testing vector search with random vector of length ${testVector.length}`);
 
-      const searchResults = await this.lanceTable.search(testVector).limit(1).toArray();
+      const searchQuery = this.lanceTable.search(testVector).where(visibilityFilter).limit(1);
+      const searchResults = await searchQuery.toArray();
       logger.debug(`[DocumentStore] Vector search test returned ${searchResults.length} results`);
 
       if (searchResults.length > 0) {
@@ -1693,7 +2253,11 @@ export class DocumentStore implements StorageProvider {
    *
    * @returns Promise with optimization statistics
    */
-  async optimize(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }> {
+  optimize(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }> {
+    return this.runMutation(() => this.optimizeUnlocked());
+  }
+
+  private async optimizeUnlocked(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }> {
     if (!this.lanceTable) {
       logger.debug('[DocumentStore] Cannot optimize: Storage not initialized');
       return { compacted: false, cleanedUp: false, error: 'Storage not initialized' };

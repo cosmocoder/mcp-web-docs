@@ -1,7 +1,9 @@
+import { JSDOM } from 'jsdom';
 import { WebDocumentProcessor } from './processor.js';
 import { createMockEmbeddings, createFailingEmbeddings } from '../__mocks__/embeddings.js';
 import type { CrawlResult } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
+import { contentExtractors } from '../crawler/content-extractors.js';
 
 describe('WebDocumentProcessor', () => {
   let processor: WebDocumentProcessor;
@@ -13,39 +15,11 @@ describe('WebDocumentProcessor', () => {
   });
 
   describe('process', () => {
-    it('should process HTML content', async () => {
-      const crawlResult: CrawlResult = {
-        url: 'https://example.com/docs/page',
-        path: '/docs/page',
-        title: 'Test Page',
-        content: `
-          <html>
-            <body>
-              <main>
-                <h1>Test Documentation</h1>
-                <p>This is some test content for the documentation page.</p>
-                <h2>Features</h2>
-                <p>Here are some features of our product.</p>
-              </main>
-            </body>
-          </html>
-        `,
-      };
-
-      const result = await processor.process(crawlResult);
-
-      expect(result).toBeDefined();
-      expect(result.metadata.url).toBe(crawlResult.url);
-      // Title may come from crawl result or H1, depending on processor logic
-      expect(result.metadata.title).toBeTruthy();
-      expect(result.chunks.length).toBeGreaterThan(0);
-      expect(result.chunks[0].vector.length).toBe(mockEmbeddings.dimensions);
-    });
-
     it('should process markdown content', async () => {
       const crawlResult: CrawlResult = {
         url: 'https://example.com/docs/readme.md',
-        path: '/docs/readme.md',
+        path: '/docs/readme.html',
+        contentFormat: 'markdown',
         title: 'README',
         content: `# Project README
 
@@ -73,81 +47,96 @@ Here's how to use the package.
       expect(result.chunks.length).toBeGreaterThan(0);
     });
 
-    it('should process pre-extracted content from Storybook', async () => {
-      const crawlResult: CrawlResult = {
-        url: 'https://storybook.example.com/button',
-        path: '/button',
-        title: 'Button',
-        content: `# Button Component
-
-A versatile button component.
-
-## Props
-
-| Prop | Type |
-|------|------|
-| variant | string |
-
-## Example
-
-\`\`\`jsx
-<Button variant="primary">Click</Button>
-\`\`\`
-`,
-        extractorUsed: 'StorybookExtractor',
+    it('should treat extractorUsed as diagnostic-only', async () => {
+      const input: CrawlResult = {
+        url: 'https://example.com/guide',
+        path: '/guide.html',
+        contentFormat: 'markdown',
+        title: 'Guide',
+        content: '# Explicit Markdown\n\n## Section\n\nBody',
+        extractorUsed: 'FirstExtractor',
       };
 
-      const result = await processor.process(crawlResult);
+      const first = await processor.process(input);
+      const second = await processor.process({ ...input, extractorUsed: 'RenamedExtractor' });
 
-      expect(result).toBeDefined();
-      expect(result.metadata.title).toBe('Button Component');
-      expect(result.chunks.length).toBeGreaterThan(0);
+      expect(second.metadata.title).toBe(first.metadata.title);
+      expect(second.chunks.map(({ content, title }) => ({ content, title }))).toEqual(
+        first.chunks.map(({ content, title }) => ({ content, title }))
+      );
     });
 
-    it('should process pre-extracted content from GitHub Pages', async () => {
-      const crawlResult: CrawlResult = {
-        url: 'https://user.github.io/repo/',
-        path: '/',
-        title: 'GitHub Pages',
-        content: `# Welcome to GitHub Pages
+    it('should process actual Storybook extractor output', async () => {
+      const originalWindow = globalThis.window;
+      const storybookWindow = new JSDOM(`<main class="sbdocs-content">
+        <h1>Button Component</h1>
+        <table class="docblock-argstable">
+          <tr><th>Name</th><th>Type</th><th>Default</th></tr>
+          <tr><td>variant</td><td>string</td><td>primary</td></tr>
+        </table>
+      </main>`).window;
+      const storybookDocument = storybookWindow.document;
+      globalThis.window = storybookWindow as unknown as typeof globalThis.window;
+      storybookWindow.getComputedStyle = vi.fn().mockReturnValue({
+        display: 'block',
+        visibility: 'visible',
+        opacity: '1',
+      }) as unknown as typeof storybookWindow.getComputedStyle;
 
-This is documentation hosted on GitHub Pages.
-
-## Getting Started
-
-Follow these steps to get started.
-`,
-        extractorUsed: 'GithubPagesExtractor',
+      const storybook = contentExtractors.storybook as unknown as {
+        extractContent(document: Document): Promise<{ content: string; contentFormat: 'markdown'; title?: string }>;
+        expandAllTypeValues(table: Element): Promise<void>;
+        waitForStorybookAPI(): Promise<void>;
+        waitForStorybookContent(document: Document): Promise<Element | null>;
       };
+      const expandSpy = vi.spyOn(storybook, 'expandAllTypeValues').mockResolvedValue(undefined);
+      const apiSpy = vi.spyOn(storybook, 'waitForStorybookAPI').mockResolvedValue(undefined);
+      const contentSpy = vi.spyOn(storybook, 'waitForStorybookContent').mockResolvedValue(storybookDocument.querySelector('main'));
 
-      const result = await processor.process(crawlResult);
-
-      expect(result).toBeDefined();
-      expect(result.chunks.length).toBeGreaterThan(0);
+      try {
+        const storybookContent = await storybook.extractContent(storybookDocument);
+        const storybookResult = await processor.process({
+          url: 'https://storybook.example.com/button',
+          path: '/button',
+          extractorUsed: contentExtractors.storybook.constructor.name,
+          ...storybookContent,
+          title: storybookContent.title || 'Button',
+        });
+        expect(storybookResult.metadata.title).toBe('Button Component');
+        expect(storybookResult.chunks[0].content).toContain('Button Component');
+        const propsChunk = storybookResult.chunks.find((chunk) => chunk.metadata.props?.length);
+        expect(propsChunk?.content).toContain('| variant | string | primary |');
+        expect(propsChunk?.metadata.props).toContainEqual(
+          expect.objectContaining({ name: 'variant', type: 'string', defaultValue: 'primary' })
+        );
+      }
+      finally {
+        contentSpy.mockRestore();
+        apiSpy.mockRestore();
+        expandSpy.mockRestore();
+        globalThis.window = originalWindow;
+      }
     });
 
     it('should create chunks with proper metadata', async () => {
       const crawlResult: CrawlResult = {
         url: 'https://example.com/api',
         path: '/api',
+        contentFormat: 'markdown',
         title: 'API',
-        content: `
-          <html>
-            <body>
-              <main>
-                <h1>API Reference</h1>
-                <p>This document describes the API endpoints.</p>
-                <h2>GET /users</h2>
-                <p>Returns a list of users.</p>
-                <pre><code>
+        content: `# API Reference
+
+This document describes the API endpoints.
+
+## GET /users
+
+Returns a list of users.
+
+\`\`\`json
 {
   "users": [...]
 }
-                </code></pre>
-              </main>
-            </body>
-          </html>
-        `,
+\`\`\``,
       };
 
       const result = await processor.process(crawlResult);
@@ -166,27 +155,17 @@ Follow these steps to get started.
       const longContent = Array(50)
         .fill(null)
         .map(
-          (_, i) => `
-        <h2>Section ${i + 1}</h2>
-        <p>This is the content for section ${i + 1}. It contains some text that will need to be chunked appropriately for the embedding model. Lorem ipsum dolor sit amet, consectetur adipiscing elit.</p>
-      `
+          (_, i) =>
+            `## Section ${i + 1}\n\nThis is the content for section ${i + 1}. It contains some text that will need to be chunked appropriately for the embedding model. Lorem ipsum dolor sit amet, consectetur adipiscing elit.`
         )
-        .join('\n');
+        .join('\n\n');
 
       const crawlResult: CrawlResult = {
         url: 'https://example.com/long',
         path: '/long',
+        contentFormat: 'markdown',
         title: 'Long Document',
-        content: `
-          <html>
-            <body>
-              <main>
-                <h1>Long Document</h1>
-                ${longContent}
-              </main>
-            </body>
-          </html>
-        `,
+        content: `# Long Document\n\n${longContent}`,
       };
 
       const result = await processor.process(crawlResult);
@@ -195,23 +174,16 @@ Follow these steps to get started.
       expect(result.chunks.length).toBeGreaterThan(1);
     });
 
-    it('should throw error for content that cannot be parsed', async () => {
+    it.each([
+      ['empty', ''],
+      ['whitespace-only', '   \n\n   '],
+    ])('should throw error for %s content', async (_, content) => {
       const crawlResult: CrawlResult = {
         url: 'https://example.com/empty',
         path: '/empty',
+        contentFormat: 'markdown',
         title: 'Empty',
-        content: '', // Empty content
-      };
-
-      await expect(processor.process(crawlResult)).rejects.toThrow();
-    });
-
-    it('should throw error for whitespace-only content', async () => {
-      const crawlResult: CrawlResult = {
-        url: 'https://example.com/whitespace',
-        path: '/whitespace',
-        title: 'Whitespace',
-        content: '   \n\n   ',
+        content,
       };
 
       await expect(processor.process(crawlResult)).rejects.toThrow();
@@ -224,17 +196,9 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/test',
         path: '/test',
+        contentFormat: 'text',
         title: 'Test',
-        content: `
-          <html>
-            <body>
-              <main>
-                <h1>Test</h1>
-                <p>Some content here.</p>
-              </main>
-            </body>
-          </html>
-        `,
+        content: 'Test\n\nSome content here.',
       };
 
       await expect(failingProcessor.process(crawlResult)).rejects.toThrow('Embeddings service unavailable');
@@ -244,17 +208,9 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/dated',
         path: '/dated',
+        contentFormat: 'text',
         title: 'Dated',
-        content: `
-          <html>
-            <body>
-              <main>
-                <h1>Document</h1>
-                <p>Content with date.</p>
-              </main>
-            </body>
-          </html>
-        `,
+        content: 'Document\n\nContent with date.',
       };
 
       const before = new Date();
@@ -271,18 +227,13 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/chunks',
         path: '/chunks',
+        contentFormat: 'text',
         title: 'Chunks',
-        content: `
-          <html>
-            <body>
-              <main>
-                <h1>Document</h1>
-                <p>This is a longer paragraph that should be split into multiple chunks when using a small chunk size. The semantic chunker should create appropriate boundaries.</p>
-                <p>Another paragraph with additional content that needs to be processed and chunked appropriately.</p>
-              </main>
-            </body>
-          </html>
-        `,
+        content: `Document
+
+This is a longer paragraph that should be split into multiple chunks when using a small chunk size. The semantic chunker should create appropriate boundaries.
+
+Another paragraph with additional content that needs to be processed and chunked appropriately.`,
       };
 
       const result = await smallChunkProcessor.process(crawlResult);
@@ -295,6 +246,7 @@ Follow these steps to get started.
       const crawlResult: CrawlResult = {
         url: 'https://example.com/docs/component.mdx',
         path: '/docs/component.mdx',
+        contentFormat: 'markdown',
         title: 'MDX Component',
         content: `# MDX Component
 
@@ -322,6 +274,7 @@ import { MyComponent } from 'library';
       const crawlResult: CrawlResult = {
         url: 'https://example.com/default',
         path: '/default',
+        contentFormat: 'text',
         title: 'Default Extracted',
         content: `Page Title
 
@@ -344,22 +297,23 @@ Another section of content here.`,
       const crawlResult: CrawlResult = {
         url: 'https://example.com/api-ref',
         path: '/api-ref',
+        contentFormat: 'markdown',
         title: 'API Reference',
-        content: `
-          <html>
-            <body>
-              <main>
-                <h1>API Reference</h1>
-                <h2>GET /api/users</h2>
-                <p>Returns array of users</p>
-                <h3>Parameters</h3>
-                <p>limit: number - Maximum results</p>
-                <h3>Response</h3>
-                <pre><code>{"users": []}</code></pre>
-              </main>
-            </body>
-          </html>
-        `,
+        content: `# API Reference
+
+## GET /api/users
+
+Returns array of users
+
+### Parameters
+
+limit: number - Maximum results
+
+### Response
+
+\`\`\`json
+{"users": []}
+\`\`\``,
       };
 
       const result = await processor.process(crawlResult);
@@ -374,26 +328,23 @@ Another section of content here.`,
       const crawlResult: CrawlResult = {
         url: 'https://example.com/examples',
         path: '/examples',
+        contentFormat: 'markdown',
         title: 'Examples',
-        content: `
-          <html>
-            <body>
-              <main>
-                <h1>Code Examples</h1>
-                <h2>Basic Example</h2>
-                <pre><code>
+        content: `# Code Examples
+
+## Basic Example
+
+\`\`\`js
 const result = doSomething();
 console.log(result);
-                </code></pre>
-                <h2>Advanced Example</h2>
-                <pre><code>
+\`\`\`
+
+## Advanced Example
+
+\`\`\`js
 const config = { advanced: true };
 const result = doSomething(config);
-                </code></pre>
-              </main>
-            </body>
-          </html>
-        `,
+\`\`\``,
       };
 
       const result = await processor.process(crawlResult);

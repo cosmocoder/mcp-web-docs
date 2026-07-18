@@ -2,6 +2,7 @@ import { URL } from 'url';
 import { CrawlResult } from '../types.js';
 import { BaseCrawler } from './base.js';
 import { logger } from '../util/logger.js';
+import { fetchPublicUrl } from '../util/outbound-request.js';
 import { GitHubFilesArraySchema, type ValidatedGitHubFile } from '../util/security.js';
 
 export class GitHubCrawler extends BaseCrawler {
@@ -117,6 +118,7 @@ export class GitHubCrawler extends BaseCrawler {
               url: this.constructGitHubUrl(repoInfo, item.path),
               path: item.path,
               content,
+              contentFormat: 'markdown',
               title: this.extractTitleFromPath(item.path),
             };
           }
@@ -144,7 +146,7 @@ export class GitHubCrawler extends BaseCrawler {
     }
 
     try {
-      const response = await fetch(url, { headers });
+      const response = await fetchPublicUrl(url, { headers, signal: this.abortSignal });
 
       if (!response.ok) {
         if (response.status === 403) {
@@ -177,7 +179,7 @@ export class GitHubCrawler extends BaseCrawler {
     const headers: HeadersInit = this.githubToken ? { Authorization: `token ${this.githubToken}` } : {};
 
     try {
-      const response = await fetch(url, { headers });
+      const response = await fetchPublicUrl(url, { headers, signal: this.abortSignal });
 
       if (!response.ok) {
         throw new Error(`Failed to fetch file content: ${response.status}`);

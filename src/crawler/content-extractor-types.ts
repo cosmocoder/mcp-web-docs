@@ -1,9 +1,13 @@
+import type { ContentFormat } from '../types.js';
+
 export interface ContentExtractor {
   extractContent(document: Document): Promise<ExtractedContent>;
 }
 
 export interface ExtractedContent {
   content: string;
+  contentFormat: ContentFormat;
+  title?: string;
   metadata: {
     type: 'overview' | 'props' | 'examples' | 'api' | 'usage';
     pattern?: ComponentPattern;

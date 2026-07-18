@@ -53,7 +53,7 @@ npm run test:types    # Type check without emit
 src/
 ├── index.ts          # Main MCP server (WebDocsServer class)
 ├── crawler/          # Web crawling (Playwright/Crawlee)
-├── processor/        # Content processing (HTML, Markdown)
+├── processor/        # Markdown and extracted-text processing
 ├── storage/          # SQLite + LanceDB storage
 ├── embeddings/       # FastEmbed vector generation
 ├── indexing/         # Status tracking, queue management

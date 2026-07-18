@@ -90,6 +90,7 @@ describe('GitHubCrawler', () => {
       expect(results).toHaveLength(2);
       expect(results[0].path).toBe('docs/guide.md');
       expect(results[0].content).toContain('Guide');
+      expect(results[0].contentFormat).toBe('markdown');
       expect(results[1].path).toBe('docs/api.md');
     });
 
@@ -403,6 +404,24 @@ describe('GitHubCrawler', () => {
 
       // Should only have the first result
       expect(results).toHaveLength(1);
+    });
+
+    it('cancels an in-flight GitHub request when aborted', async () => {
+      const requestStarted = Promise.withResolvers<AbortSignal>();
+      fetchMock.mockImplementationOnce((_input, init) => {
+        const signal = init?.signal as AbortSignal;
+        requestStarted.resolve(signal);
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+        });
+      });
+
+      const result = crawler.crawl('https://github.com/owner/repo').next();
+      const signal = await requestStarted.promise;
+      crawler.abort();
+
+      expect(signal.aborted).toBe(true);
+      await expect(result).resolves.toMatchObject({ done: true });
     });
   });
 });

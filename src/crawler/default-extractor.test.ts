@@ -30,6 +30,7 @@ describe('DefaultExtractor', () => {
       const doc = createDocument(html);
       const result = await extractor.extractContent(doc);
 
+      expect(result.contentFormat).toBe('text');
       expect(result.content).toContain('Main Title');
       expect(result.content).toContain('Main content here');
       expect(result.content).not.toContain('Navigation');

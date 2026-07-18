@@ -10,6 +10,7 @@ export class GitHubPagesExtractor implements ContentExtractor {
     if (!main) {
       return {
         content: '',
+        contentFormat: 'text',
         metadata: { type: 'overview' },
       };
     }
@@ -23,6 +24,7 @@ export class GitHubPagesExtractor implements ContentExtractor {
 
     return {
       content: clone.textContent?.trim() || '',
+      contentFormat: 'text',
       metadata: {
         type: 'overview',
         pattern: {

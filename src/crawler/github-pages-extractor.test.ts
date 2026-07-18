@@ -32,6 +32,7 @@ describe('GitHubPagesExtractor', () => {
 
       const result = await extractor.extractContent(doc);
 
+      expect(result.contentFormat).toBe('text');
       expect(result.content).toContain('Main Title');
       expect(result.content).toContain('First paragraph description');
       expect(result.content).not.toContain('Navigation');
@@ -92,6 +93,7 @@ describe('GitHubPagesExtractor', () => {
       const result = await extractor.extractContent(doc);
 
       expect(result.content).toBe('');
+      expect(result.contentFormat).toBe('text');
       expect(result.metadata.type).toBe('overview');
     });
 
