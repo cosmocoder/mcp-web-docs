@@ -1376,15 +1376,23 @@ describe('DocumentStore', () => {
       });
     });
 
-    it('should filter hybrid search to exact URLs', async () => {
-      const scopedUrl = 'https://example.com/react-hooks';
-      const results = await store.searchByText('guide', {
-        limit: 1,
-        filterUrls: [scopedUrl],
-      });
+    it('should scope both hybrid search legs before ranking', async () => {
+      const query = 'adversarial hybrid scope';
+      const queryVector = await mockEmbeddings.embed(query);
+      const globalUrl = 'https://example.com/hybrid-global-best';
+      const scopedUrl = 'https://example.com/hybrid-scoped-lower';
+      const globalDoc = createDocumentWithContent(globalUrl, 'Global Hybrid', query);
+      const scopedDoc = createDocumentWithContent(scopedUrl, 'Scoped Hybrid', query);
+      globalDoc.chunks[0].vector = queryVector;
+      scopedDoc.chunks[0].vector = queryVector.map((value) => -value);
+      await store.addDocument(globalDoc);
+      await store.addDocument(scopedDoc);
+      expect((store as unknown as { ftsIndexCreated: boolean }).ftsIndexCreated).toBe(true);
 
-      expect(results.length).toBeGreaterThan(0);
-      expect(results.every((result) => result.url === scopedUrl)).toBe(true);
+      const results = await store.searchByText(query, { limit: 2, filterUrls: [scopedUrl] });
+
+      expect(results.map((result) => result.url)).toEqual([scopedUrl]);
+      expect(results[0].score).toBeGreaterThan(0);
     });
 
     it('should preserve exact URL scope in the pure-vector text fallback', async () => {
@@ -1411,12 +1419,16 @@ describe('DocumentStore', () => {
       await expect(store.searchByText('guide', { filterUrls: [] })).resolves.toEqual([]);
     });
 
-    it('should handle quoted phrases', async () => {
+    it('should apply exact URL scope to phrase FTS', async () => {
       const scopedUrl = 'https://example.com/react-hooks';
-      const results = await store.searchByText('"React Hooks"', { filterUrls: [scopedUrl] });
+      const table = replacementInternals().lanceTable!;
+      const phraseQuery = table.query();
+      const where = vi.spyOn(phraseQuery, 'where');
+      vi.spyOn(table, 'query').mockReturnValueOnce(phraseQuery);
 
-      expect(results.length).toBeGreaterThan(0);
-      expect(results.every((result) => result.url === scopedUrl)).toBe(true);
+      await store.searchByText('"React Hooks"', { filterUrls: [scopedUrl] });
+
+      expect(where).toHaveBeenCalledWith(expect.stringContaining(`url IN ('${scopedUrl}')`));
     });
 
     it('should handle empty query gracefully', async () => {

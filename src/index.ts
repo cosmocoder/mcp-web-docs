@@ -1644,11 +1644,11 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       };
     }
 
-    const filteredResults = await this.store.searchByText(query, { limit, filterUrls: collectionUrls });
+    const collectionResults = await this.store.searchByText(query, { limit, filterUrls: collectionUrls });
 
     // Apply prompt injection detection and filter/process results (same as handleSearchDocumentation)
     let blockedCount = 0;
-    const safeResults = filteredResults
+    const safeResults = collectionResults
       .map((result) => {
         const injectionResult = detectPromptInjection(result.content);
 
