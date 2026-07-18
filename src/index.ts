@@ -1851,6 +1851,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
             checkCancelled();
           }
           logger.error(`[WebDocsServer] Error processing page ${page.path}:`, error);
+          throw new Error(sanitizeErrorMessage(`Failed to process ${page.path}: ${sanitizeErrorMessage(error)}`));
         }
 
         checkCancelled();
