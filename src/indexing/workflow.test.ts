@@ -1,5 +1,6 @@
 import { SessionExpiredError } from '../util/security.js';
 import type { CrawlResult, DocumentChunk, DocumentMetadata, ProcessedDocument } from '../types.js';
+import { DocsCrawler } from '../crawler/docs-crawler.js';
 import { IndexingWorkflow, type IndexingRequest } from './workflow.js';
 
 const request: IndexingRequest = {
@@ -31,6 +32,7 @@ function createHarness(
   options: {
     existingDocument?: DocumentMetadata | null;
     crawl?: () => AsyncGenerator<CrawlResult, void, unknown>;
+    createCrawler?: () => DocsCrawler;
     process?: (crawlResult: CrawlResult) => Promise<ProcessedDocument>;
     savedSession?: string;
   } = {}
@@ -71,7 +73,7 @@ function createHarness(
       }))
   );
   const processor = { process };
-  const createCrawler = vi.fn(() => crawler);
+  const createCrawler = vi.fn(options.createCrawler ?? (() => crawler));
   const fetchFavicon = vi.fn().mockResolvedValue('data:image/x-icon;base64,AA==');
   const workflow = new IndexingWorkflow({ store, processor, statusTracker, authManager, createCrawler, fetchFavicon });
 
@@ -142,6 +144,7 @@ describe('IndexingWorkflow', () => {
 
     await runWorkflow(failedWrite.workflow, { ...request, reIndex: true, tags: ['existing'] });
 
+    expect(failedWrite.addDocument).toHaveBeenCalledOnce();
     expect(failedWrite.statusTracker.completeIndexing).not.toHaveBeenCalled();
     expect(failedWrite.statusTracker.failIndexing).toHaveBeenCalledWith(request.operationId, 'write failed');
   });
@@ -241,6 +244,21 @@ describe('IndexingWorkflow', () => {
     await expect(runWorkflow(harness.workflow, request)).resolves.toBeUndefined();
 
     expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(request.operationId, 'crawl failed');
+    expect(harness.addDocument).not.toHaveBeenCalled();
+  });
+
+  it('surfaces unsupported GitHub blob URLs through indexing status', async () => {
+    const harness = createHarness({ createCrawler: () => new DocsCrawler() });
+    const blobUrl = 'https://github.com/owner/repo/blob/main/README.md';
+
+    await runWorkflow(harness.workflow, { ...request, url: blobUrl });
+
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
+      request.operationId,
+      `Unsupported GitHub URL: ${blobUrl}. Use a repository root or /tree/<branch>[/path] URL.`
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(harness.fetchFavicon).not.toHaveBeenCalled();
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
 
