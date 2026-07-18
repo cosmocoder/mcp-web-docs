@@ -150,6 +150,7 @@ describe('Security Utilities', () => {
       expect(() => validatePublicUrl('http://[::1]')).toThrow();
       expect(() => validatePublicUrl('http://0.0.0.0')).toThrow();
       expect(() => validatePublicUrl('http://test.localhost')).toThrow();
+      expect(() => validatePublicUrl('http://localhost.')).toThrow();
     });
 
     it('should block private IP ranges', () => {

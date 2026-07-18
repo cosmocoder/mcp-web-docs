@@ -26,6 +26,8 @@ export interface DocumentMetadata {
   tags?: string[];
   /** Version of the documentation (e.g., "18", "v6.4", "3.11") for versioned packages */
   version?: string;
+  /** Optional URL path restriction used when crawling this documentation site */
+  pathPrefix?: string;
 }
 
 export interface DocumentChunk {
@@ -112,9 +114,15 @@ export interface SearchOptions {
   filterByTags?: string[];
 }
 
+export interface AddDocumentOptions {
+  signal?: AbortSignal;
+  tags?: string[];
+}
+
 export interface StorageProvider {
   initialize(): Promise<void>;
-  addDocument(doc: ProcessedDocument): Promise<void>;
+  close(): Promise<void>;
+  addDocument(doc: ProcessedDocument, options?: AddDocumentOptions): Promise<void>;
   searchDocuments(queryVector: number[], options?: SearchOptions): Promise<SearchResult[]>;
   searchByText(query: string, options?: SearchOptions): Promise<SearchResult[]>;
   listDocuments(): Promise<DocumentMetadata[]>;

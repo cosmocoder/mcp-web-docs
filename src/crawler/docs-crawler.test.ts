@@ -2,21 +2,25 @@ import type { CrawlResult } from '../types.js';
 import { DocsCrawler } from './docs-crawler.js';
 
 const mockGitHubCrawl = vi.fn();
+const mockGitHubAbort = vi.fn();
 vi.mock('./github.js', () => ({
   GitHubCrawler: function () {
     return {
       crawl: mockGitHubCrawl,
+      abort: mockGitHubAbort,
     };
   },
 }));
 
 const mockCrawleeCrawl = vi.fn();
+const mockCrawleeAbort = vi.fn();
 const mockSetStorageState = vi.fn();
 const mockSetPathPrefix = vi.fn();
 vi.mock('./crawlee-crawler.js', () => ({
   CrawleeCrawler: function () {
     return {
       crawl: mockCrawleeCrawl,
+      abort: mockCrawleeAbort,
       setStorageState: mockSetStorageState,
       setPathPrefix: mockSetPathPrefix,
     };
@@ -164,28 +168,37 @@ describe('DocsCrawler', () => {
     });
 
     describe('abort', () => {
-      it('should stop crawling when aborted', async () => {
-        mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'html', title: 'Page 1' };
-          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'html', title: 'Page 2' };
-          yield { url: 'https://example.com/page3', path: '/page3', content: 'Page 3', contentFormat: 'html', title: 'Page 3' };
+      it.each([
+        {
+          name: 'GitHub',
+          url: 'https://github.com/owner/repo',
+          crawl: mockGitHubCrawl,
+          abort: mockGitHubAbort,
+          contentFormat: 'markdown' as const,
+        },
+        {
+          name: 'Crawlee',
+          url: 'https://example.com',
+          crawl: mockCrawleeCrawl,
+          abort: mockCrawleeAbort,
+          contentFormat: 'html' as const,
+        },
+      ])('delegates to the active $name crawler before its first page', async ({ url, crawl, abort, contentFormat }) => {
+        const entered = Promise.withResolvers<void>();
+        const released = Promise.withResolvers<void>();
+        crawl.mockImplementation(async function* () {
+          entered.resolve();
+          await released.promise;
+          yield { url, path: '/', content: 'Page', contentFormat, title: 'Page' };
         });
 
-        const results: CrawlResult[] = [];
-        const generator = crawler.crawl('https://example.com');
-
-        // Get first result
-        const first = await generator.next();
-        if (!first.done) {
-          results.push(first.value);
-        }
-
-        // Abort
+        const next = crawler.crawl(url).next();
+        await entered.promise;
         crawler.abort();
 
-        // Generator should stop yielding after abort (depending on implementation)
-        // The test verifies abort() method exists and is callable
-        expect(results).toHaveLength(1);
+        expect(abort).toHaveBeenCalledOnce();
+        released.resolve();
+        await expect(next).resolves.toMatchObject({ done: true });
       });
 
       it('should return early when already aborting', async () => {

@@ -9,6 +9,7 @@ export class DocsCrawler implements WebCrawler {
   private isAborting = false;
   private storageState?: StorageState;
   private pathPrefix?: string;
+  private activeCrawler?: { abort(): void };
 
   constructor(
     private readonly maxDepth: number = 4,
@@ -48,6 +49,7 @@ export class DocsCrawler implements WebCrawler {
     if (startUrl.host === this.GITHUB_HOST) {
       logger.debug('[DocsCrawler] Detected GitHub repository');
       const githubCrawler = new GitHubCrawler(this.maxDepth, this.maxRequestsPerCrawl, this.githubToken, this.onProgress);
+      this.activeCrawler = githubCrawler;
 
       try {
         for await (const page of githubCrawler.crawl(url)) {
@@ -63,11 +65,17 @@ export class DocsCrawler implements WebCrawler {
         // Don't fall through to other crawlers for GitHub URLs
         throw e;
       }
+      finally {
+        if (this.activeCrawler === githubCrawler) {
+          this.activeCrawler = undefined;
+        }
+      }
     }
 
     // Use Crawlee for all other sites
     logger.debug('[DocsCrawler] Using Crawlee crawler');
     const crawleeCrawler = new CrawleeCrawler(this.maxDepth, this.maxRequestsPerCrawl, this.onProgress);
+    this.activeCrawler = crawleeCrawler;
 
     // Pass authentication if available
     if (this.storageState) {
@@ -102,9 +110,15 @@ export class DocsCrawler implements WebCrawler {
       logger.debug('[DocsCrawler] Crawlee crawler failed:', e);
       throw e;
     }
+    finally {
+      if (this.activeCrawler === crawleeCrawler) {
+        this.activeCrawler = undefined;
+      }
+    }
   }
 
   abort(): void {
     this.isAborting = true;
+    this.activeCrawler?.abort();
   }
 }

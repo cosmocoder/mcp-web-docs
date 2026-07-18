@@ -1,4 +1,5 @@
 import { logger } from './logger.js';
+import { fetchPublicUrl } from './outbound-request.js';
 
 /** Default timeout for favicon fetch requests (10 seconds) */
 const FETCH_TIMEOUT_MS = 10000;
@@ -17,7 +18,7 @@ async function fetchWithTimeout(url: string, timeoutMs: number = FETCH_TIMEOUT_M
   const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(url, { signal: controller.signal });
+    const response = await fetchPublicUrl(url, { signal: controller.signal });
     return response;
   }
   finally {
