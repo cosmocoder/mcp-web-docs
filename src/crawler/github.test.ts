@@ -23,26 +23,13 @@ describe('GitHubCrawler', () => {
   });
 
   describe('crawl', () => {
-    it('should reject invalid GitHub URLs', async () => {
-      const results: CrawlResult[] = [];
-
-      // Non-GitHub URL
-      for await (const result of crawler.crawl('https://example.com/owner/repo')) {
-        results.push(result);
+    it.each(['https://example.com/owner/repo', 'https://github.com', 'https://github.com/owner/repo/blob/main/README.md'])(
+      'should reject unsupported GitHub URL %s',
+      async (url) => {
+        await expect(crawler.crawl(url).next()).rejects.toThrow('Use a repository root or /tree/<branch>[/path] URL');
+        expect(fetchMock).not.toHaveBeenCalled();
       }
-
-      expect(results).toHaveLength(0);
-    });
-
-    it('should reject URLs without owner/repo', async () => {
-      const results: CrawlResult[] = [];
-
-      for await (const result of crawler.crawl('https://github.com')) {
-        results.push(result);
-      }
-
-      expect(results).toHaveLength(0);
-    });
+    );
 
     it('should crawl documentation directory when found', async () => {
       // First call: list root directory
@@ -243,17 +230,17 @@ describe('GitHubCrawler', () => {
       expect(results[0].url).toBe('https://github.com/owner/repo/blob/develop/docs/guide.md');
     });
 
-    it('should treat a literal suffix as a subdirectory on a single-segment branch', async () => {
-      fetchMock.mockResponseOnce(JSON.stringify([githubFile('docs/guide.md', 'feature')]));
+    it('should treat a literal nested suffix as a subdirectory on a single-segment branch', async () => {
+      fetchMock.mockResponseOnce(JSON.stringify([githubFile('docs/api/guide.md', 'feature')]));
       fetchMock.mockResponseOnce('# Guide');
 
       const results: CrawlResult[] = [];
-      for await (const result of crawler.crawl('https://github.com/owner/repo/tree/feature/docs')) {
+      for await (const result of crawler.crawl('https://github.com/owner/repo/tree/feature/docs/api')) {
         results.push(result);
       }
 
-      expect(fetchMock.mock.calls[0][0]).toBe('https://api.github.com/repos/owner/repo/contents/docs?ref=feature');
-      expect(results.map(({ path }) => path)).toEqual(['docs/guide.md']);
+      expect(fetchMock.mock.calls[0][0]).toBe('https://api.github.com/repos/owner/repo/contents/docs/api?ref=feature');
+      expect(results.map(({ path }) => path)).toEqual(['docs/api/guide.md']);
     });
 
     it('should use an encoded slash as part of the branch name', async () => {

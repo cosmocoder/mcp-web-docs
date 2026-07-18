@@ -616,7 +616,6 @@ export class CrawleeCrawler extends BaseCrawler {
                 return;
               }
               this.queueManager.addResult(result);
-              this.markUrlProcessed(request.url);
               break;
             }
           }

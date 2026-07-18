@@ -462,6 +462,22 @@ describe('CrawleeCrawler', () => {
 
       expect(mockQueueManager.initialize).toHaveBeenCalledWith('https://example.com/docs/api', '/docs/api');
     });
+
+    it.each([
+      ['same hostname', 'https://example.com/guide', true],
+      ['subdomain', 'https://api.example.com/guide', true],
+      ['outside hostname', 'https://example.net/guide', false],
+    ])('%s redirect is handled according to the crawl domain', async (_label, actualUrl, allowed) => {
+      const { page } = navigationPage(actualUrl, () => {});
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(page, 'https://example.com/docs');
+        return successfulRunStats;
+      });
+
+      await collect(crawler, 'https://example.com/docs');
+
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    });
   });
 
   describe('authentication', () => {

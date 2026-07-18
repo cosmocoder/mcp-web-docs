@@ -17,11 +17,8 @@ export class GitHubCrawler extends BaseCrawler {
   private readonly MARKDOWN_EXTENSIONS = ['.md', '.mdx', '.markdown'];
   private readonly DOCUMENTATION_PATHS = ['docs', 'doc', 'documentation', 'wiki', 'guide', 'guides', 'tutorial', 'tutorials'];
 
-  constructor(
-    private readonly githubToken?: string,
-    onProgress?: (progress: number, description: string) => void
-  ) {
-    super(onProgress);
+  constructor(private readonly githubToken?: string) {
+    super();
   }
 
   async *crawl(url: string): AsyncGenerator<CrawlResult, void, unknown> {
@@ -32,12 +29,12 @@ export class GitHubCrawler extends BaseCrawler {
       return;
     }
 
-    try {
-      const repoInfo = this.parseGitHubUrl(url);
-      if (!repoInfo) {
-        throw new Error(`Invalid GitHub URL: ${url}`);
-      }
+    const repoInfo = this.parseGitHubUrl(url);
+    if (!repoInfo) {
+      throw new Error(`Unsupported GitHub URL: ${url}. Use a repository root or /tree/<branch>[/path] URL.`);
+    }
 
+    try {
       // First try to find documentation directory
       const docDirs = repoInfo.startPath ? [repoInfo.startPath] : await this.findDocumentationDirs(repoInfo);
       if (docDirs.length > 0) {
@@ -68,7 +65,7 @@ export class GitHubCrawler extends BaseCrawler {
       }
 
       const [, owner, repo, view, encodedBranch, ...remainingPath] = urlObj.pathname.split('/');
-      if (!owner || !repo) {
+      if (!owner || !repo || (view !== undefined && view !== '' && view !== 'tree') || (view === 'tree' && !encodedBranch)) {
         return null;
       }
 

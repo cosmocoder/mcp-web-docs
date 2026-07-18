@@ -57,10 +57,14 @@ describe('Docs Utilities', () => {
   });
 
   describe('generateCrawlStorageId', () => {
-    it('should generate a stable SHA-256 storage ID', () => {
-      expect(generateCrawlStorageId('https://example.com/docs')).toBe(
-        'crawl-de106e607d0e711199de3fb7eb98fe5d412ee49ac326eadd3db848ee272ad2cb'
-      );
+    it.each([
+      ['https://example.com/docs', 'crawl-de106e607d0e711199de3fb7eb98fe5d412ee49ac326eadd3db848ee272ad2cb'],
+      ['https://example.com/docs?', 'crawl-fcd40b351fdf73c2bb50cb17406ad09c27e47e9eaf274454c88f36731fdbfe3b'],
+      ['https://example.com/docs/?', 'crawl-fcd40b351fdf73c2bb50cb17406ad09c27e47e9eaf274454c88f36731fdbfe3b'],
+      ['https://example.com/docs?version=2', 'crawl-52c3bba491a1b593ab3ee5b9ff17a574e5a22f05591f68d3bce358760c027dcc'],
+      ['https://example.com/', 'crawl-0f115db062b7c0dd030b16878c99dea5c354b49dc37b38eb8846179c7783e9d7'],
+    ])('should preserve the SHA-256 storage ID for %s', (url, expected) => {
+      expect(generateCrawlStorageId(url)).toBe(expected);
     });
 
     it('should ignore fragments and normalize trailing slashes', () => {

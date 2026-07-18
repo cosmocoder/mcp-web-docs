@@ -11,10 +11,7 @@ export class DocsCrawler {
   private pathPrefix?: string;
   private activeCrawler?: { abort(): void };
 
-  constructor(
-    private readonly githubToken?: string,
-    private readonly onProgress?: (progress: number, description: string) => void
-  ) {}
+  constructor(private readonly githubToken?: string) {}
 
   /**
    * Set an optional path prefix to restrict crawling to URLs under this path.
@@ -46,7 +43,7 @@ export class DocsCrawler {
     // Handle GitHub repositories
     if (startUrl.host === this.GITHUB_HOST) {
       logger.debug('[DocsCrawler] Detected GitHub repository');
-      const githubCrawler = new GitHubCrawler(this.githubToken, this.onProgress);
+      const githubCrawler = new GitHubCrawler(this.githubToken);
       this.activeCrawler = githubCrawler;
 
       try {
@@ -72,7 +69,7 @@ export class DocsCrawler {
 
     // Use Crawlee for all other sites
     logger.debug('[DocsCrawler] Using Crawlee crawler');
-    const crawleeCrawler = new CrawleeCrawler(this.onProgress);
+    const crawleeCrawler = new CrawleeCrawler();
     this.activeCrawler = crawleeCrawler;
 
     // Pass authentication if available

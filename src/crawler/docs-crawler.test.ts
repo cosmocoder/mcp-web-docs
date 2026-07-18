@@ -39,21 +39,15 @@ describe('DocsCrawler', () => {
     crawler = new DocsCrawler();
   });
 
-  it('passes the GitHub token and progress callback to the selected crawler', async () => {
-    const progressFn = vi.fn();
-    const configuredCrawler = new DocsCrawler('github_token', progressFn);
+  it('passes the GitHub token to the selected crawler', async () => {
+    const configuredCrawler = new DocsCrawler('github_token');
     mockGitHubCrawl.mockImplementation(async function* () {
-      yield* [];
-    });
-    mockCrawleeCrawl.mockImplementation(async function* () {
       yield* [];
     });
 
     await configuredCrawler.crawl('https://github.com/owner/repo').next();
-    await configuredCrawler.crawl('https://example.com').next();
 
-    expect(mockGitHubConstructor).toHaveBeenCalledWith('github_token', progressFn);
-    expect(mockCrawleeConstructor).toHaveBeenCalledWith(progressFn);
+    expect(mockGitHubConstructor).toHaveBeenCalledWith('github_token');
   });
 
   describe('crawl', () => {
