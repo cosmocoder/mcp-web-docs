@@ -19,7 +19,7 @@ class TestCrawler extends BaseCrawler {
       url: 'https://example.com',
       path: '/',
       content: '<h1>Test</h1>',
-      contentFormat: 'html',
+      contentFormat: 'text',
       title: 'Test',
     };
   }

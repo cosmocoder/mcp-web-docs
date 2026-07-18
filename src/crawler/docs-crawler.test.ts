@@ -113,8 +113,8 @@ describe('DocsCrawler', () => {
     describe('Non-GitHub URLs', () => {
       it('should use CrawleeCrawler for non-GitHub URLs', async () => {
         const mockResults: CrawlResult[] = [
-          { url: 'https://docs.example.com/guide', path: '/guide', content: '<h1>Guide</h1>', contentFormat: 'html', title: 'Guide' },
-          { url: 'https://docs.example.com/api', path: '/api', content: '<h1>API</h1>', contentFormat: 'html', title: 'API' },
+          { url: 'https://docs.example.com/guide', path: '/guide', content: 'Guide', contentFormat: 'text', title: 'Guide' },
+          { url: 'https://docs.example.com/api', path: '/api', content: 'API', contentFormat: 'text', title: 'API' },
         ];
 
         mockCrawleeCrawl.mockImplementation(async function* () {
@@ -133,7 +133,7 @@ describe('DocsCrawler', () => {
 
       it('should return crawlee type regardless of page count', async () => {
         mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'html', title: 'Page 1' };
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
         });
 
         const results: CrawlResult[] = [];
@@ -181,7 +181,7 @@ describe('DocsCrawler', () => {
           url: 'https://example.com',
           crawl: mockCrawleeCrawl,
           abort: mockCrawleeAbort,
-          contentFormat: 'html' as const,
+          contentFormat: 'text' as const,
         },
       ])('delegates to the active $name crawler before its first page', async ({ url, crawl, abort, contentFormat }) => {
         const entered = Promise.withResolvers<void>();
@@ -205,7 +205,7 @@ describe('DocsCrawler', () => {
         crawler.abort();
 
         mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'html', title: 'Page 1' };
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
         });
 
         const generator = crawler.crawl('https://example.com');
@@ -237,8 +237,8 @@ describe('DocsCrawler', () => {
         crawler.setStorageState(storageState);
 
         mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'html', title: 'Page 1' };
-          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'html', title: 'Page 2' };
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
+          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'text', title: 'Page 2' };
         });
 
         // eslint-disable-next-line @typescript-eslint/no-unused-vars

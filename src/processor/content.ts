@@ -270,7 +270,9 @@ function extractSections(mainContent: Element): ArticleComponent[] {
     }));
 }
 
-export async function processHtmlContent(page: CrawlResult): Promise<ProcessedContent | undefined> {
+export async function processHtmlContent(
+  page: Omit<CrawlResult, 'contentFormat'> & { contentFormat?: 'html' }
+): Promise<ProcessedContent | undefined> {
   try {
     logger.debug(`[ContentProcessor] Processing content for ${page.url}`);
 

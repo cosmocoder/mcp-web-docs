@@ -1,6 +1,5 @@
 import { CrawlResult, DocumentChunk, DocumentProcessor, ProcessedDocument } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
-import { processHtmlContent } from './content.js';
 import { processMarkdownContent, processExtractedContent } from './markdown.js';
 import { logger } from '../util/logger.js';
 import { parseMetadata } from './metadata-parser.js';
@@ -159,9 +158,6 @@ export class WebDocumentProcessor implements DocumentProcessor {
       logger.debug(`[WebDocumentProcessor] Using ${crawlResult.contentFormat} processor for ${crawlResult.path}`);
       let processedContent;
       switch (crawlResult.contentFormat) {
-        case 'html':
-          processedContent = await processHtmlContent(crawlResult);
-          break;
         case 'markdown':
           processedContent = await processMarkdownContent(crawlResult);
           break;

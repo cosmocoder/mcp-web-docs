@@ -553,7 +553,7 @@ describe('QueueManager', () => {
         url: 'https://example.com/page',
         path: '/page',
         content: 'Test content',
-        contentFormat: 'html',
+        contentFormat: 'text',
         title: 'Test Page',
       };
 
@@ -567,7 +567,7 @@ describe('QueueManager', () => {
         url: 'https://example.com/page',
         path: '/page',
         content: 'Test content',
-        contentFormat: 'html',
+        contentFormat: 'text',
         title: 'Test Page',
       };
 
@@ -591,7 +591,7 @@ describe('QueueManager', () => {
         url: 'https://example.com/page',
         path: '/page',
         content: 'Test',
-        contentFormat: 'html',
+        contentFormat: 'text',
         title: 'Test',
       });
 
@@ -608,7 +608,7 @@ describe('QueueManager', () => {
           url: `https://example.com/page${i}`,
           path: `/page${i}`,
           content: `Content ${i}`,
-          contentFormat: 'html',
+          contentFormat: 'text',
           title: `Page ${i}`,
         });
       }
@@ -631,7 +631,7 @@ describe('QueueManager', () => {
           url: `https://example.com/page${i}`,
           path: `/page${i}`,
           content: `Content ${i}`,
-          contentFormat: 'html',
+          contentFormat: 'text',
           title: `Page ${i}`,
         });
       }
@@ -645,7 +645,7 @@ describe('QueueManager', () => {
           url: `https://example.com/page${i}`,
           path: `/page${i}`,
           content: `Content ${i}`,
-          contentFormat: 'html',
+          contentFormat: 'text',
           title: `Page ${i}`,
         });
       }
@@ -762,7 +762,7 @@ describe('QueueManager', () => {
         url: 'https://example.com/page',
         path: '/page',
         content: 'Test',
-        contentFormat: 'html',
+        contentFormat: 'text',
         title: 'Test',
       });
 

@@ -278,7 +278,6 @@ A versatile button component.
 <Button variant="secondary">Click me</Button>
 \`\`\`
 `,
-        extractorUsed: 'StorybookExtractor',
       };
 
       const result = await processExtractedContent(page);
@@ -297,7 +296,6 @@ A versatile button component.
         content: `Just some plain text content without any headers or structure.
 
 This is another paragraph.`,
-        extractorUsed: 'DefaultExtractor',
       };
 
       const result = await processExtractedContent(page);
@@ -314,7 +312,6 @@ This is another paragraph.`,
         contentFormat: 'text',
         title: 'Empty',
         content: '',
-        extractorUsed: 'StorybookExtractor',
       };
 
       const result = await processExtractedContent(page);
@@ -339,7 +336,6 @@ Here is **bold** and *italic* text.
 
 And some \`inline code\` too.
 `,
-        extractorUsed: 'GithubPagesExtractor',
       };
 
       const result = await processExtractedContent(page);
@@ -364,7 +360,6 @@ Some content here.
 
 More content.
 `,
-        extractorUsed: 'StorybookExtractor',
       };
 
       const result = await processExtractedContent(page);
@@ -388,7 +383,6 @@ ${Array(100)
         contentFormat: 'text',
         title: 'Long Document',
         content: longContent,
-        extractorUsed: 'DefaultExtractor',
       };
 
       const result = await processExtractedContent(page);

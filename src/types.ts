@@ -58,7 +58,7 @@ export interface DocumentChunk {
   };
 }
 
-export type ContentFormat = 'html' | 'markdown' | 'text';
+export type ContentFormat = 'markdown' | 'text';
 
 export interface CrawlResult {
   url: string;

@@ -1,10 +1,11 @@
 import { processHtmlContent } from './content.js';
-import type { CrawlResult } from '../types.js';
+
+type HtmlPage = Parameters<typeof processHtmlContent>[0];
 
 describe('HTML Content Processor', () => {
   describe('processHtmlContent', () => {
     it('should process simple HTML content', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/docs/page',
         path: '/docs/page',
         contentFormat: 'html',
@@ -33,7 +34,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should extract content from article tags', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/blog/post',
         path: '/blog/post',
         contentFormat: 'html',
@@ -63,7 +64,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should handle documentation-specific selectors', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/docs',
         path: '/docs',
         contentFormat: 'html',
@@ -88,7 +89,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should preserve code blocks', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/code',
         path: '/code',
         contentFormat: 'html',
@@ -114,7 +115,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should handle lists properly', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/list',
         path: '/list',
         contentFormat: 'html',
@@ -143,7 +144,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should handle tables', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/table',
         path: '/table',
         contentFormat: 'html',
@@ -172,7 +173,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should skip script and style tags', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/scripts',
         path: '/scripts',
         contentFormat: 'html',
@@ -203,7 +204,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should use Readability as fallback', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/blog',
         path: '/blog',
         contentFormat: 'html',
@@ -231,7 +232,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should return undefined for pages without extractable content', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/empty',
         path: '/empty',
         contentFormat: 'html',
@@ -253,7 +254,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should handle Storybook-specific classes', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://storybook.example.com/docs',
         path: '/docs',
         contentFormat: 'html',
@@ -281,7 +282,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should handle React app root containers', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/react-app',
         path: '/react-app',
         contentFormat: 'html',
@@ -307,7 +308,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should handle Next.js containers', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/nextjs',
         path: '/nextjs',
         contentFormat: 'html',
@@ -333,7 +334,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should handle multiple heading levels for section extraction', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/headings',
         path: '/headings',
         contentFormat: 'html',
@@ -365,7 +366,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should handle malformed HTML gracefully', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/malformed',
         path: '/malformed',
         contentFormat: 'html',
@@ -393,7 +394,7 @@ describe('HTML Content Processor', () => {
     });
 
     it('should clean text and remove extra whitespace', async () => {
-      const page: CrawlResult = {
+      const page: HtmlPage = {
         url: 'https://example.com/whitespace',
         path: '/whitespace',
         contentFormat: 'html',

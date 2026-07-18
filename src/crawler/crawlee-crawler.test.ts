@@ -390,8 +390,8 @@ describe('CrawleeCrawler', () => {
 
     it('should yield results from queue manager', async () => {
       const mockResults: CrawlResult[] = [
-        { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'html', title: 'Page 1' },
-        { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'html', title: 'Page 2' },
+        { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' },
+        { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'text', title: 'Page 2' },
       ];
 
       // Since hasEnoughResults returns false, processBatch is only called once
@@ -411,7 +411,7 @@ describe('CrawleeCrawler', () => {
 
     it('should process batch when enough results accumulated', async () => {
       const mockResults: CrawlResult[] = [
-        { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'html', title: 'Page 1' },
+        { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' },
       ];
 
       mockQueueManager.hasEnoughResults.mockReturnValueOnce(true).mockReturnValue(false);
