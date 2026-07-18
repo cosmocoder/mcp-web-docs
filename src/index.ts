@@ -17,7 +17,7 @@ Configuration.getGlobalConfig().set('logLevel', 'OFF');
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, type ProgressToken } from '@modelcontextprotocol/sdk/types.js';
 import { DocumentStore } from './storage/storage.js';
 import { FastEmbeddings } from './embeddings/fastembed.js';
 import { WebDocumentProcessor } from './processor/processor.js';
@@ -57,9 +57,6 @@ import {
   type ValidatedStorageState,
 } from './util/security.js';
 import type { StorageState } from './crawler/crawlee-crawler.js';
-
-/** Progress token type from MCP spec */
-type ProgressToken = string | number;
 
 class WebDocsServer {
   private server: McpServer;
@@ -595,57 +592,51 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     }));
 
     // Handle tool calls
-    this.server.server.setRequestHandler(
-      CallToolRequestSchema,
-      async (request: { params: { name: string; arguments?: Record<string, unknown> } }) => {
-        // Extract progressToken from request metadata (per MCP spec)
-        // Clients can include this to receive progress notifications
-        const args = request.params.arguments as Record<string, unknown> | undefined;
-        const progressToken = (args?._meta as Record<string, unknown> | undefined)?.progressToken as ProgressToken | undefined;
+    this.server.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+      const progressToken = request.params._meta?.progressToken;
 
-        switch (request.params.name) {
-          case 'add_documentation':
-            return this.handleAddDocumentation(request.params.arguments, progressToken);
-          case 'list_documentation':
-            return this.handleListDocumentation();
-          case 'search_documentation':
-            return this.handleSearchDocumentation(request.params.arguments);
-          case 'reindex_documentation':
-            return this.handleReindexDocumentation(request.params.arguments, progressToken);
-          case 'get_indexing_status':
-            return this.handleGetIndexingStatus();
-          case 'authenticate':
-            return this.handleAuthenticate(request.params.arguments);
-          case 'clear_auth':
-            return this.handleClearAuth(request.params.arguments);
-          case 'delete_documentation':
-            return this.handleDeleteDocumentation(request.params.arguments);
-          case 'set_tags':
-            return this.handleSetTags(request.params.arguments);
-          case 'list_tags':
-            return this.handleListTags();
-          // Collection handlers
-          case 'create_collection':
-            return this.handleCreateCollection(request.params.arguments);
-          case 'delete_collection':
-            return this.handleDeleteCollection(request.params.arguments);
-          case 'update_collection':
-            return this.handleUpdateCollection(request.params.arguments);
-          case 'list_collections':
-            return this.handleListCollections();
-          case 'get_collection':
-            return this.handleGetCollection(request.params.arguments);
-          case 'add_to_collection':
-            return this.handleAddToCollection(request.params.arguments);
-          case 'remove_from_collection':
-            return this.handleRemoveFromCollection(request.params.arguments);
-          case 'search_collection':
-            return this.handleSearchCollection(request.params.arguments);
-          default:
-            throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
-        }
+      switch (request.params.name) {
+        case 'add_documentation':
+          return this.handleAddDocumentation(request.params.arguments, progressToken);
+        case 'list_documentation':
+          return this.handleListDocumentation();
+        case 'search_documentation':
+          return this.handleSearchDocumentation(request.params.arguments);
+        case 'reindex_documentation':
+          return this.handleReindexDocumentation(request.params.arguments, progressToken);
+        case 'get_indexing_status':
+          return this.handleGetIndexingStatus();
+        case 'authenticate':
+          return this.handleAuthenticate(request.params.arguments);
+        case 'clear_auth':
+          return this.handleClearAuth(request.params.arguments);
+        case 'delete_documentation':
+          return this.handleDeleteDocumentation(request.params.arguments);
+        case 'set_tags':
+          return this.handleSetTags(request.params.arguments);
+        case 'list_tags':
+          return this.handleListTags();
+        // Collection handlers
+        case 'create_collection':
+          return this.handleCreateCollection(request.params.arguments);
+        case 'delete_collection':
+          return this.handleDeleteCollection(request.params.arguments);
+        case 'update_collection':
+          return this.handleUpdateCollection(request.params.arguments);
+        case 'list_collections':
+          return this.handleListCollections();
+        case 'get_collection':
+          return this.handleGetCollection(request.params.arguments);
+        case 'add_to_collection':
+          return this.handleAddToCollection(request.params.arguments);
+        case 'remove_from_collection':
+          return this.handleRemoveFromCollection(request.params.arguments);
+        case 'search_collection':
+          return this.handleSearchCollection(request.params.arguments);
+        default:
+          throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
       }
-    );
+    });
   }
 
   private async handleAddDocumentation(args: Record<string, unknown> | undefined, progressToken?: ProgressToken) {
