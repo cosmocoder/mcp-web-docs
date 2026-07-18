@@ -99,6 +99,30 @@ function preprocessQuery(query: string): ProcessedQuery {
   return result;
 }
 
+function buildExactUrlCondition(urls: string[]): string {
+  return `url IN (${urls.map((url) => `'${escapeFilterValue(url)}'`).join(', ')})`;
+}
+
+function buildSearchWhereClause(visibilityFilter: string, options: SearchOptions, tagFilteredUrls?: string[]): string {
+  const conditions: string[] = [`(${visibilityFilter})`];
+
+  if (options.filterByType) {
+    conditions.push(`type = '${escapeFilterValue(options.filterByType)}'`);
+  }
+  if (options.filterUrl) {
+    const escapedUrl = escapeFilterValue(options.filterUrl).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+    conditions.push(`url LIKE '${escapedUrl}%'`);
+  }
+  if (options.filterUrls) {
+    conditions.push(buildExactUrlCondition(options.filterUrls));
+  }
+  if (tagFilteredUrls) {
+    conditions.push(buildExactUrlCondition(tagFilteredUrls));
+  }
+
+  return conditions.join(' AND ');
+}
+
 export class DocumentStore implements StorageProvider {
   private sqliteDb?: Database;
   private sqliteReadDb?: Database;
@@ -967,16 +991,21 @@ export class DocumentStore implements StorageProvider {
       throw new Error('Storage not initialized');
     }
 
-    const { limit = 10, includeVectors = false, filterByType, filterByTags, textQuery } = options;
+    const { limit = 10, includeVectors = false, filterByType, filterUrls, filterByTags, textQuery } = options;
 
     logger.debug(`[DocumentStore] Searching documents with vector:`, {
       dimensions: queryVector.length,
       limit,
       includeVectors,
       filterByType,
+      filterUrls,
       filterByTags,
       hasTextQuery: !!textQuery,
     });
+
+    if (filterUrls?.length === 0) {
+      return [];
+    }
 
     // Add validation for query vector
     if (queryVector.length === 0 && !textQuery) {
@@ -1032,17 +1061,9 @@ export class DocumentStore implements StorageProvider {
         logger.debug(`[DocumentStore] Tag filter matched ${tagFilteredUrls.length} documents for vector search`);
       }
 
-      // Build WHERE conditions
       const visibilityFilter = await this.getJournalVisibilityFilter();
-      const conditions: string[] = [`(${visibilityFilter})`];
-      if (filterByType) {
-        conditions.push(`type = '${escapeFilterValue(filterByType)}'`);
-      }
-      if (tagFilteredUrls && tagFilteredUrls.length > 0) {
-        const urlConditions = tagFilteredUrls.map((u) => `url = '${escapeFilterValue(u)}'`).join(' OR ');
-        conditions.push(`(${urlConditions})`);
-      }
-      const query = this.lanceTable.search(queryVector).where(conditions.join(' AND ')).limit(limit);
+      const whereClause = buildSearchWhereClause(visibilityFilter, options, tagFilteredUrls);
+      const query = this.lanceTable.search(queryVector).where(whereClause).limit(limit);
 
       const results = await query.toArray();
 
@@ -1125,7 +1146,7 @@ export class DocumentStore implements StorageProvider {
     try {
       logger.debug('[DocumentStore] Creating FTS index on content field...');
       await this.lanceTable.createIndex('content', {
-        config: lancedb.Index.fts(),
+        config: lancedb.Index.fts({ withPosition: true }),
         replace: true, // Replace existing index to prevent accumulation
       });
       this.ftsIndexCreated = true;
@@ -1164,8 +1185,11 @@ export class DocumentStore implements StorageProvider {
       return cached;
     }
 
-    const { limit = 10, filterByType, filterUrl, filterByTags } = options;
-    const visibilityFilter = await this.getJournalVisibilityFilter();
+    const { limit = 10, filterUrls, filterByTags } = options;
+
+    if (filterUrls?.length === 0) {
+      return [];
+    }
 
     // If filtering by tags, get the list of URLs that have all those tags
     let tagFilteredUrls: string[] | undefined;
@@ -1180,27 +1204,8 @@ export class DocumentStore implements StorageProvider {
       logger.debug(`[DocumentStore] Tag filter matched ${tagFilteredUrls.length} documents`);
     }
 
-    // Build WHERE clause for filtering (using escaped values to prevent injection)
-    const buildWhereClause = (): string => {
-      const conditions: string[] = [`(${visibilityFilter})`];
-      if (filterByType) {
-        conditions.push(`type = '${escapeFilterValue(filterByType)}'`);
-      }
-      if (filterUrl) {
-        // Filter by base URL - use LIKE to match URLs that start with the base URL
-        // Escape the filterUrl and also escape LIKE wildcards within the value
-        const escapedUrl = escapeFilterValue(filterUrl).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-        conditions.push(`url LIKE '${escapedUrl}%'`);
-      }
-      if (tagFilteredUrls && tagFilteredUrls.length > 0) {
-        // Filter to only include URLs that match the tag filter
-        const urlConditions = tagFilteredUrls.map((u) => `url = '${escapeFilterValue(u)}'`).join(' OR ');
-        conditions.push(`(${urlConditions})`);
-      }
-      return conditions.join(' AND ');
-    };
-
-    const whereClause = buildWhereClause();
+    const visibilityFilter = await this.getJournalVisibilityFilter();
+    const whereClause = buildSearchWhereClause(visibilityFilter, options, tagFilteredUrls);
 
     try {
       if (!this.lanceTable) {

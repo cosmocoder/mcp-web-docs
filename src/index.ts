@@ -1644,21 +1644,11 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       };
     }
 
-    // Search using the existing searchByText but filter by collection URLs
-    // We'll use a custom approach: search all then filter
-    // This is less efficient than a native filter, but works with existing infrastructure
-    const allResults = await this.store.searchByText(query, { limit: limit * 3 }); // Get more results to filter
-
-    // Filter to only include results from collection URLs
-    const collectionUrlSet = new Set(collectionUrls);
-    let filteredResults = allResults.filter((result) => collectionUrlSet.has(result.url));
-
-    // Apply limit
-    filteredResults = filteredResults.slice(0, limit);
+    const collectionResults = await this.store.searchByText(query, { limit, filterUrls: collectionUrls });
 
     // Apply prompt injection detection and filter/process results (same as handleSearchDocumentation)
     let blockedCount = 0;
-    const safeResults = filteredResults
+    const safeResults = collectionResults
       .map((result) => {
         const injectionResult = detectPromptInjection(result.content);
 

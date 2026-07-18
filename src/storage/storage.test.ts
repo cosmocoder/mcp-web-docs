@@ -5,6 +5,7 @@ import { join } from 'path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { DocumentStore } from './storage.js';
 import { createMockEmbeddings } from '../__mocks__/embeddings.js';
+import { logger } from '../util/logger.js';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProcessedDocument, DocumentChunk } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
@@ -17,6 +18,7 @@ type ReplacementInternals = {
   sqliteLeaseDb?: Database;
   lanceTable?: Table;
   lanceConn?: { close(): void };
+  ftsIndexCreated: boolean;
   finishDocumentReplacement(journal: {
     url: string;
     generation: string;
@@ -1310,6 +1312,29 @@ describe('DocumentStore', () => {
       });
     });
 
+    it('should prefilter pure vector search to exact URLs before applying the limit', async () => {
+      const queryVector = await mockEmbeddings.embed('exact scope query');
+      const globalUrl = 'https://example.com/global-best';
+      const scopedUrl = 'https://example.com/scoped-lower';
+      const globalDoc = createTestDocument(globalUrl, 'Global Best');
+      const scopedDoc = createTestDocument(scopedUrl, 'Scoped Lower');
+      globalDoc.chunks[0].vector = queryVector;
+      scopedDoc.chunks[0].vector = queryVector.map((value) => -value);
+      await store.addDocument(globalDoc);
+      await store.addDocument(scopedDoc);
+
+      const globalResults = await store.searchDocuments(queryVector, { limit: 1 });
+      const scopedResults = await store.searchDocuments(queryVector, { limit: 1, filterUrls: [scopedUrl] });
+
+      expect(globalResults[0].url).toBe(globalUrl);
+      expect(scopedResults.map((result) => result.url)).toEqual([scopedUrl]);
+    });
+
+    it('should return no vector results for an explicit empty URL scope', async () => {
+      const queryVector = await mockEmbeddings.embed('guide');
+      await expect(store.searchDocuments(queryVector, { filterUrls: [] })).resolves.toEqual([]);
+    });
+
     it('should return empty array for empty query vector without text query', async () => {
       const results = await store.searchDocuments([], { limit: 5 });
       expect(results).toEqual([]);
@@ -1353,9 +1378,69 @@ describe('DocumentStore', () => {
       });
     });
 
-    it('should handle quoted phrases', async () => {
-      const results = await store.searchByText('"React Hooks"');
-      expect(Array.isArray(results)).toBe(true);
+    it('should scope both hybrid search legs before ranking', async () => {
+      const query = 'adversarial hybrid scope';
+      const queryVector = await mockEmbeddings.embed(query);
+      const globalUrl = 'https://example.com/hybrid-global-best';
+      const scopedUrl = 'https://example.com/hybrid-scoped-lower';
+      const globalDoc = createDocumentWithContent(globalUrl, 'Global Hybrid', query);
+      const scopedDoc = createDocumentWithContent(scopedUrl, 'Scoped Hybrid', query);
+      globalDoc.chunks[0].vector = queryVector;
+      scopedDoc.chunks[0].vector = queryVector.map((value) => -value);
+      await store.addDocument(globalDoc);
+      await store.addDocument(scopedDoc);
+      expect((store as unknown as { ftsIndexCreated: boolean }).ftsIndexCreated).toBe(true);
+
+      const results = await store.searchByText(query, { limit: 2, filterUrls: [scopedUrl] });
+
+      expect(results.map((result) => result.url)).toEqual([scopedUrl]);
+      expect(results[0].score).toBeGreaterThan(0);
+    });
+
+    it('should preserve exact URL scope in the pure-vector text fallback', async () => {
+      const query = 'fallback scope query';
+      const queryVector = await mockEmbeddings.embed(query);
+      const globalUrl = 'https://example.com/fallback-global-best';
+      const scopedUrl = 'https://example.com/fallback-scoped-lower';
+      const globalDoc = createTestDocument(globalUrl, 'Fallback Global Best');
+      const scopedDoc = createTestDocument(scopedUrl, 'Fallback Scoped Lower');
+      globalDoc.chunks[0].vector = queryVector;
+      scopedDoc.chunks[0].vector = queryVector.map((value) => -value);
+      await store.addDocument(globalDoc);
+      await store.addDocument(scopedDoc);
+      (store as unknown as { ftsIndexCreated: boolean }).ftsIndexCreated = false;
+
+      const globalResults = await store.searchByText(query, { limit: 1 });
+      const scopedResults = await store.searchByText(query, { limit: 1, filterUrls: [scopedUrl] });
+
+      expect(globalResults[0].url).toBe(globalUrl);
+      expect(scopedResults.map((result) => result.url)).toEqual([scopedUrl]);
+    });
+
+    it('should return no text results for an explicit empty URL scope', async () => {
+      await expect(store.searchByText('guide', { filterUrls: [] })).resolves.toEqual([]);
+    });
+
+    it('should scope both phrase search legs before ranking', async () => {
+      const phrase = 'adversarial phrase scope';
+      const query = `"${phrase}"`;
+      const queryVector = await mockEmbeddings.embed(query);
+      const globalUrl = 'https://example.com/phrase-global-best';
+      const scopedUrl = 'https://example.com/phrase-scoped-lower';
+      const globalDoc = createDocumentWithContent(globalUrl, 'Global Phrase', phrase);
+      const scopedDoc = createDocumentWithContent(scopedUrl, 'Scoped Phrase', phrase);
+      globalDoc.chunks[0].vector = queryVector;
+      scopedDoc.chunks[0].vector = queryVector.map((value) => -value);
+      await store.addDocument(globalDoc);
+      await store.addDocument(scopedDoc);
+      const internals = replacementInternals();
+      internals.ftsIndexCreated = false;
+      await internals.createFTSIndex();
+
+      const results = await store.searchByText(query, { limit: 2, filterUrls: [scopedUrl] });
+
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringMatching(/Phrase-based FTS returned [1-9]/));
+      expect(results.map((result) => result.url)).toEqual([scopedUrl]);
     });
 
     it('should handle empty query gracefully', async () => {
@@ -1647,6 +1732,16 @@ describe('DocumentStore', () => {
       // Should not throw and should return empty (no match)
       expect(Array.isArray(results)).toBe(true);
     });
+
+    it('should safely filter by exact URLs with special characters', async () => {
+      const url = "https://example.com/team's-guide";
+      await store.addDocument(createTestDocument(url, 'Special URL Guide'));
+
+      const results = await store.searchByText('guide', { filterUrls: [url] });
+
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.every((result) => result.url === url)).toBe(true);
+    });
   });
 
   describe('document tags', () => {
@@ -1860,6 +1955,17 @@ describe('DocumentStore', () => {
       results.forEach((result) => {
         expect(result.url.startsWith('https://example.com/react')).toBe(true);
       });
+    });
+
+    it('should intersect exact URL, prefix URL, and tag filters', async () => {
+      const results = await store.searchByText('guide', {
+        filterByTags: ['frontend'],
+        filterUrl: 'https://example.com/react',
+        filterUrls: ['https://example.com/react-hooks', 'https://example.com/express-api'],
+      });
+
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.every((result) => result.url === 'https://example.com/react-hooks')).toBe(true);
     });
   });
 

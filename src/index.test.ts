@@ -28,7 +28,9 @@ const {
   mockProcessorProcess,
   mockRunLatest,
   mockStoreAddDocument,
+  mockStoreGetCollectionUrls,
   mockStoreGetDocument,
+  mockStoreSearchByText,
   requestHandlers,
 } = vi.hoisted(() => ({
   mockCrawlerAbort: vi.fn(),
@@ -45,7 +47,9 @@ const {
   }),
   mockRunLatest: vi.fn(),
   mockStoreAddDocument: vi.fn().mockResolvedValue(undefined),
+  mockStoreGetCollectionUrls: vi.fn().mockResolvedValue([]),
   mockStoreGetDocument: vi.fn().mockResolvedValue(null),
+  mockStoreSearchByText: vi.fn().mockResolvedValue([]),
   requestHandlers: [] as ToolHandler[],
 }));
 
@@ -79,11 +83,12 @@ vi.mock('./storage/storage.js', () => ({
       initialize: vi.fn().mockResolvedValue(undefined),
       listDocuments: vi.fn().mockResolvedValue([]),
       getDocument: mockStoreGetDocument,
-      searchByText: vi.fn().mockResolvedValue([]),
+      searchByText: mockStoreSearchByText,
       addDocument: mockStoreAddDocument,
       deleteDocument: vi.fn().mockResolvedValue(undefined),
       setTags: vi.fn().mockResolvedValue(undefined),
       listAllTags: vi.fn().mockResolvedValue([]),
+      getCollectionUrls: mockStoreGetCollectionUrls,
       optimize: vi.fn().mockResolvedValue({ compacted: false, cleanedUp: false }),
     };
   }),
@@ -194,7 +199,7 @@ describe('WebDocsServer', () => {
     vi.restoreAllMocks();
   });
 
-  describe('operation lifecycle integration', () => {
+  describe('registered tool handler integration', () => {
     let toolHandler: ToolHandler;
 
     beforeAll(async () => {
@@ -610,6 +615,20 @@ describe('WebDocsServer', () => {
         expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: '/api/v2' }) }),
         expect.objectContaining({ tags: ['docs'] })
       );
+    });
+
+    it('scopes collection searches to the collection document URLs', async () => {
+      const collectionUrls = ['https://example.com/react', 'https://example.com/vue'];
+      mockStoreGetCollectionUrls.mockResolvedValueOnce(collectionUrls);
+
+      await toolHandler({
+        params: {
+          name: 'search_collection',
+          arguments: { name: 'frontend', query: 'hooks', limit: 2 },
+        },
+      });
+
+      expect(mockStoreSearchByText).toHaveBeenCalledWith('hooks', { limit: 2, filterUrls: collectionUrls });
     });
   });
 
