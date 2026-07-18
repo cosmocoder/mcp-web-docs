@@ -1,4 +1,7 @@
 export interface IndexingStatus {
+  operationId: string;
+  documentId: string;
+  /** Compatibility alias retained for existing clients; always matches documentId. */
   id: string;
   url: string;
   title: string;

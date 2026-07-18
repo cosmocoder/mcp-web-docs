@@ -1,4 +1,4 @@
-import { generateDocId, isPathAllowed } from './docs.js';
+import { generateCrawlStorageId, generateDocId, isPathAllowed } from './docs.js';
 
 describe('Docs Utilities', () => {
   describe('generateDocId', () => {
@@ -53,6 +53,32 @@ describe('Docs Utilities', () => {
     it('should handle URLs with fragments', () => {
       const result = generateDocId('https://example.com/guide#section', 'Guide');
       expect(result).toBe('example-guide');
+    });
+  });
+
+  describe('generateCrawlStorageId', () => {
+    it('should generate a stable SHA-256 storage ID', () => {
+      expect(generateCrawlStorageId('https://example.com/docs')).toBe(
+        'crawl-de106e607d0e711199de3fb7eb98fe5d412ee49ac326eadd3db848ee272ad2cb'
+      );
+    });
+
+    it('should ignore fragments and normalize trailing slashes', () => {
+      const expected = generateCrawlStorageId('https://example.com/docs');
+
+      expect(generateCrawlStorageId('https://example.com/docs/')).toBe(expected);
+      expect(generateCrawlStorageId('https://example.com/docs/#introduction')).toBe(expected);
+      expect(generateCrawlStorageId('https://example.com/docs/?version=2')).toBe(
+        generateCrawlStorageId('https://example.com/docs?version=2')
+      );
+    });
+
+    it('should distinguish URLs that collide under the display ID', () => {
+      const firstUrl = 'https://docs.example.com/guide';
+      const secondUrl = 'https://docs.example.com/guide?version=2';
+
+      expect(generateDocId(firstUrl, 'Guide')).toBe(generateDocId(secondUrl, 'Guide'));
+      expect(generateCrawlStorageId(firstUrl)).not.toBe(generateCrawlStorageId(secondUrl));
     });
   });
 

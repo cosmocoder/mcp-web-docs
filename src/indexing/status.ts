@@ -33,9 +33,11 @@ export class IndexingStatusTracker {
     this.statusListeners.forEach((listener) => listener(status));
   }
 
-  startIndexing(id: string, url: string, title: string): void {
+  startIndexing(operationId: string, documentId: string, url: string, title: string): void {
     const status: IndexingStatus = {
-      id,
+      operationId,
+      documentId,
+      id: documentId,
       url,
       title,
       status: 'indexing',
@@ -52,13 +54,13 @@ export class IndexingStatusTracker {
       status: 'Starting...',
     });
 
-    this.bars.set(id, bar);
-    this.statuses.set(id, status);
+    this.bars.set(operationId, bar);
+    this.statuses.set(operationId, status);
     this.notifyListeners(status);
   }
 
-  updateStats(id: string, stats: { pagesFound?: number; pagesProcessed?: number; chunksCreated?: number }): void {
-    const currentStatus = this.statuses.get(id);
+  updateStats(operationId: string, stats: { pagesFound?: number; pagesProcessed?: number; chunksCreated?: number }): void {
+    const currentStatus = this.statuses.get(operationId);
     if (!currentStatus) {
       return;
     }
@@ -70,13 +72,13 @@ export class IndexingStatusTracker {
       chunksCreated: stats.chunksCreated ?? currentStatus.chunksCreated,
     };
 
-    this.statuses.set(id, status);
+    this.statuses.set(operationId, status);
     this.notifyListeners(status);
   }
 
-  updateProgress(id: string, progress: number, description: string): void {
-    const bar = this.bars.get(id);
-    const currentStatus = this.statuses.get(id);
+  updateProgress(operationId: string, progress: number, description: string): void {
+    const bar = this.bars.get(operationId);
+    const currentStatus = this.statuses.get(operationId);
 
     if (!bar || !currentStatus) {
       return;
@@ -94,13 +96,13 @@ export class IndexingStatusTracker {
       status: currentStatus.status === 'complete' ? 'complete' : 'indexing',
     };
 
-    this.statuses.set(id, status);
+    this.statuses.set(operationId, status);
     this.notifyListeners(status);
   }
 
-  failIndexing(id: string, error: string): void {
-    const bar = this.bars.get(id);
-    const currentStatus = this.statuses.get(id);
+  failIndexing(operationId: string, error: string): void {
+    const bar = this.bars.get(operationId);
+    const currentStatus = this.statuses.get(operationId);
 
     if (!bar || !currentStatus) {
       return;
@@ -118,14 +120,14 @@ export class IndexingStatusTracker {
       error,
     };
 
-    this.statuses.set(id, status);
-    this.completedAt.set(id, new Date());
+    this.statuses.set(operationId, status);
+    this.completedAt.set(operationId, new Date());
     this.notifyListeners(status);
   }
 
-  completeIndexing(id: string): void {
-    const bar = this.bars.get(id);
-    const currentStatus = this.statuses.get(id);
+  completeIndexing(operationId: string): void {
+    const bar = this.bars.get(operationId);
+    const currentStatus = this.statuses.get(operationId);
 
     if (!bar || !currentStatus) {
       return;
@@ -142,14 +144,14 @@ export class IndexingStatusTracker {
       description: 'Indexing complete',
     };
 
-    this.statuses.set(id, status);
-    this.completedAt.set(id, new Date());
+    this.statuses.set(operationId, status);
+    this.completedAt.set(operationId, new Date());
     this.notifyListeners(status);
   }
 
-  abortIndexing(id: string): void {
-    const bar = this.bars.get(id);
-    const currentStatus = this.statuses.get(id);
+  abortIndexing(operationId: string): void {
+    const bar = this.bars.get(operationId);
+    const currentStatus = this.statuses.get(operationId);
 
     if (!bar || !currentStatus) {
       return;
@@ -166,14 +168,14 @@ export class IndexingStatusTracker {
       description: 'Indexing aborted',
     };
 
-    this.statuses.set(id, status);
-    this.completedAt.set(id, new Date());
+    this.statuses.set(operationId, status);
+    this.completedAt.set(operationId, new Date());
     this.notifyListeners(status);
   }
 
-  cancelIndexing(id: string): void {
-    const bar = this.bars.get(id);
-    const currentStatus = this.statuses.get(id);
+  cancelIndexing(operationId: string): void {
+    const bar = this.bars.get(operationId);
+    const currentStatus = this.statuses.get(operationId);
 
     if (!bar || !currentStatus) {
       return;
@@ -189,13 +191,13 @@ export class IndexingStatusTracker {
       description: 'Cancelled - replaced by new indexing operation',
     };
 
-    this.statuses.set(id, status);
-    this.completedAt.set(id, new Date());
+    this.statuses.set(operationId, status);
+    this.completedAt.set(operationId, new Date());
     this.notifyListeners(status);
   }
 
-  getStatus(id: string): IndexingStatus | undefined {
-    return this.statuses.get(id);
+  getStatus(operationId: string): IndexingStatus | undefined {
+    return this.statuses.get(operationId);
   }
 
   /**
@@ -221,7 +223,7 @@ export class IndexingStatusTracker {
       }
 
       // Include completed/failed/aborted/cancelled if within TTL
-      const completedTime = this.completedAt.get(status.id);
+      const completedTime = this.completedAt.get(status.operationId);
       if (completedTime) {
         const age = now.getTime() - completedTime.getTime();
         return age < COMPLETED_STATUS_TTL_MS;
@@ -237,12 +239,12 @@ export class IndexingStatusTracker {
   private cleanupOldStatuses(): void {
     const now = new Date();
 
-    for (const [id, completedTime] of this.completedAt.entries()) {
+    for (const [operationId, completedTime] of this.completedAt.entries()) {
       const age = now.getTime() - completedTime.getTime();
       if (age >= COMPLETED_STATUS_TTL_MS) {
-        this.statuses.delete(id);
-        this.completedAt.delete(id);
-        this.bars.delete(id);
+        this.statuses.delete(operationId);
+        this.completedAt.delete(operationId);
+        this.bars.delete(operationId);
       }
     }
   }

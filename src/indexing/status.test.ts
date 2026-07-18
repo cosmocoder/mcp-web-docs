@@ -31,10 +31,12 @@ describe('IndexingStatusTracker', () => {
 
   describe('startIndexing', () => {
     it('should create initial status', () => {
-      tracker.startIndexing('test-id', 'https://example.com', 'Test Site');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test Site');
 
       const status = tracker.getStatus('test-id');
       expect(status).toBeDefined();
+      expect(status?.operationId).toBe('test-id');
+      expect(status?.documentId).toBe('test-id');
       expect(status?.id).toBe('test-id');
       expect(status?.url).toBe('https://example.com');
       expect(status?.title).toBe('Test Site');
@@ -44,7 +46,7 @@ describe('IndexingStatusTracker', () => {
     });
 
     it('should initialize tracking fields', () => {
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
 
       const status = tracker.getStatus('test-id');
       expect(status?.pagesFound).toBe(0);
@@ -55,7 +57,7 @@ describe('IndexingStatusTracker', () => {
 
   describe('updateProgress', () => {
     beforeEach(() => {
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
     });
 
     it('should update progress and description', () => {
@@ -82,7 +84,7 @@ describe('IndexingStatusTracker', () => {
 
   describe('updateStats', () => {
     beforeEach(() => {
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
     });
 
     it('should update stats incrementally', () => {
@@ -108,7 +110,7 @@ describe('IndexingStatusTracker', () => {
 
   describe('completeIndexing', () => {
     beforeEach(() => {
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
     });
 
     it('should mark indexing as complete', () => {
@@ -128,7 +130,7 @@ describe('IndexingStatusTracker', () => {
 
   describe('failIndexing', () => {
     beforeEach(() => {
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
     });
 
     it('should mark indexing as failed with error', () => {
@@ -143,7 +145,7 @@ describe('IndexingStatusTracker', () => {
 
   describe('abortIndexing', () => {
     beforeEach(() => {
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
     });
 
     it('should mark indexing as aborted', () => {
@@ -157,7 +159,7 @@ describe('IndexingStatusTracker', () => {
 
   describe('cancelIndexing', () => {
     beforeEach(() => {
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
     });
 
     it('should mark indexing as cancelled', () => {
@@ -174,9 +176,10 @@ describe('IndexingStatusTracker', () => {
       const listener = vi.fn();
       tracker.addStatusListener(listener);
 
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
       expect(listener).toHaveBeenCalledWith(
         expect.objectContaining({
+          documentId: 'test-id',
           id: 'test-id',
           status: 'indexing',
         })
@@ -204,7 +207,7 @@ describe('IndexingStatusTracker', () => {
       tracker.addStatusListener(listener1);
       tracker.addStatusListener(listener2);
 
-      tracker.startIndexing('test-id', 'https://example.com', 'Test');
+      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
 
       expect(listener1).toHaveBeenCalled();
       expect(listener2).toHaveBeenCalled();
@@ -213,9 +216,9 @@ describe('IndexingStatusTracker', () => {
 
   describe('getAllStatuses', () => {
     it('should return all statuses', () => {
-      tracker.startIndexing('id1', 'https://example1.com', 'Site 1');
-      tracker.startIndexing('id2', 'https://example2.com', 'Site 2');
-      tracker.startIndexing('id3', 'https://example3.com', 'Site 3');
+      tracker.startIndexing('id1', 'id1', 'https://example1.com', 'Site 1');
+      tracker.startIndexing('id2', 'id2', 'https://example2.com', 'Site 2');
+      tracker.startIndexing('id3', 'id3', 'https://example3.com', 'Site 3');
 
       const statuses = tracker.getAllStatuses();
       expect(statuses.length).toBe(3);
@@ -229,8 +232,8 @@ describe('IndexingStatusTracker', () => {
 
   describe('getActiveStatuses', () => {
     it('should return only active statuses', () => {
-      tracker.startIndexing('active', 'https://active.com', 'Active');
-      tracker.startIndexing('complete', 'https://complete.com', 'Complete');
+      tracker.startIndexing('active', 'active', 'https://active.com', 'Active');
+      tracker.startIndexing('complete', 'complete', 'https://complete.com', 'Complete');
       tracker.completeIndexing('complete');
 
       const active = tracker.getActiveStatuses();
@@ -240,7 +243,7 @@ describe('IndexingStatusTracker', () => {
     });
 
     it('should include recently completed statuses', () => {
-      tracker.startIndexing('test', 'https://test.com', 'Test');
+      tracker.startIndexing('test', 'test', 'https://test.com', 'Test');
       tracker.completeIndexing('test');
 
       const active = tracker.getActiveStatuses();
@@ -249,24 +252,57 @@ describe('IndexingStatusTracker', () => {
   });
 
   describe('concurrent operations', () => {
-    it('should handle multiple concurrent indexing operations', () => {
-      tracker.startIndexing('id1', 'https://example1.com', 'Site 1');
-      tracker.startIndexing('id2', 'https://example2.com', 'Site 2');
+    it('should keep operations with the same document ID independent', () => {
+      tracker.startIndexing('operation-1', 'shared-doc', 'https://example.com/one', 'Site 1');
+      tracker.startIndexing('operation-2', 'shared-doc', 'https://example.com/two', 'Site 2');
 
-      tracker.updateProgress('id1', 0.3, 'Progress 1');
-      tracker.updateProgress('id2', 0.6, 'Progress 2');
+      tracker.updateProgress('operation-1', 0.3, 'Progress 1');
+      tracker.updateProgress('operation-2', 0.6, 'Progress 2');
+      tracker.cancelIndexing('operation-1');
 
-      const status1 = tracker.getStatus('id1');
-      const status2 = tracker.getStatus('id2');
+      expect(tracker.getStatus('operation-1')).toEqual(
+        expect.objectContaining({
+          operationId: 'operation-1',
+          documentId: 'shared-doc',
+          id: 'shared-doc',
+          status: 'cancelled',
+        })
+      );
+      expect(tracker.getStatus('operation-2')).toEqual(
+        expect.objectContaining({
+          operationId: 'operation-2',
+          documentId: 'shared-doc',
+          id: 'shared-doc',
+          status: 'indexing',
+          progress: 0.6,
+        })
+      );
+    });
 
-      expect(status1?.progress).toBe(0.3);
-      expect(status2?.progress).toBe(0.6);
+    it('should clean up a completed operation without removing an active operation for the same document', () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+        tracker.startIndexing('operation-1', 'shared-doc', 'https://example.com/one', 'Site 1');
+        tracker.startIndexing('operation-2', 'shared-doc', 'https://example.com/two', 'Site 2');
+        tracker.completeIndexing('operation-1');
+
+        vi.setSystemTime(new Date('2026-01-01T00:02:00Z'));
+        const active = tracker.getActiveStatuses();
+
+        expect(active.map((status) => status.operationId)).toEqual(['operation-2']);
+        expect(tracker.getStatus('operation-1')).toBeUndefined();
+        expect(tracker.getStatus('operation-2')?.documentId).toBe('shared-doc');
+      }
+      finally {
+        vi.useRealTimers();
+      }
     });
 
     it('should handle mixed completion states', () => {
-      tracker.startIndexing('id1', 'https://example1.com', 'Site 1');
-      tracker.startIndexing('id2', 'https://example2.com', 'Site 2');
-      tracker.startIndexing('id3', 'https://example3.com', 'Site 3');
+      tracker.startIndexing('id1', 'id1', 'https://example1.com', 'Site 1');
+      tracker.startIndexing('id2', 'id2', 'https://example2.com', 'Site 2');
+      tracker.startIndexing('id3', 'id3', 'https://example3.com', 'Site 3');
 
       tracker.completeIndexing('id1');
       tracker.failIndexing('id2', 'Error');
@@ -281,14 +317,14 @@ describe('IndexingStatusTracker', () => {
   describe('edge cases', () => {
     it('should handle very long titles', () => {
       const longTitle = 'A'.repeat(100);
-      tracker.startIndexing('test', 'https://example.com', longTitle);
+      tracker.startIndexing('test', 'test', 'https://example.com', longTitle);
 
       const status = tracker.getStatus('test');
       expect(status?.title).toBe(longTitle);
     });
 
     it('should handle special characters in error messages', () => {
-      tracker.startIndexing('test', 'https://example.com', 'Test');
+      tracker.startIndexing('test', 'test', 'https://example.com', 'Test');
       tracker.failIndexing('test', 'Error with \'quotes\' and "doubles" and <tags>');
 
       const status = tracker.getStatus('test');
@@ -296,7 +332,7 @@ describe('IndexingStatusTracker', () => {
     });
 
     it('should handle progress values at boundaries', () => {
-      tracker.startIndexing('test', 'https://example.com', 'Test');
+      tracker.startIndexing('test', 'test', 'https://example.com', 'Test');
 
       tracker.updateProgress('test', 0, 'Start');
       expect(tracker.getStatus('test')?.progress).toBe(0);
@@ -306,7 +342,7 @@ describe('IndexingStatusTracker', () => {
     });
 
     it('should handle progress values beyond boundaries', () => {
-      tracker.startIndexing('test', 'https://example.com', 'Test');
+      tracker.startIndexing('test', 'test', 'https://example.com', 'Test');
 
       tracker.updateProgress('test', -0.1, 'Negative');
       // Implementation may or may not clamp - just verify no crash

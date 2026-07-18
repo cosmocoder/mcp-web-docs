@@ -2,9 +2,10 @@ import type { EnqueueLinksOptions, Log } from 'crawlee';
 import { QueueManager } from './queue-manager.js';
 import type { CrawlResult } from '../types.js';
 import type { SiteDetectionRule } from './site-rules.js';
+import { generateCrawlStorageId } from '../util/docs.js';
 
-const { mockRequestQueue, mockDataset, mockDiscoverUrls } = vi.hoisted(() => ({
-  mockRequestQueue: {
+const { mockRequestQueue, mockDataset, mockDiscoverUrls, mockRequestQueueOpen, mockDatasetOpen } = vi.hoisted(() => {
+  const mockRequestQueue = {
     drop: vi.fn().mockResolvedValue(undefined),
     addRequest: vi.fn().mockResolvedValue(undefined),
     getInfo: vi.fn().mockResolvedValue({
@@ -12,13 +13,20 @@ const { mockRequestQueue, mockDataset, mockDiscoverUrls } = vi.hoisted(() => ({
       handledRequestCount: 10,
       totalRequestCount: 15,
     }),
-  },
-  mockDataset: {
+  };
+  const mockDataset = {
     drop: vi.fn().mockResolvedValue(undefined),
     pushData: vi.fn().mockResolvedValue(undefined),
-  },
-  mockDiscoverUrls: vi.fn().mockResolvedValue([]),
-}));
+  };
+
+  return {
+    mockRequestQueue,
+    mockDataset,
+    mockDiscoverUrls: vi.fn().mockResolvedValue([]),
+    mockRequestQueueOpen: vi.fn().mockResolvedValue(mockRequestQueue),
+    mockDatasetOpen: vi.fn().mockResolvedValue(mockDataset),
+  };
+});
 
 vi.mock('./llms-txt.js', () => ({
   discoverUrlsFromLlmsTxt: mockDiscoverUrls,
@@ -26,10 +34,10 @@ vi.mock('./llms-txt.js', () => ({
 
 vi.mock('crawlee', () => ({
   RequestQueue: {
-    open: vi.fn().mockResolvedValue(mockRequestQueue),
+    open: mockRequestQueueOpen,
   },
   Dataset: {
-    open: vi.fn().mockResolvedValue(mockDataset),
+    open: mockDatasetOpen,
   },
   EnqueueStrategy: {
     SameDomain: 'same-domain',
@@ -46,11 +54,15 @@ describe('QueueManager', () => {
 
   describe('initialize', () => {
     it('should initialize with a URL', async () => {
-      await queueManager.initialize('https://example.com/docs');
+      const url = 'https://example.com/docs';
+      const storageId = generateCrawlStorageId(url);
+      await queueManager.initialize(url);
 
+      expect(mockRequestQueueOpen).toHaveBeenNthCalledWith(1, storageId);
+      expect(mockRequestQueueOpen).toHaveBeenNthCalledWith(2, storageId);
       expect(mockRequestQueue.drop).toHaveBeenCalled();
       expect(mockRequestQueue.addRequest).toHaveBeenCalledWith({
-        url: 'https://example.com/docs',
+        url,
         uniqueKey: '/docs',
       });
     });
@@ -65,8 +77,10 @@ describe('QueueManager', () => {
     });
 
     it('should clear existing dataset', async () => {
-      await queueManager.initialize('https://example.com');
+      const url = 'https://example.com';
+      await queueManager.initialize(url);
 
+      expect(mockDatasetOpen).toHaveBeenCalledWith(generateCrawlStorageId(url));
       expect(mockDataset.drop).toHaveBeenCalled();
     });
   });
@@ -577,6 +591,7 @@ describe('QueueManager', () => {
 
       expect(processed).toHaveLength(1);
       expect(processed[0]).toEqual(result);
+      expect(mockDatasetOpen).toHaveBeenLastCalledWith(generateCrawlStorageId('https://example.com'));
       expect(mockDataset.pushData).toHaveBeenCalled();
     });
 

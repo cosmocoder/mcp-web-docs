@@ -1,5 +1,5 @@
 import { RequestQueue, Dataset, Log, EnqueueLinksOptions, EnqueueStrategy } from 'crawlee';
-import { generateDocId, isPathAllowed } from '../util/docs.js';
+import { generateCrawlStorageId, isPathAllowed } from '../util/docs.js';
 import { CrawlResult } from '../types.js';
 import { SiteDetectionRule } from './site-rules.js';
 import { logger } from '../util/logger.js';
@@ -7,7 +7,7 @@ import { discoverUrlsFromLlmsTxt } from './llms-txt.js';
 
 export class QueueManager {
   private requestQueue: RequestQueue | null = null;
-  private websiteId: string = '';
+  private storageId: string = '';
   private results: CrawlResult[] = [];
   private static readonly BATCH_SIZE = 20;
   /** Optional path prefix to restrict crawling to URLs under this path */
@@ -21,7 +21,7 @@ export class QueueManager {
 
   async initialize(url: string, pathPrefix?: string): Promise<void> {
     const parsedUrl = new URL(url);
-    this.websiteId = generateDocId(url, parsedUrl.hostname);
+    this.storageId = generateCrawlStorageId(url);
     this.pathPrefix = pathPrefix || '';
     this.allowedHostname = parsedUrl.hostname.toLowerCase();
     this.filteredByPathCount = 0;
@@ -31,12 +31,12 @@ export class QueueManager {
     if (this.pathPrefix) {
       logger.info(`[QueueManager] Path restriction enabled: only crawling URLs under ${this.pathPrefix}`);
     }
-    logger.debug(`[QueueManager] Using website ID: ${this.websiteId}`);
+    logger.debug(`[QueueManager] Using storage ID: ${this.storageId}`);
 
     // Initialize queue
-    this.requestQueue = await RequestQueue.open(this.websiteId);
+    this.requestQueue = await RequestQueue.open(this.storageId);
     await this.requestQueue.drop();
-    this.requestQueue = await RequestQueue.open(this.websiteId);
+    this.requestQueue = await RequestQueue.open(this.storageId);
 
     // Add initial request (strip any hash from URL)
     const cleanUrl = parsedUrl.origin + parsedUrl.pathname + parsedUrl.search;
@@ -46,7 +46,7 @@ export class QueueManager {
     });
 
     // Clear existing dataset
-    const dataset = await Dataset.open(this.websiteId);
+    const dataset = await Dataset.open(this.storageId);
     await dataset.drop();
   }
 
@@ -220,7 +220,7 @@ export class QueueManager {
       return [];
     }
 
-    const dataset = await Dataset.open(this.websiteId);
+    const dataset = await Dataset.open(this.storageId);
     const resultsToProcess = [...this.results];
     this.results = [];
 
