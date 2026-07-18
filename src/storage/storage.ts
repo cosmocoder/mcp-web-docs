@@ -1146,7 +1146,7 @@ export class DocumentStore implements StorageProvider {
     try {
       logger.debug('[DocumentStore] Creating FTS index on content field...');
       await this.lanceTable.createIndex('content', {
-        config: lancedb.Index.fts(),
+        config: lancedb.Index.fts({ withPosition: true }),
         replace: true, // Replace existing index to prevent accumulation
       });
       this.ftsIndexCreated = true;

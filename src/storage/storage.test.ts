@@ -5,6 +5,7 @@ import { join } from 'path';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { DocumentStore } from './storage.js';
 import { createMockEmbeddings } from '../__mocks__/embeddings.js';
+import { logger } from '../util/logger.js';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProcessedDocument, DocumentChunk } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
@@ -17,6 +18,7 @@ type ReplacementInternals = {
   sqliteLeaseDb?: Database;
   lanceTable?: Table;
   lanceConn?: { close(): void };
+  ftsIndexCreated: boolean;
   finishDocumentReplacement(journal: {
     url: string;
     generation: string;
@@ -1419,16 +1421,26 @@ describe('DocumentStore', () => {
       await expect(store.searchByText('guide', { filterUrls: [] })).resolves.toEqual([]);
     });
 
-    it('should apply exact URL scope to phrase FTS', async () => {
-      const scopedUrl = 'https://example.com/react-hooks';
-      const table = replacementInternals().lanceTable!;
-      const phraseQuery = table.query();
-      const where = vi.spyOn(phraseQuery, 'where');
-      vi.spyOn(table, 'query').mockReturnValueOnce(phraseQuery);
+    it('should scope both phrase search legs before ranking', async () => {
+      const phrase = 'adversarial phrase scope';
+      const query = `"${phrase}"`;
+      const queryVector = await mockEmbeddings.embed(query);
+      const globalUrl = 'https://example.com/phrase-global-best';
+      const scopedUrl = 'https://example.com/phrase-scoped-lower';
+      const globalDoc = createDocumentWithContent(globalUrl, 'Global Phrase', phrase);
+      const scopedDoc = createDocumentWithContent(scopedUrl, 'Scoped Phrase', phrase);
+      globalDoc.chunks[0].vector = queryVector;
+      scopedDoc.chunks[0].vector = queryVector.map((value) => -value);
+      await store.addDocument(globalDoc);
+      await store.addDocument(scopedDoc);
+      const internals = replacementInternals();
+      internals.ftsIndexCreated = false;
+      await internals.createFTSIndex();
 
-      await store.searchByText('"React Hooks"', { filterUrls: [scopedUrl] });
+      const results = await store.searchByText(query, { limit: 2, filterUrls: [scopedUrl] });
 
-      expect(where).toHaveBeenCalledWith(expect.stringContaining(`url IN ('${scopedUrl}')`));
+      expect(logger.debug).toHaveBeenCalledWith(expect.stringMatching(/Phrase-based FTS returned [1-9]/));
+      expect(results.map((result) => result.url)).toEqual([scopedUrl]);
     });
 
     it('should handle empty query gracefully', async () => {
