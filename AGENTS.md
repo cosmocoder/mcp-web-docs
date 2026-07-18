@@ -85,7 +85,6 @@ src/
 │
 ├── processor/
 │   ├── processor.ts      # Main document processor
-│   ├── content.ts        # Legacy HTML processing utility
 │   ├── markdown.ts       # Markdown and extracted-text processing
 │   └── metadata-parser.ts # Metadata extraction
 │
@@ -131,7 +130,6 @@ The main MCP server class handling:
 ### `src/processor/` - Content Processing
 
 - **`processor.ts`**: `WebDocumentProcessor` - converts `CrawlResult` to `ProcessedDocument`
-- **`content.ts`**: Legacy standalone HTML-processing utility
 - **`markdown.ts`**: Markdown and extracted-text conversion
 
 ### `src/storage/` - Data Persistence

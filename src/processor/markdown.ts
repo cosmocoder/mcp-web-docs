@@ -1,6 +1,20 @@
 import { CrawlResult } from '../types.js';
-import { Article, ArticleComponent, ProcessedContent } from './content.js';
 import { logger } from '../util/logger.js';
+
+interface ArticleComponent {
+  title: string;
+  body: string;
+}
+
+interface ProcessedContent {
+  article: {
+    url: string;
+    path: string;
+    title: string;
+    components: ArticleComponent[];
+  };
+  content: string;
+}
 
 interface MarkdownSection {
   level: number;
@@ -180,7 +194,7 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
       return undefined;
     }
 
-    const article: Article = {
+    const article = {
       url: page.url,
       path: page.path,
       title: (frontMatter.title as string) || page.title || validComponents[0].title,
@@ -236,7 +250,7 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
     if (validComponents.length === 0) {
       // If no sections found, treat entire content as one component
       logger.debug(`[ExtractedContentProcessor] No sections found, using entire content`);
-      const article: Article = {
+      const article = {
         url: page.url,
         path: page.path,
         title: page.title || 'Content',
@@ -261,7 +275,7 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
       title = firstH1Section.title;
     }
 
-    const article: Article = {
+    const article = {
       url: page.url,
       path: page.path,
       title: title || validComponents[0].title,
