@@ -15,6 +15,8 @@ const {
   mockAuthCleanup,
   mockAuthHasSession,
   mockAuthInitialize,
+  mockAuthPerformInteractiveLogin,
+  mockAuthValidateSession,
   mockClearSession,
   mockCloseOutboundProxy,
   mockDatasetOpen,
@@ -28,6 +30,7 @@ const {
   mockServerClose,
   mockServerConnect,
   mockStoreAddDocument,
+  mockStoreClose,
   mockStoreDeleteDocument,
   mockStoreGetCollectionUrls,
   mockStoreGetDocument,
@@ -43,6 +46,8 @@ const {
   mockAuthCleanup: vi.fn().mockResolvedValue(undefined),
   mockAuthHasSession: vi.fn().mockResolvedValue(false),
   mockAuthInitialize: vi.fn().mockResolvedValue(undefined),
+  mockAuthPerformInteractiveLogin: vi.fn().mockResolvedValue(undefined),
+  mockAuthValidateSession: vi.fn().mockResolvedValue({ isValid: true }),
   mockClearSession: vi.fn().mockResolvedValue(undefined),
   mockCloseOutboundProxy: vi.fn().mockResolvedValue(undefined),
   mockDatasetOpen: vi.fn().mockResolvedValue({ drop: vi.fn().mockResolvedValue(undefined) }),
@@ -59,6 +64,7 @@ const {
   mockServerClose: vi.fn().mockResolvedValue(undefined),
   mockServerConnect: vi.fn().mockResolvedValue(undefined),
   mockStoreAddDocument: vi.fn().mockResolvedValue(undefined),
+  mockStoreClose: vi.fn().mockResolvedValue(undefined),
   mockStoreDeleteDocument: vi.fn().mockResolvedValue(undefined),
   mockStoreGetCollectionUrls: vi.fn().mockResolvedValue([]),
   mockStoreGetDocument: vi.fn().mockResolvedValue(null),
@@ -104,6 +110,7 @@ vi.mock('./storage/storage.js', () => ({
   DocumentStore: vi.fn().mockImplementation(function () {
     return {
       initialize: vi.fn().mockResolvedValue(undefined),
+      close: mockStoreClose,
       listDocuments: vi.fn().mockResolvedValue([]),
       getDocument: mockStoreGetDocument,
       searchByText: mockStoreSearchByText,
@@ -167,8 +174,8 @@ vi.mock('./crawler/auth.js', () => ({
       hasSession: mockAuthHasSession,
       loadSession: vi.fn().mockResolvedValue(null),
       clearSession: mockClearSession,
-      performInteractiveLogin: vi.fn().mockResolvedValue(undefined),
-      validateSession: vi.fn().mockResolvedValue({ isValid: true }),
+      performInteractiveLogin: mockAuthPerformInteractiveLogin,
+      validateSession: mockAuthValidateSession,
     };
   }),
 }));
@@ -223,6 +230,11 @@ const processedPageWithChunk = {
 describe('WebDocsServer', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockAuthHasSession.mockResolvedValue(false);
+    mockAuthPerformInteractiveLogin.mockResolvedValue(undefined);
+    mockAuthValidateSession.mockResolvedValue({ isValid: true });
+    mockClearSession.mockResolvedValue(undefined);
+    mockStoreClose.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -688,6 +700,64 @@ describe('WebDocsServer', () => {
       }
     });
 
+    it.each(['missing', 'valid', 'expired'] as const)('handles a $state auth session when adding documentation', async (state) => {
+      mockAuthHasSession.mockResolvedValue(state !== 'missing');
+      mockAuthValidateSession.mockResolvedValue({ isValid: state !== 'expired', reason: 'expired cookie' });
+      if (state !== 'expired') {
+        mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk);
+      }
+
+      const call = toolHandler({
+        params: {
+          name: 'add_documentation',
+          arguments: { url: 'https://auth.example.com', auth: { requiresAuth: true } },
+        },
+      });
+
+      if (state === 'expired') {
+        await expect(call).rejects.toThrow('Authentication session has expired (expired cookie)');
+        expect(mockClearSession).toHaveBeenCalledWith('https://auth.example.com');
+        expect(mockRunLatest).not.toHaveBeenCalled();
+      }
+      else {
+        await call;
+        await vi.waitFor(() => expect(mockStoreAddDocument).toHaveBeenCalledOnce());
+        expect(mockRunLatest).toHaveBeenCalledOnce();
+      }
+      expect(mockAuthPerformInteractiveLogin).toHaveBeenCalledTimes(state === 'missing' ? 1 : 0);
+      expect(mockAuthValidateSession).toHaveBeenCalledTimes(state === 'missing' ? 0 : 1);
+    });
+
+    it.each(['missing', 'valid', 'expired'] as const)('handles a $state auth session when reindexing documentation', async (state) => {
+      const url = 'https://auth.example.com';
+      mockStoreGetDocument.mockResolvedValueOnce({
+        url,
+        title: 'Authenticated Docs',
+        lastIndexed: new Date(),
+        requiresAuth: true,
+        authDomain: 'auth.example.com',
+      });
+      mockAuthHasSession.mockResolvedValue(state !== 'missing');
+      mockAuthValidateSession.mockResolvedValue({ isValid: state !== 'expired', reason: 'expired cookie' });
+      if (state === 'valid') {
+        mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk);
+      }
+
+      const call = toolHandler({ params: { name: 'reindex_documentation', arguments: { url } } });
+
+      if (state === 'valid') {
+        await call;
+        await vi.waitFor(() => expect(mockStoreAddDocument).toHaveBeenCalledOnce());
+        expect(mockRunLatest).toHaveBeenCalledOnce();
+      }
+      else {
+        await expect(call).rejects.toThrow(state === 'missing' ? 'no session was found' : 'Authentication session has expired');
+        expect(mockRunLatest).not.toHaveBeenCalled();
+      }
+      expect(mockAuthValidateSession).toHaveBeenCalledTimes(state === 'missing' ? 0 : 1);
+      expect(mockClearSession).toHaveBeenCalledTimes(state === 'expired' ? 1 : 0);
+    });
+
     it('starts reindex status inside runLatest and preserves the replacement message', async () => {
       const url = 'https://example.com';
       mockStoreGetDocument.mockResolvedValueOnce({
@@ -723,6 +793,41 @@ describe('WebDocsServer', () => {
       expect(mockStoreAddDocument).toHaveBeenCalledWith(
         expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: '/api/v2' }) }),
         expect.objectContaining({ tags: ['docs'] })
+      );
+    });
+
+    it.each([
+      { name: 'overrides the stored prefix', stored: '/old', override: '/new', expected: '/new' },
+      { name: 'clears the stored prefix', stored: '/old', override: null, expected: undefined },
+      { name: 'normalizes a missing legacy prefix', stored: undefined, override: undefined, expected: undefined },
+    ])('$name when reindexing', async ({ stored, override, expected }) => {
+      const url = 'https://prefix.example.com';
+      mockStoreGetDocument.mockResolvedValueOnce({
+        url,
+        title: 'Prefix Docs',
+        lastIndexed: new Date(),
+        requiresAuth: false,
+        pathPrefix: stored,
+      });
+      mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk);
+
+      await toolHandler({
+        params: {
+          name: 'reindex_documentation',
+          arguments: { url, ...(override !== undefined && { pathPrefix: override }) },
+        },
+      });
+      await vi.waitFor(() => expect(mockStoreAddDocument).toHaveBeenCalledOnce());
+
+      if (expected) {
+        expect(mockCrawlerSetPathPrefix).toHaveBeenCalledWith(expected);
+      }
+      else {
+        expect(mockCrawlerSetPathPrefix).not.toHaveBeenCalled();
+      }
+      expect(mockStoreAddDocument).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ pathPrefix: expected }) }),
+        expect.objectContaining({ tags: [] })
       );
     });
 
@@ -812,9 +917,12 @@ describe('WebDocsServer', () => {
       mockAuthInitialize.mockResolvedValue(undefined);
       mockAuthCleanup.mockResolvedValue(undefined);
       mockAuthHasSession.mockResolvedValue(false);
+      mockAuthPerformInteractiveLogin.mockResolvedValue(undefined);
+      mockAuthValidateSession.mockResolvedValue({ isValid: true });
       mockCloseOutboundProxy.mockResolvedValue(undefined);
       mockIsValidPublicUrl.mockReturnValue(true);
       mockLoadConfig.mockResolvedValue(testConfig);
+      mockStoreClose.mockResolvedValue(undefined);
     });
 
     afterEach(() => {
@@ -841,12 +949,14 @@ describe('WebDocsServer', () => {
       expect(stop).toHaveBeenCalledOnce();
       expect(mockAuthCleanup).toHaveBeenCalledOnce();
       expect(mockCloseOutboundProxy).toHaveBeenCalledOnce();
+      expect(mockStoreClose).not.toHaveBeenCalled();
       expect(exit).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(1);
 
       cancellation.resolve();
       await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
 
+      expect(mockStoreClose).toHaveBeenCalledOnce();
       expect(exit).toHaveBeenCalledOnce();
       expect(vi.getTimerCount()).toBe(0);
     });
@@ -911,6 +1021,35 @@ describe('WebDocsServer', () => {
       await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
     });
 
+    it('settles pending authentication before closing storage and exiting', async () => {
+      const login = Promise.withResolvers<void>();
+      mockAuthPerformInteractiveLogin.mockReturnValue(login.promise);
+      mockAuthCleanup.mockImplementationOnce(async () => login.reject(new Error('browser closed')));
+      const { handlers, exit } = captureProcess();
+
+      vi.resetModules();
+      await import('./index.js');
+      await vi.waitFor(() => expect(mockServerConnect).toHaveBeenCalledOnce());
+      const toolHandler = requestHandlers.at(-1)!;
+      let authenticationSettled = false;
+      const authentication = toolHandler({ params: { name: 'authenticate', arguments: { url: 'https://auth.example.com' } } }).then(
+        (response) => {
+          authenticationSettled = true;
+          return response;
+        }
+      );
+      mockStoreClose.mockImplementationOnce(async () => expect(authenticationSettled).toBe(true));
+      await vi.waitFor(() => expect(mockAuthPerformInteractiveLogin).toHaveBeenCalledOnce());
+
+      handlers.get('SIGTERM')?.('SIGTERM');
+      await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(0));
+      const response = (await authentication) as { content: Array<{ text: string }> };
+
+      expect(JSON.parse(response.content[0].text)).toEqual(expect.objectContaining({ status: 'failed' }));
+      expect(mockAuthCleanup.mock.invocationCallOrder[0]).toBeLessThan(mockStoreClose.mock.invocationCallOrder[0]);
+      expect(mockStoreClose).toHaveBeenCalledOnce();
+    });
+
     it('exits once with failure when graceful shutdown times out', async () => {
       const cancellation = Promise.withResolvers<void>();
       mockQueueCancelAll.mockReturnValue(cancellation.promise);
@@ -924,6 +1063,8 @@ describe('WebDocsServer', () => {
       handlers.get('SIGTERM')?.('SIGTERM');
       await Promise.resolve();
       await vi.advanceTimersByTimeAsync(5_000);
+      expect(exit).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1_000);
 
       expect(exit).toHaveBeenCalledWith(1);
 

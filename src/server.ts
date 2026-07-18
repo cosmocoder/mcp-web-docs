@@ -372,13 +372,19 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
         },
         {
           name: 'reindex_documentation',
-          description: 'Re-index a specific documentation site',
+          description:
+            'Re-index a specific documentation site. By default, preserves its existing path prefix. Provide pathPrefix to override it, or null to remove the restriction.',
           inputSchema: {
             type: 'object',
             properties: {
               url: {
                 type: 'string',
                 description: 'URL of the documentation to re-index',
+              },
+              pathPrefix: {
+                type: ['string', 'null'],
+                description:
+                  "Optional path prefix override. Must start with '/'. Omit to preserve the existing prefix, or pass null to crawl without a path restriction.",
               },
             },
             required: ['url'],
@@ -851,7 +857,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       throw new McpError(ErrorCode.InvalidParams, sanitizeErrorMessage(error));
     }
 
-    const { url } = validatedArgs;
+    const { url, pathPrefix: pathPrefixOverride } = validatedArgs;
 
     // Additional SSRF protection check
     if (!isValidPublicUrl(url)) {
@@ -904,6 +910,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     // Preserve existing crawl settings during reindex
     const existingTags = doc.tags;
     const existingVersion = doc.version;
+    const pathPrefix = pathPrefixOverride === undefined ? (doc.pathPrefix ?? undefined) : (pathPrefixOverride ?? undefined);
 
     const docId = generateDocId(normalizedUrl, doc.title);
 
@@ -920,7 +927,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
           url: normalizedUrl,
           title: doc.title,
           reIndex: true,
-          pathPrefix: doc.pathPrefix,
+          pathPrefix,
           authInfo,
           tags: existingTags,
           version: existingVersion,
@@ -1720,15 +1727,15 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
   private async closeResources(): Promise<void> {
     await this.runPromise?.catch(() => undefined);
     const serverClose = Promise.resolve().then(() => this.server.close());
-
-    const results = await Promise.allSettled([
-      serverClose,
-      serverClose.catch(() => undefined).then(() => Promise.allSettled([...this.activeToolCalls])),
-      Promise.resolve().then(() => this.indexingQueue.cancelAll()),
+    const activeToolDrain = serverClose.catch(() => undefined).then(() => Promise.allSettled([...this.activeToolCalls]));
+    const indexingDrain = Promise.resolve().then(() => this.indexingQueue.cancelAll());
+    const concurrentCleanup = Promise.allSettled([
       Promise.resolve().then(() => this.statusTracker.stop()),
       Promise.resolve().then(() => this.authManager?.cleanup()),
       Promise.resolve().then(() => closeOutboundProxy()),
     ]);
+    const results = await Promise.allSettled([serverClose, activeToolDrain, indexingDrain]);
+    results.push(...(await Promise.allSettled([Promise.resolve().then(() => this.store?.close())])), ...(await concurrentCleanup));
     const errors = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
 
     if (errors.length > 0) {

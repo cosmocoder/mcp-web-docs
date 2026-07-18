@@ -17,6 +17,7 @@ import {
   SessionExpiredError,
   validateToolArgs,
   AddDocumentationArgsSchema,
+  ReindexDocumentationArgsSchema,
   SearchDocumentationArgsSchema,
   StorageStateSchema,
 } from './security.js';
@@ -610,6 +611,13 @@ Normal text here.`;
             AddDocumentationArgsSchema
           )
         ).toThrow('Invalid arguments');
+      });
+    });
+
+    it('allows reindexing to explicitly clear a path prefix', () => {
+      expect(validateToolArgs({ url: 'https://example.com', pathPrefix: null }, ReindexDocumentationArgsSchema)).toEqual({
+        url: 'https://example.com',
+        pathPrefix: null,
       });
     });
 

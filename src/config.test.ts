@@ -1,4 +1,4 @@
-import { isValidUrl, isValidPublicUrl, normalizeUrl, isGitHubUrl, IGNORED_PATHS, RATE_LIMIT } from './config.js';
+import { isValidUrl, isValidPublicUrl, normalizeUrl, isGitHubUrl, RATE_LIMIT } from './config.js';
 
 describe('Configuration Utilities', () => {
   describe('isValidUrl', () => {
@@ -119,22 +119,6 @@ describe('Configuration Utilities', () => {
   });
 
   describe('Constants', () => {
-    describe('IGNORED_PATHS', () => {
-      it('should contain common non-content paths', () => {
-        expect(IGNORED_PATHS).toContain('favicon.ico');
-        expect(IGNORED_PATHS).toContain('robots.txt');
-        expect(IGNORED_PATHS).toContain('assets/');
-        expect(IGNORED_PATHS).toContain('node_modules/');
-      });
-
-      it('should be an array of strings', () => {
-        expect(Array.isArray(IGNORED_PATHS)).toBe(true);
-        IGNORED_PATHS.forEach((path) => {
-          expect(typeof path).toBe('string');
-        });
-      });
-    });
-
     describe('RATE_LIMIT', () => {
       it('should have reasonable default values', () => {
         expect(RATE_LIMIT.maxRequests).toBeGreaterThan(0);

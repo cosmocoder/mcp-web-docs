@@ -60,37 +60,6 @@ export async function loadConfig(): Promise<DocsConfig> {
   return config;
 }
 
-// Constants for indexing
-export const IGNORED_PATHS = [
-  'favicon.ico',
-  'robots.txt',
-  '.rst.txt',
-  'genindex',
-  'py-modindex',
-  'search.html',
-  'search',
-  'genindex.html',
-  'changelog',
-  'changelog.html',
-  'assets/',
-  'static/',
-  'images/',
-  'img/',
-  'css/',
-  'js/',
-  'fonts/',
-  // Common repository paths to ignore
-  'node_modules/',
-  'vendor/',
-  'test/',
-  'tests/',
-  'example/',
-  'examples/',
-  'build/',
-  'dist/',
-  '.git/',
-];
-
 // Rate limiting constants
 export const RATE_LIMIT = {
   maxRequests: 60, // Increased for better throughput

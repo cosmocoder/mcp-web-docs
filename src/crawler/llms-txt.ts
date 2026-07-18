@@ -80,13 +80,12 @@ export function parseLlmsTxt(content: string, baseUrl: string): string[] {
 export async function discoverUrlsFromLlmsTxt(baseUrl: string): Promise<string[]> {
   const origin = new URL(baseUrl).origin;
   const llmsTxtUrl = `${origin}/llms.txt`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LLMS_TXT_TIMEOUT_MS);
 
   logger.info(`[llms-txt] Checking for ${llmsTxtUrl}`);
 
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), LLMS_TXT_TIMEOUT_MS);
-
     const response = await fetchPublicUrl(llmsTxtUrl, {
       signal: controller.signal,
       headers: {
@@ -94,8 +93,6 @@ export async function discoverUrlsFromLlmsTxt(baseUrl: string): Promise<string[]
         Accept: 'text/plain, text/markdown, */*',
       },
     });
-
-    clearTimeout(timeout);
 
     if (!response.ok) {
       logger.debug(`[llms-txt] No llms.txt found (HTTP ${response.status})`);
@@ -127,5 +124,8 @@ export async function discoverUrlsFromLlmsTxt(baseUrl: string): Promise<string[]
       logger.debug(`[llms-txt] Failed to fetch:`, error);
     }
     return [];
+  }
+  finally {
+    clearTimeout(timeout);
   }
 }

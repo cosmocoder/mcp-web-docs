@@ -12,6 +12,7 @@ const [{ WebDocsServer }, { logger }] = await Promise.all([import('./server.js')
 const server = new WebDocsServer();
 server.run().catch((error) => logger.error('Server failed to start:', error));
 
+const SHUTDOWN_TIMEOUT_MS = 6_000;
 let shutdownPromise: Promise<void> | undefined;
 
 function handleShutdown(signal: NodeJS.Signals): Promise<void> {
@@ -27,9 +28,9 @@ function handleShutdown(signal: NodeJS.Signals): Promise<void> {
       }
     };
     const timeout = setTimeout(() => {
-      logger.error('Shutdown timed out after 5 seconds');
+      logger.error(`Shutdown timed out after ${SHUTDOWN_TIMEOUT_MS / 1_000} seconds`);
       exit(1);
-    }, 5_000);
+    }, SHUTDOWN_TIMEOUT_MS);
 
     try {
       await server.close();

@@ -34,8 +34,7 @@ export function generateCrawlStorageId(url: string): string {
   const canonicalUrl = new URL(url);
   canonicalUrl.hash = '';
   canonicalUrl.pathname = canonicalUrl.pathname.replace(/\/$/, '') || '/';
-  const normalizedUrl = canonicalUrl.toString();
-  return `crawl-${createHash('sha256').update(normalizedUrl).digest('hex')}`;
+  return `crawl-${createHash('sha256').update(canonicalUrl.toString()).digest('hex')}`;
 }
 
 /**

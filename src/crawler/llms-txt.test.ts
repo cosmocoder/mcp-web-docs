@@ -127,11 +127,13 @@ describe('llms-txt', () => {
     });
 
     it('should return empty array on network error', async () => {
+      const clearTimeoutSpy = vi.spyOn(global, 'clearTimeout');
       fetchMock.mockRejectOnce(new Error('Network error'));
 
       const urls = await discoverUrlsFromLlmsTxt('https://www.example.com/docs/');
 
       expect(urls).toEqual([]);
+      expect(clearTimeoutSpy).toHaveBeenCalledOnce();
     });
 
     it('should skip HTML responses (likely a redirect to homepage)', async () => {

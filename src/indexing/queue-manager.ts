@@ -3,6 +3,7 @@ import { normalizeUrl } from '../config.js';
 import { logger } from '../util/logger.js';
 
 const DEFAULT_CANCELLATION_TIMEOUT_MS = 5_000;
+const QUEUE_CLOSED_MESSAGE = 'Indexing queue is closed';
 
 interface ActiveOperation {
   controller: AbortController;
@@ -25,7 +26,7 @@ export class IndexingQueueManager {
 
   runLatest(url: string, operation: (signal: AbortSignal) => Promise<void>): Promise<IndexingOperationHandle> {
     if (this.closed) {
-      return Promise.reject(new Error('Indexing queue is closed'));
+      return Promise.reject(new Error(QUEUE_CLOSED_MESSAGE));
     }
     const normalizedUrl = normalizeUrl(url);
     return this.runTransition(normalizedUrl, async () => {
@@ -54,7 +55,7 @@ export class IndexingQueueManager {
 
   private assertOpen(): void {
     if (this.closed) {
-      throw new Error('Indexing queue is closed');
+      throw new Error(QUEUE_CLOSED_MESSAGE);
     }
   }
 
