@@ -33,7 +33,7 @@ const {
 } = vi.hoisted(() => ({
   mockCrawlerAbort: vi.fn(),
   mockCrawlerCrawl: vi.fn().mockImplementation(async function* () {
-    yield { url: 'https://example.com', path: '/', content: '<h1>Test</h1>', title: 'Test' };
+    yield { url: 'https://example.com', path: '/', content: 'Test', contentFormat: 'text', title: 'Test' };
   }),
   mockCrawlerSetPathPrefix: vi.fn(),
   mockClearSession: vi.fn().mockResolvedValue(undefined),
@@ -257,7 +257,7 @@ describe('WebDocsServer', () => {
       const releaseSuccessorCrawl = Promise.withResolvers<void>();
       mockStoreGetDocument.mockReturnValueOnce(firstStoreLookup.promise).mockReturnValueOnce(secondStoreLookup.promise);
       mockCrawlerCrawl.mockImplementationOnce(async function* () {
-        yield { url: 'https://example.com', path: '/', content: '<h1>Test</h1>', title: 'Test' };
+        yield { url: 'https://example.com', path: '/', content: 'Test', contentFormat: 'text', title: 'Test' };
         successorProgressed.resolve();
         await releaseSuccessorCrawl.promise;
       });

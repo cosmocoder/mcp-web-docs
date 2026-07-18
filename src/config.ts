@@ -181,9 +181,3 @@ export function isGitHubUrl(urlString: string): boolean {
     return false;
   }
 }
-
-// Utility function to check if a path is markdown
-export function isMarkdownPath(path: string): boolean {
-  const lowercasePath = path.toLowerCase();
-  return lowercasePath.endsWith('.md') || lowercasePath.endsWith('.mdx') || lowercasePath.endsWith('.markdown');
-}

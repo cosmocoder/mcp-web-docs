@@ -90,6 +90,7 @@ describe('GitHubCrawler', () => {
       expect(results).toHaveLength(2);
       expect(results[0].path).toBe('docs/guide.md');
       expect(results[0].content).toContain('Guide');
+      expect(results[0].contentFormat).toBe('markdown');
       expect(results[1].path).toBe('docs/api.md');
     });
 

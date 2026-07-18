@@ -759,6 +759,7 @@ export class StorybookExtractor implements ContentExtractor {
   async extractContent(document: Document): Promise<ExtractedContent> {
     const emptyResult = {
       content: '',
+      contentFormat: 'markdown' as const,
       metadata: { type: 'overview' as const },
     };
 
@@ -899,6 +900,8 @@ export class StorybookExtractor implements ContentExtractor {
 
       return {
         content: sections.join('\n\n'),
+        contentFormat: 'markdown',
+        title: mainTitle || undefined,
         metadata: {
           type: 'overview' as const,
           pattern: {

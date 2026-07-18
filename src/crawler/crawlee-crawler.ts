@@ -1,5 +1,5 @@
 import { PlaywrightCrawler } from 'crawlee';
-import { CrawlResult } from '../types.js';
+import { ContentFormat, CrawlResult } from '../types.js';
 import { BaseCrawler } from './base.js';
 import { Page, Frame } from 'playwright';
 import type { Request as PlaywrightRequest } from 'playwright';
@@ -290,13 +290,16 @@ export class CrawleeCrawler extends BaseCrawler {
     return frame;
   }
 
-  private async evaluateExtractor(context: Page | Frame, extractor: ContentExtractor): Promise<string> {
+  private async evaluateExtractor(
+    context: Page | Frame,
+    extractor: ContentExtractor
+  ): Promise<{ content: string; contentFormat: ContentFormat; title?: string }> {
     const extractorCode = extractor.constructor.toString();
     return context.evaluate(async (code: string) => {
       const ExtractorClass = new Function(`return ${code}`)();
       const extractor = new ExtractorClass();
       const result = await extractor.extractContent(document);
-      return result.content;
+      return { content: result.content, contentFormat: result.contentFormat, title: result.title };
     }, extractorCode);
   }
 
@@ -304,33 +307,37 @@ export class CrawleeCrawler extends BaseCrawler {
     page: Page,
     siteType: string,
     extractor: ContentExtractor
-  ): Promise<{ content: string; extractorUsed: string }> {
+  ): Promise<{ content: string; contentFormat: ContentFormat; extractorUsed: string; title?: string }> {
     let content = '';
+    let contentFormat: ContentFormat = 'text';
     let extractorUsed = extractor.constructor.name;
+    let title: string | undefined;
 
     try {
       if (siteType === 'storybook') {
         // Try iframe first
         const frame = await this.findContentFrame(page);
         if (frame) {
-          content = await this.evaluateExtractor(frame, extractor);
+          ({ content, contentFormat, title } = await this.evaluateExtractor(frame, extractor));
         }
 
         // Fallback to main page
         if (!content) {
-          content = await this.evaluateExtractor(page, extractor);
+          ({ content, contentFormat, title } = await this.evaluateExtractor(page, extractor));
         }
       }
       else {
-        content = await this.evaluateExtractor(page, extractor);
+        ({ content, contentFormat, title } = await this.evaluateExtractor(page, extractor));
       }
     }
     catch {
       content = await page.evaluate<string>(() => document.body.textContent || '');
+      contentFormat = 'text';
       extractorUsed = 'ErrorFallback';
+      title = undefined;
     }
 
-    return { content, extractorUsed };
+    return { content, contentFormat, extractorUsed, title };
   }
 
   /**
@@ -593,14 +600,15 @@ export class CrawleeCrawler extends BaseCrawler {
 
               await this.queueManager.handleQueueAndLinks(enqueueLinks, log, rule);
 
-              const title = await page.title();
-              const { content, extractorUsed } = await this.extractContent(page, rule.type, rule.extractor);
+              const pageTitle = await page.title();
+              const { content, contentFormat, extractorUsed, title } = await this.extractContent(page, rule.type, rule.extractor);
 
               const result: CrawlResult = {
                 url: request.url,
                 path: new URL(request.url).pathname + new URL(request.url).search,
-                content: cleanContent(content),
-                title,
+                content: contentFormat === 'text' ? cleanContent(content) : content,
+                contentFormat,
+                title: title || pageTitle,
                 extractorUsed,
               };
 

@@ -50,7 +50,13 @@ describe('DocsCrawler', () => {
     describe('GitHub URLs', () => {
       it('should use GitHubCrawler for github.com URLs', async () => {
         const mockResults: CrawlResult[] = [
-          { url: 'https://github.com/owner/repo/README.md', path: 'README.md', content: '# README', title: 'README' },
+          {
+            url: 'https://github.com/owner/repo/README.md',
+            path: 'README.md',
+            content: '# README',
+            contentFormat: 'markdown',
+            title: 'README',
+          },
         ];
 
         mockGitHubCrawl.mockImplementation(async function* () {
@@ -72,7 +78,7 @@ describe('DocsCrawler', () => {
 
       it('should return github type for GitHub URLs', async () => {
         mockGitHubCrawl.mockImplementation(async function* () {
-          yield { url: 'https://github.com/owner/repo', path: '/', content: 'test', title: 'Test' };
+          yield { url: 'https://github.com/owner/repo', path: '/', content: 'test', contentFormat: 'markdown', title: 'Test' };
         });
 
         const generator = crawler.crawl('https://github.com/owner/repo');
@@ -107,8 +113,8 @@ describe('DocsCrawler', () => {
     describe('Non-GitHub URLs', () => {
       it('should use CrawleeCrawler for non-GitHub URLs', async () => {
         const mockResults: CrawlResult[] = [
-          { url: 'https://docs.example.com/guide', path: '/guide', content: '<h1>Guide</h1>', title: 'Guide' },
-          { url: 'https://docs.example.com/api', path: '/api', content: '<h1>API</h1>', title: 'API' },
+          { url: 'https://docs.example.com/guide', path: '/guide', content: 'Guide', contentFormat: 'text', title: 'Guide' },
+          { url: 'https://docs.example.com/api', path: '/api', content: 'API', contentFormat: 'text', title: 'API' },
         ];
 
         mockCrawleeCrawl.mockImplementation(async function* () {
@@ -127,7 +133,7 @@ describe('DocsCrawler', () => {
 
       it('should return crawlee type regardless of page count', async () => {
         mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
         });
 
         const results: CrawlResult[] = [];
@@ -168,20 +174,22 @@ describe('DocsCrawler', () => {
           url: 'https://github.com/owner/repo',
           crawl: mockGitHubCrawl,
           abort: mockGitHubAbort,
+          contentFormat: 'markdown' as const,
         },
         {
           name: 'Crawlee',
           url: 'https://example.com',
           crawl: mockCrawleeCrawl,
           abort: mockCrawleeAbort,
+          contentFormat: 'text' as const,
         },
-      ])('delegates to the active $name crawler before its first page', async ({ url, crawl, abort }) => {
+      ])('delegates to the active $name crawler before its first page', async ({ url, crawl, abort, contentFormat }) => {
         const entered = Promise.withResolvers<void>();
         const released = Promise.withResolvers<void>();
         crawl.mockImplementation(async function* () {
           entered.resolve();
           await released.promise;
-          yield { url, path: '/', content: 'Page', title: 'Page' };
+          yield { url, path: '/', content: 'Page', contentFormat, title: 'Page' };
         });
 
         const next = crawler.crawl(url).next();
@@ -197,7 +205,7 @@ describe('DocsCrawler', () => {
         crawler.abort();
 
         mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
         });
 
         const generator = crawler.crawl('https://example.com');
@@ -229,8 +237,8 @@ describe('DocsCrawler', () => {
         crawler.setStorageState(storageState);
 
         mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', title: 'Page 1' };
-          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', title: 'Page 2' };
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
+          yield { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'text', title: 'Page 2' };
         });
 
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
