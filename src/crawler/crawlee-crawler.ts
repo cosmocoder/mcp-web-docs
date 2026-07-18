@@ -606,7 +606,7 @@ export class CrawleeCrawler extends BaseCrawler {
               const result: CrawlResult = {
                 url: request.url,
                 path: new URL(request.url).pathname + new URL(request.url).search,
-                content: cleanContent(content),
+                content: contentFormat === 'text' ? cleanContent(content) : content,
                 contentFormat,
                 title: title || pageTitle,
                 extractorUsed,

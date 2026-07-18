@@ -348,7 +348,8 @@ describe('CrawleeCrawler', () => {
       expect(mockQueueManager.addResult).not.toHaveBeenCalled();
     });
 
-    it('extracts a later successful page after superseded navigation failures', async () => {
+    it('extracts a later successful page without altering Markdown after superseded navigation failures', async () => {
+      const markdown = '    indented example\n\n# Guide\n\n```ts\nfunction example() {\n  return true;\n}\n```';
       const { page, listeners } = navigationPage(
         'https://example.com/docs',
         (emit) => {
@@ -362,7 +363,7 @@ describe('CrawleeCrawler', () => {
           .fn()
           .mockResolvedValueOnce(false)
           .mockResolvedValueOnce(false)
-          .mockResolvedValue({ content: 'Extracted content', contentFormat: 'text' })
+          .mockResolvedValue({ content: markdown, contentFormat: 'markdown' })
       );
       mockCrawlerRun.mockImplementationOnce(async () => {
         await runRequestHandler(page, 'https://example.com/docs');
@@ -371,7 +372,7 @@ describe('CrawleeCrawler', () => {
       await collect(crawler, 'https://example.com/docs');
 
       expect(mockQueueManager.addResult).toHaveBeenCalledWith(
-        expect.objectContaining({ content: 'Extracted content', contentFormat: 'text', title: 'Docs' })
+        expect.objectContaining({ content: markdown, contentFormat: 'markdown', title: 'Docs' })
       );
       expect(page.off).toHaveBeenCalledWith('response', listeners.response);
       expect(page.off).toHaveBeenCalledWith('requestfailed', listeners.requestfailed);

@@ -428,14 +428,14 @@ export const MyExtractor: ContentExtractor = {
     return {
       title: 'Page Title',
       content: 'Extracted markdown content',
+      contentFormat: 'markdown',
     };
   },
 };
 ```
 
 2. Register in `src/crawler/content-extractors.ts`
-3. Add to `FORMATTED_CONTENT_EXTRACTORS` in `src/processor/processor.ts`
-4. Write tests in `src/crawler/my-extractor.test.ts`
+3. Write tests in `src/crawler/my-extractor.test.ts`
 
 ### Adding a New Tool
 

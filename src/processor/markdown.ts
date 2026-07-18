@@ -4,7 +4,6 @@ import { logger } from '../util/logger.js';
 
 interface MarkdownSection {
   level: number;
-  isHeading: boolean;
   title: string;
   content: string;
   startLine: number;
@@ -121,7 +120,6 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
       // Start new section
       currentSection = {
         level: headerInfo.level,
-        isHeading: true,
         title: headerInfo.title,
         content: '',
         startLine: startLine + i,
@@ -139,8 +137,7 @@ function parseMarkdownSections(content: string, startLine: number = 0): Markdown
       // Content before first header goes into an "Introduction" section
       if (!sections.length) {
         currentSection = {
-          level: 1,
-          isHeading: false,
+          level: 0,
           title: 'Content',
           content: line,
           startLine,
@@ -176,7 +173,7 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
     }));
 
     // Keep heading-only sections produced by extractors such as Storybook.
-    const validComponents = components.filter((comp, index) => comp.body.length > 0 || sections[index].isHeading);
+    const validComponents = components.filter((comp, index) => comp.body.length > 0 || sections[index].level > 0);
 
     if (validComponents.length === 0) {
       logger.debug(`[MarkdownProcessor] No valid content sections found in ${page.url}`);
@@ -259,7 +256,7 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
 
     // Extract title from first H1 if present, otherwise use page title
     let title = page.title;
-    const firstH1Section = sections.find((s) => s.level === 1 && s.isHeading);
+    const firstH1Section = sections.find((s) => s.level === 1);
     if (firstH1Section) {
       title = firstH1Section.title;
     }

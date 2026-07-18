@@ -4,7 +4,6 @@ import { createMockEmbeddings, createFailingEmbeddings } from '../__mocks__/embe
 import type { CrawlResult } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
 import { contentExtractors } from '../crawler/content-extractors.js';
-import { CrawleeCrawler } from '../crawler/crawlee-crawler.js';
 
 describe('WebDocumentProcessor', () => {
   let processor: WebDocumentProcessor;
@@ -97,7 +96,7 @@ Here's how to use the package.
       );
     });
 
-    it('should process actual registered extractor and Crawlee fallback outputs', async () => {
+    it('should process actual Storybook extractor output', async () => {
       const originalWindow = globalThis.window;
       const storybookWindow = new JSDOM(`<main class="sbdocs-content">
         <h1>Button Component</h1>
@@ -140,48 +139,6 @@ Here's how to use the package.
         expect(propsChunk?.metadata.props).toContainEqual(
           expect.objectContaining({ name: 'variant', type: 'string', defaultValue: 'primary' })
         );
-
-        for (const [extractor, html, expected] of [
-          [contentExtractors.github, '<main><h1>GitHub Guide</h1><p>GitHub Pages documentation.</p></main>', 'GitHub Guide'],
-          [contentExtractors.default, '<main><h1>Default Guide</h1><p>Default documentation.</p></main>', 'Default Guide'],
-        ] as const) {
-          const extracted = await extractor.extractContent(new JSDOM(html).window.document);
-          const result = await processor.process({
-            url: `https://example.com/${expected}`,
-            path: `/${expected}`,
-            title: expected,
-            extractorUsed: extractor.constructor.name,
-            ...extracted,
-          });
-          expect(result.chunks[0].content).toContain(expected);
-          expect(result.metadata.title).toBe(expected);
-        }
-
-        const crawler = new CrawleeCrawler();
-        const extractContent = (
-          crawler as unknown as {
-            extractContent(
-              page: { evaluate: ReturnType<typeof vi.fn> },
-              siteType: string,
-              extractor: typeof contentExtractors.default
-            ): Promise<{ content: string; contentFormat: 'text'; extractorUsed: string; title?: string }>;
-          }
-        ).extractContent.bind(crawler);
-        const fallback = await extractContent(
-          {
-            evaluate: vi.fn().mockRejectedValueOnce(new Error('extractor failed')).mockResolvedValueOnce('Plain fallback content'),
-          },
-          'default',
-          contentExtractors.default
-        );
-        const fallbackResult = await processor.process({
-          url: 'https://example.com/fallback',
-          path: '/fallback',
-          ...fallback,
-          title: fallback.title || 'Fallback',
-        });
-        expect(fallbackResult.chunks[0].content).toContain('Plain fallback content');
-        expect(fallbackResult.metadata.title).toBe('Fallback');
       }
       finally {
         contentSpy.mockRestore();

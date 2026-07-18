@@ -297,6 +297,7 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
        return {
          title: 'Page Title',
          content: 'Extracted markdown content',
+         contentFormat: 'markdown',
        };
      },
    };
@@ -304,9 +305,7 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
 
 2. Register in `src/crawler/content-extractors.ts`
 
-3. Add to `FORMATTED_CONTENT_EXTRACTORS` in `src/processor/processor.ts`
-
-4. Write tests in `src/crawler/my-extractor.test.ts`
+3. Write tests in `src/crawler/my-extractor.test.ts`
 
 ### Adding a New Tool
 
