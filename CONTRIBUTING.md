@@ -64,14 +64,15 @@ npm run test:types    # Type check without emitting
 
 ```
 src/
-├── index.ts          # Main MCP server (WebDocsServer class)
+├── index.ts          # CLI bootstrap and signal handling
+├── server.ts         # MCP server and tool handlers
 ├── config.ts         # Configuration loading
 ├── types.ts          # TypeScript interfaces
 ├── crawler/          # Web crawling (Playwright/Crawlee)
 ├── processor/        # Markdown and extracted-text processing
 ├── storage/          # SQLite + LanceDB storage
 ├── embeddings/       # FastEmbed vector generation
-├── indexing/         # Status tracking, queue management
+├── indexing/         # Workflow, status tracking, queue management
 └── util/             # Logger, security, helpers
 ```
 
@@ -299,11 +300,9 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
 
    `contentFormat` must match the returned content: use `text` for extracted text or `markdown` for Markdown.
 
-2. Register it in `src/crawler/content-extractors.ts`
+2. Import and instantiate it in a detection rule in `src/crawler/site-rules.ts` before the default rule
 
-3. Add its detection rule to `src/crawler/site-rules.ts` before the default rule
-
-4. Write tests in `src/crawler/my-extractor.test.ts`
+3. Write tests in `src/crawler/my-extractor.test.ts`
 
 ### Adding a New Tool
 
@@ -316,7 +315,7 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
    });
    ```
 
-2. Add tool definition in `src/index.ts` `setupToolHandlers()`:
+2. Add the tool definition and dispatch case in `src/server.ts` `setupToolHandlers()`:
 
    ```typescript
    {
@@ -326,9 +325,9 @@ See [AGENTS.md](AGENTS.md) for detailed mocking strategies.
    }
    ```
 
-3. Add handler method and case in switch statement
+3. Add the handler method
 
-4. Write tests in `src/index.test.ts`
+4. Write request/dispatch tests in `src/index.test.ts` or `src/server.test.ts`
 
 ### Adding a Database Migration
 

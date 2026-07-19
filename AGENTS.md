@@ -50,10 +50,11 @@ This document provides comprehensive guidance for AI coding agents working on th
 
 ### Data Flow
 
-1. **Crawl**: `DocsCrawler` → `CrawleeCrawler` → yields `CrawlResult`
-2. **Process**: `WebDocumentProcessor` → converts to `ProcessedDocument` with chunks
-3. **Store**: `DocumentStore` → saves to SQLite (metadata) + LanceDB (vectors)
-4. **Search**: Hybrid search combines FTS (full-text) + vector similarity
+1. **Orchestrate**: `WebDocsServer` → `IndexingWorkflow` owns crawl/process/store sequencing
+2. **Crawl**: `DocsCrawler` → `CrawleeCrawler` → yields `CrawlResult`
+3. **Process**: `WebDocumentProcessor` → converts to `ProcessedDocument` with chunks
+4. **Store**: `DocumentStore` → saves to SQLite (metadata) + LanceDB (vectors)
+5. **Search**: Hybrid search combines FTS (full-text) + vector similarity
 
 ---
 
@@ -61,7 +62,8 @@ This document provides comprehensive guidance for AI coding agents working on th
 
 ```
 src/
-├── index.ts              # Main MCP server entry point (WebDocsServer class)
+├── index.ts              # CLI bootstrap and signal handling
+├── server.ts             # MCP server, tools, request handling, and shutdown
 ├── config.ts             # Configuration loading and constants
 ├── types.ts              # TypeScript interfaces and types
 ├── setupTests.ts         # Vitest global test setup
@@ -76,7 +78,6 @@ src/
 │   ├── auth.ts           # Authentication manager (browser login)
 │   ├── browser-config.ts # Playwright browser configuration
 │   ├── site-rules.ts     # Site-specific crawling rules
-│   ├── content-extractors.ts # Extractor registry
 │   ├── content-extractor-types.ts # Extractor interfaces
 │   ├── default-extractor.ts  # Fallback content extractor
 │   ├── storybook-extractor.ts # Storybook-specific extractor
@@ -93,6 +94,7 @@ src/
 │   └── types.ts          # EmbeddingsProvider interface
 │
 ├── indexing/
+│   ├── workflow.ts       # Crawl → process → store indexing workflow
 │   ├── status.ts         # IndexingStatusTracker
 │   └── queue-manager.ts  # IndexingQueueManager (operation coordination)
 │
@@ -110,14 +112,22 @@ src/
 
 ## Module Responsibilities
 
-### `src/index.ts` - WebDocsServer
+### `src/index.ts` - CLI bootstrap
 
-The main MCP server class handling:
+Sets Crawlee logging before dynamic imports, starts `WebDocsServer`, and owns bounded signal handling.
+
+### `src/server.ts` - WebDocsServer
+
+The MCP adapter handling:
 
 - Tool registration (`add_documentation`, `search_documentation`, etc.)
 - Request handling and validation
 - Progress notifications
-- Background indexing orchestration
+- Dependency initialization and graceful resource shutdown
+
+### `src/indexing/workflow.ts` - IndexingWorkflow
+
+Owns the crawl → process → store lifecycle, including reindex settings, cancellation checks, authentication sessions, and storage retries.
 
 ### `src/crawler/` - Web Crawling
 
@@ -426,9 +436,8 @@ export class MyExtractor implements ContentExtractor {
 
 `contentFormat` must match the returned content: use `text` for extracted text or `markdown` for Markdown.
 
-2. Register it in `src/crawler/content-extractors.ts`
-3. Add its detection rule to `src/crawler/site-rules.ts` before the default rule
-4. Write tests in `src/crawler/my-extractor.test.ts`
+2. Import and instantiate it in a detection rule in `src/crawler/site-rules.ts` before the default rule
+3. Write tests in `src/crawler/my-extractor.test.ts`
 
 ### Adding a New Tool
 
@@ -441,7 +450,7 @@ export const MyToolArgsSchema = z.object({
 });
 ```
 
-2. Add tool definition in `src/index.ts` `setupToolHandlers()`:
+2. Add the tool definition and dispatch case in `src/server.ts` `setupToolHandlers()`:
 
 ```typescript
 {
@@ -451,8 +460,8 @@ export const MyToolArgsSchema = z.object({
 }
 ```
 
-3. Add handler method and case in switch statement
-4. Write tests in `src/index.test.ts`
+3. Add the handler method
+4. Write request/dispatch tests in `src/index.test.ts` or `src/server.test.ts`
 
 ### Adding a Database Migration
 
