@@ -1,7 +1,9 @@
 import { Log } from 'crawlee';
 import { Page } from 'playwright';
 import { ContentExtractor } from './content-extractor-types.js';
-import { contentExtractors } from './content-extractors.js';
+import { StorybookExtractor } from './storybook-extractor.js';
+import { GitHubPagesExtractor } from './github-pages-extractor.js';
+import { DefaultExtractor } from './default-extractor.js';
 
 export interface SiteDetectionRule {
   type: string;
@@ -14,7 +16,7 @@ export interface SiteDetectionRule {
 export const siteRules: SiteDetectionRule[] = [
   {
     type: 'storybook',
-    extractor: contentExtractors.storybook,
+    extractor: new StorybookExtractor(),
     detect: async (page) => {
       return page.evaluate(() => {
         return !!(
@@ -122,7 +124,7 @@ export const siteRules: SiteDetectionRule[] = [
   },
   {
     type: 'github',
-    extractor: contentExtractors.github,
+    extractor: new GitHubPagesExtractor(),
     detect: async (page) => {
       return page.evaluate(() => {
         return (
@@ -134,7 +136,7 @@ export const siteRules: SiteDetectionRule[] = [
   },
   {
     type: 'default',
-    extractor: contentExtractors.default,
+    extractor: new DefaultExtractor(),
     detect: async () => true,
   },
 ];

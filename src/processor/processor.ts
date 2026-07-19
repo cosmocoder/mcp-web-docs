@@ -1,4 +1,4 @@
-import { CrawlResult, DocumentChunk, DocumentProcessor, ProcessedDocument } from '../types.js';
+import { CrawlResult, DocumentChunk, ProcessedDocument } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
 import { processMarkdownContent, processExtractedContent } from './markdown.js';
 import { logger } from '../util/logger.js';
@@ -143,7 +143,7 @@ async function* semanticChunker(
   }
 }
 
-export class WebDocumentProcessor implements DocumentProcessor {
+export class WebDocumentProcessor {
   constructor(
     private readonly embeddings: EmbeddingsProvider,
     private readonly maxChunkSize: number = 1000

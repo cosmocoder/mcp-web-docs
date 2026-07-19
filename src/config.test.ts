@@ -1,4 +1,4 @@
-import { isValidUrl, isValidPublicUrl, normalizeUrl, isGitHubUrl, RATE_LIMIT } from './config.js';
+import { isValidUrl, isValidPublicUrl, normalizeUrl, RATE_LIMIT } from './config.js';
 
 describe('Configuration Utilities', () => {
   describe('isValidUrl', () => {
@@ -90,31 +90,6 @@ describe('Configuration Utilities', () => {
 
     it('should handle URLs with fragments', () => {
       expect(normalizeUrl('https://example.com/page#section')).toBe('https://example.com/page#section');
-    });
-  });
-
-  describe('isGitHubUrl', () => {
-    it('should identify GitHub URLs', () => {
-      expect(isGitHubUrl('https://github.com/user/repo')).toBe(true);
-      expect(isGitHubUrl('https://github.com/user/repo/blob/main/README.md')).toBe(true);
-      expect(isGitHubUrl('https://github.com')).toBe(true);
-    });
-
-    it('should not identify non-GitHub URLs', () => {
-      expect(isGitHubUrl('https://gitlab.com/user/repo')).toBe(false);
-      expect(isGitHubUrl('https://bitbucket.org/user/repo')).toBe(false);
-      expect(isGitHubUrl('https://example.com')).toBe(false);
-    });
-
-    it('should handle GitHub-related but non-GitHub URLs', () => {
-      expect(isGitHubUrl('https://github.io')).toBe(false);
-      expect(isGitHubUrl('https://user.github.io')).toBe(false);
-      expect(isGitHubUrl('https://raw.githubusercontent.com/user/repo/main/file')).toBe(false);
-    });
-
-    it('should return false for invalid URLs', () => {
-      expect(isGitHubUrl('not-a-url')).toBe(false);
-      expect(isGitHubUrl('')).toBe(false);
     });
   });
 

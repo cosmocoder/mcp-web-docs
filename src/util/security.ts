@@ -3,7 +3,7 @@
  * Handles encryption, input sanitization, and validation
  */
 
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync, createHash } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 import { z } from 'zod';
 import safeRegex from 'safe-regex2';
 import vard from '@andersmyrmel/vard';
@@ -308,15 +308,6 @@ export function safeJsonParse<T>(jsonString: string, schema: z.ZodSchema<T>): T 
   }
 
   return result.data;
-}
-
-/**
- * Generate a secure hash for cache keys or identifiers
- * @param input - String to hash
- * @returns SHA-256 hash as hex string
- */
-export function secureHash(input: string): string {
-  return createHash('sha256').update(input).digest('hex');
 }
 
 // ============ MCP Tool Argument Validation Schemas ============

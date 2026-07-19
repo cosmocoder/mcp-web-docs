@@ -50,16 +50,6 @@ function generateDeterministicVector(seed: number, dimensions: number): number[]
 }
 
 /**
- * Mock embeddings provider that returns zero vectors (for error testing)
- */
-export function createZeroEmbeddings(dimensions: number = 384): EmbeddingsProvider {
-  return {
-    dimensions,
-    embed: async (): Promise<number[]> => new Array(dimensions).fill(0),
-  };
-}
-
-/**
  * Mock embeddings provider that throws errors (for error handling testing)
  */
 export function createFailingEmbeddings(dimensions: number = 384): EmbeddingsProvider {

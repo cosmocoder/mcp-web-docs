@@ -16,7 +16,6 @@ import {
   ProcessedDocument,
   SearchResult,
   SearchOptions,
-  StorageProvider,
 } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
 import { logger } from '../util/logger.js';
@@ -123,7 +122,7 @@ function buildSearchWhereClause(visibilityFilter: string, options: SearchOptions
   return conditions.join(' AND ');
 }
 
-export class DocumentStore implements StorageProvider {
+export class DocumentStore {
   private sqliteDb?: Database;
   private sqliteReadDb?: Database;
   private sqliteLeaseDb?: Database;
@@ -2167,70 +2166,6 @@ export class DocumentStore implements StorageProvider {
     ]);
 
     return rows.map((row) => row.url);
-  }
-
-  /**
-   * Validates that vectors are properly stored and retrievable from LanceDB
-   * @returns Promise<boolean> True if vectors are valid, false otherwise
-   */
-  async validateVectors(): Promise<boolean> {
-    if (!this.lanceTable) {
-      logger.debug('[DocumentStore] Cannot validate vectors: Storage not initialized');
-      throw new Error('Storage not initialized');
-    }
-
-    try {
-      const visibilityFilter = await this.getJournalVisibilityFilter();
-      // Get total row count
-      const rowCount = await this.lanceTable.countRows(visibilityFilter);
-      logger.debug(`[DocumentStore] Vector validation: Table contains ${rowCount} rows`);
-
-      if (rowCount === 0) {
-        logger.debug('[DocumentStore] Vector validation: No rows found in vector table');
-        return false;
-      }
-
-      // Get a sample row using a query
-      const sampleQuery = this.lanceTable.query().where(visibilityFilter).limit(1);
-      const sample = await sampleQuery.toArray();
-      if (sample.length === 0) {
-        logger.debug('[DocumentStore] Vector validation: No rows returned from query');
-        return false;
-      }
-
-      // Log detailed information about the sample
-      logger.debug('[DocumentStore] Vector validation sample:', {
-        hasVector: 'vector' in sample[0],
-        vectorType: typeof sample[0].vector,
-        isArray: Array.isArray(sample[0].vector),
-        length: Array.isArray(sample[0].vector) ? sample[0].vector.length : 'N/A',
-        sample: Array.isArray(sample[0].vector) ? sample[0].vector.slice(0, 5) : sample[0].vector,
-      });
-
-      // Try a simple vector search with a random vector
-      const testVector = new Array(this.embeddings.dimensions).fill(0).map(() => Math.random());
-      logger.debug(`[DocumentStore] Testing vector search with random vector of length ${testVector.length}`);
-
-      const searchQuery = this.lanceTable.search(testVector).where(visibilityFilter).limit(1);
-      const searchResults = await searchQuery.toArray();
-      logger.debug(`[DocumentStore] Vector search test returned ${searchResults.length} results`);
-
-      if (searchResults.length > 0) {
-        logger.debug('[DocumentStore] Vector search test result:', {
-          score: searchResults[0].score,
-          hasVector: 'vector' in searchResults[0],
-          vectorLength: Array.isArray(searchResults[0].vector) ? searchResults[0].vector.length : 'N/A',
-        });
-      }
-
-      // Consider vectors valid if we have rows and can perform a search
-      // Even if scores are null, the search is still working
-      return rowCount > 0 && sample.length > 0 && searchResults.length > 0;
-    }
-    catch (error) {
-      logger.error('[DocumentStore] Error validating vectors:', error);
-      return false;
-    }
   }
 
   /**

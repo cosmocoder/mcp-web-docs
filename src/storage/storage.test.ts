@@ -1470,20 +1470,6 @@ describe('DocumentStore', () => {
     });
   });
 
-  describe('validateVectors', () => {
-    it('should return false for empty database', async () => {
-      const isValid = await store.validateVectors();
-      expect(isValid).toBe(false);
-    });
-
-    it('should return true after adding documents', async () => {
-      await store.addDocument(createTestDocument('https://example.com/validate', 'Validation Test'));
-
-      const isValid = await store.validateVectors();
-      expect(isValid).toBe(true);
-    });
-  });
-
   describe('error handling', () => {
     it('should throw when not initialized', async () => {
       const uninitializedStore = new DocumentStore(join(tempDir, 'uninit.db'), join(tempDir, 'uninit-vectors'), mockEmbeddings);

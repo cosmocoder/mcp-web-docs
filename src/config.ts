@@ -114,14 +114,3 @@ export function normalizeUrl(urlString: string): string {
     throw new Error(`Invalid URL: ${urlString}`);
   }
 }
-
-// Utility function to check if a URL is a GitHub repository
-export function isGitHubUrl(urlString: string): boolean {
-  try {
-    const url = new URL(urlString);
-    return url.hostname === 'github.com';
-  }
-  catch {
-    return false;
-  }
-}

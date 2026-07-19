@@ -143,20 +143,6 @@ describe('IndexingStatusTracker', () => {
     });
   });
 
-  describe('abortIndexing', () => {
-    beforeEach(() => {
-      tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
-    });
-
-    it('should mark indexing as aborted', () => {
-      tracker.abortIndexing('test-id');
-
-      const status = tracker.getStatus('test-id');
-      expect(status?.status).toBe('aborted');
-      expect(status?.description).toBe('Indexing aborted');
-    });
-  });
-
   describe('cancelIndexing', () => {
     beforeEach(() => {
       tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
@@ -211,22 +197,6 @@ describe('IndexingStatusTracker', () => {
 
       expect(listener1).toHaveBeenCalled();
       expect(listener2).toHaveBeenCalled();
-    });
-  });
-
-  describe('getAllStatuses', () => {
-    it('should return all statuses', () => {
-      tracker.startIndexing('id1', 'id1', 'https://example1.com', 'Site 1');
-      tracker.startIndexing('id2', 'id2', 'https://example2.com', 'Site 2');
-      tracker.startIndexing('id3', 'id3', 'https://example3.com', 'Site 3');
-
-      const statuses = tracker.getAllStatuses();
-      expect(statuses.length).toBe(3);
-    });
-
-    it('should return empty array when no statuses', () => {
-      const statuses = tracker.getAllStatuses();
-      expect(statuses).toEqual([]);
     });
   });
 

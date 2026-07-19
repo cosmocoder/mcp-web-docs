@@ -1,13 +1,14 @@
 import { URL } from 'url';
 import { CrawlResult } from '../types.js';
-import { CrawleeCrawler, StorageState } from './crawlee-crawler.js';
+import { CrawleeCrawler } from './crawlee-crawler.js';
 import { GitHubCrawler } from './github.js';
 import { logger } from '../util/logger.js';
+import type { ValidatedStorageState } from '../util/security.js';
 
 export class DocsCrawler {
   private readonly GITHUB_HOST = 'github.com';
   private isAborting = false;
-  private storageState?: StorageState;
+  private storageState?: ValidatedStorageState;
   private pathPrefix?: string;
   private activeCrawler?: { abort(): void };
 
@@ -26,7 +27,7 @@ export class DocsCrawler {
   /**
    * Set authentication storage state (cookies) to use when crawling
    */
-  setStorageState(state: StorageState): void {
+  setStorageState(state: ValidatedStorageState): void {
     this.storageState = state;
     logger.info(`[DocsCrawler] Set storage state with ${state.cookies?.length || 0} cookies`);
   }
