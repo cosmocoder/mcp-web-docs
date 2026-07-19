@@ -59,12 +59,13 @@ npm run test:types    # Type check
 
 ```
 src/
-├── index.ts          # Main MCP server (WebDocsServer)
+├── index.ts          # CLI bootstrap and signal handling
+├── server.ts         # MCP server and tool handlers
 ├── crawler/          # Web crawling (Playwright/Crawlee)
 ├── processor/        # Content processing
 ├── storage/          # SQLite + LanceDB
 ├── embeddings/       # FastEmbed vectors
-├── indexing/         # Status tracking
+├── indexing/         # Workflow, status tracking, queue management
 └── util/             # Logger, security, helpers
 ```
 

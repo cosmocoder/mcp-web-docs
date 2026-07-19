@@ -51,19 +51,20 @@ npm run test:types    # Type check without emit
 
 ```
 src/
-├── index.ts          # Main MCP server (WebDocsServer class)
+├── index.ts          # CLI bootstrap and signal handling
+├── server.ts         # MCP server and tool handlers
 ├── crawler/          # Web crawling (Playwright/Crawlee)
 ├── processor/        # Markdown and extracted-text processing
 ├── storage/          # SQLite + LanceDB storage
 ├── embeddings/       # FastEmbed vector generation
-├── indexing/         # Status tracking, queue management
+├── indexing/         # Workflow, status tracking, queue management
 └── util/             # Logger, security, helpers
 ```
 
 ### When Adding Features
 
 1. Add Zod schema for input validation in `src/util/security.ts`
-2. Add tool definition in `src/index.ts` `setupToolHandlers()`
+2. Add the tool definition and dispatch case in `src/server.ts` `setupToolHandlers()`
 3. Write tests in corresponding `*.test.ts` file
 4. Run full test suite before submitting
 
