@@ -5,7 +5,7 @@ export interface IndexingStatus {
   id: string;
   url: string;
   title: string;
-  status: 'pending' | 'indexing' | 'complete' | 'failed' | 'aborted' | 'cancelled';
+  status: 'pending' | 'indexing' | 'complete' | 'failed' | 'cancelled';
   progress: number;
   description: string;
   error?: string;
@@ -122,29 +122,6 @@ export interface SearchOptions {
 export interface AddDocumentOptions {
   signal?: AbortSignal;
   tags?: string[];
-}
-
-export interface StorageProvider {
-  initialize(): Promise<void>;
-  close(): Promise<void>;
-  addDocument(doc: ProcessedDocument, options?: AddDocumentOptions): Promise<void>;
-  searchDocuments(queryVector: number[], options?: SearchOptions): Promise<SearchResult[]>;
-  searchByText(query: string, options?: SearchOptions): Promise<SearchResult[]>;
-  listDocuments(): Promise<DocumentMetadata[]>;
-  deleteDocument(url: string): Promise<void>;
-  getDocument(url: string): Promise<DocumentMetadata | null>;
-  /** Set tags for a documentation site (replaces existing tags) */
-  setTags(url: string, tags: string[]): Promise<void>;
-  /** List all unique tags with their usage counts */
-  listAllTags(): Promise<Array<{ tag: string; count: number }>>;
-  /** Get URLs of documents that have ALL of the specified tags */
-  getUrlsByTags(tags: string[]): Promise<string[]>;
-  /** Optimize storage by compacting data and cleaning up old versions */
-  optimize(): Promise<{ compacted: boolean; cleanedUp: boolean; error?: string }>;
-}
-
-export interface DocumentProcessor {
-  process(crawlResult: CrawlResult, chunkSize?: number): Promise<ProcessedDocument>;
 }
 
 // ============ Collections ============

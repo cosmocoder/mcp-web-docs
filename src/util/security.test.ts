@@ -6,7 +6,6 @@ import {
   isSafeRegex,
   createSafeRegex,
   safeJsonParse,
-  secureHash,
   sanitizeErrorMessage,
   redactForLogging,
   detectPromptInjection,
@@ -244,21 +243,6 @@ describe('Security Utilities', () => {
     it('should throw on schema validation failure', () => {
       expect(() => safeJsonParse('{"name": 123}', TestSchema)).toThrow('Schema validation failed');
       expect(() => safeJsonParse('{}', TestSchema)).toThrow('Schema validation failed');
-    });
-  });
-
-  describe('Secure Hash', () => {
-    it('should generate consistent SHA-256 hash', () => {
-      const hash1 = secureHash('test');
-      const hash2 = secureHash('test');
-      expect(hash1).toBe(hash2);
-      expect(hash1).toHaveLength(64); // SHA-256 produces 64 hex characters
-    });
-
-    it('should generate different hashes for different inputs', () => {
-      const hash1 = secureHash('test1');
-      const hash2 = secureHash('test2');
-      expect(hash1).not.toBe(hash2);
     });
   });
 

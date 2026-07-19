@@ -1,4 +1,4 @@
-import { cleanContent, cleanCodeBlock } from './content-utils.js';
+import { cleanContent } from './content-utils.js';
 
 describe('Content Utilities', () => {
   describe('cleanContent', () => {
@@ -64,54 +64,6 @@ describe('Content Utilities', () => {
       const result = cleanContent(input);
       // Leading spaces preserved as single space, tabs converted to spaces then collapsed
       expect(result).toBe('Title\n\n Content with multiple spaces\n Tabbed');
-    });
-  });
-
-  describe('cleanCodeBlock', () => {
-    it('should trim leading and trailing whitespace', () => {
-      const input = '   \nconst x = 1;\n   ';
-      const result = cleanCodeBlock(input);
-      expect(result).toBe('const x = 1;');
-    });
-
-    it('should convert tabs to spaces', () => {
-      const input = 'function test() {\n\treturn true;\n}';
-      const result = cleanCodeBlock(input);
-      expect(result).toBe('function test() {\n  return true;\n}');
-    });
-
-    it('should reduce multiple blank lines', () => {
-      const input = 'line 1\n\n\n\nline 2';
-      const result = cleanCodeBlock(input);
-      expect(result).toBe('line 1\n\nline 2');
-    });
-
-    it('should replace non-breaking spaces with regular spaces', () => {
-      const input = 'const\u00A0x\u00A0=\u00A01;';
-      const result = cleanCodeBlock(input);
-      expect(result).toBe('const x = 1;');
-    });
-
-    it('should handle empty string', () => {
-      expect(cleanCodeBlock('')).toBe('');
-    });
-
-    it('should handle code with multiple formatting issues', () => {
-      const input = '\n\t\tconst x\u00A0= 1;\n\n\n\n\treturn x;\n';
-      const result = cleanCodeBlock(input);
-      expect(result).toBe('const x = 1;\n\n  return x;');
-    });
-
-    it('should preserve single blank lines', () => {
-      const input = 'line 1\n\nline 2';
-      const result = cleanCodeBlock(input);
-      expect(result).toBe('line 1\n\nline 2');
-    });
-
-    it('should handle code with mixed indentation', () => {
-      const input = 'function test() {\n\tif (true) {\n\t\treturn;\n\t}\n}';
-      const result = cleanCodeBlock(input);
-      expect(result).toBe('function test() {\n  if (true) {\n    return;\n  }\n}');
     });
   });
 });

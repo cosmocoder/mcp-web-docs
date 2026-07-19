@@ -9,7 +9,7 @@ import { QueueManager } from './queue-manager.js';
 import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
-import { detectLoginPage, isLoginPageUrl, SessionExpiredError } from '../util/security.js';
+import { detectLoginPage, isLoginPageUrl, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
 import {
   BlockedOutboundRequestError,
   classifyOutboundFailure,
@@ -44,28 +44,10 @@ interface NavigationAttempt {
   cleanup?: () => void;
 }
 
-/** Storage state for authentication (cookies and localStorage) */
-export interface StorageState {
-  cookies: Array<{
-    name: string;
-    value: string;
-    domain: string;
-    path: string;
-    expires?: number;
-    httpOnly?: boolean;
-    secure?: boolean;
-    sameSite?: 'Strict' | 'Lax' | 'None';
-  }>;
-  origins?: Array<{
-    origin: string;
-    localStorage: Array<{ name: string; value: string }>;
-  }>;
-}
-
 export class CrawleeCrawler extends BaseCrawler {
   private crawler: PlaywrightCrawler | null = null;
   private queueManager: QueueManager = new QueueManager();
-  private storageState?: StorageState;
+  private storageState?: ValidatedStorageState;
   private isFirstPage: boolean = true;
   private sessionExpiredError: SessionExpiredError | null = null;
   private expectedUrl: string = '';
@@ -85,7 +67,7 @@ export class CrawleeCrawler extends BaseCrawler {
   /**
    * Set authentication cookies/localStorage to use when crawling
    */
-  setStorageState(state: StorageState): void {
+  setStorageState(state: ValidatedStorageState): void {
     this.storageState = state;
     logger.info(`[CrawleeCrawler] Set storage state with ${state.cookies?.length || 0} cookies`);
   }

@@ -1,4 +1,5 @@
 import type { CrawlResult } from '../types.js';
+import type { ValidatedStorageState } from '../util/security.js';
 
 const mockQueueManager = {
   initialize: vi.fn().mockResolvedValue(undefined),
@@ -67,7 +68,7 @@ vi.mock('crawlee', () => ({
 }));
 
 // Import after mocking
-import { CrawleeCrawler, StorageState } from './crawlee-crawler.js';
+import { CrawleeCrawler } from './crawlee-crawler.js';
 
 type RequestHandler = (context: Record<string, unknown>) => Promise<void>;
 type ErrorHandler = (context: Record<string, unknown>, error: Error) => Promise<void>;
@@ -482,7 +483,7 @@ describe('CrawleeCrawler', () => {
 
   describe('authentication', () => {
     it('should configure crawler with storage state when set', async () => {
-      const state: StorageState = {
+      const state: ValidatedStorageState = {
         cookies: [{ name: 'auth', value: 'token123', domain: 'example.com', path: '/' }],
       };
 

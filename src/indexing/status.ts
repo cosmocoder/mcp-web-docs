@@ -149,30 +149,6 @@ export class IndexingStatusTracker {
     this.notifyListeners(status);
   }
 
-  abortIndexing(operationId: string): void {
-    const bar = this.bars.get(operationId);
-    const currentStatus = this.statuses.get(operationId);
-
-    if (!bar || !currentStatus) {
-      return;
-    }
-
-    bar.update(100, {
-      status: 'Aborted',
-    });
-
-    const status: IndexingStatus = {
-      ...currentStatus,
-      status: 'aborted',
-      progress: 1,
-      description: 'Indexing aborted',
-    };
-
-    this.statuses.set(operationId, status);
-    this.completedAt.set(operationId, new Date());
-    this.notifyListeners(status);
-  }
-
   cancelIndexing(operationId: string): void {
     const bar = this.bars.get(operationId);
     const currentStatus = this.statuses.get(operationId);
@@ -201,13 +177,6 @@ export class IndexingStatusTracker {
   }
 
   /**
-   * Get all statuses (for debugging/internal use)
-   */
-  getAllStatuses(): IndexingStatus[] {
-    return Array.from(this.statuses.values());
-  }
-
-  /**
    * Get only active indexing operations and recently completed ones.
    * Completed statuses are automatically cleaned up after TTL expires.
    * This is the primary method for the get_indexing_status tool.
@@ -222,7 +191,7 @@ export class IndexingStatusTracker {
         return true;
       }
 
-      // Include completed/failed/aborted/cancelled if within TTL
+      // Include completed/failed/cancelled if within TTL
       const completedTime = this.completedAt.get(status.operationId);
       if (completedTime) {
         const age = now.getTime() - completedTime.getTime();

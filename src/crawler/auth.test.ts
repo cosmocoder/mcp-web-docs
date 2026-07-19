@@ -270,30 +270,6 @@ describe('Auth Module', () => {
       });
     });
 
-    describe('createAuthenticatedContext', () => {
-      it('returns null without DNS or browser setup when no saved session exists', async () => {
-        mockReadFile.mockRejectedValue(new Error('ENOENT'));
-
-        await expect(authManager.createAuthenticatedContext('https://example.com')).resolves.toBeNull();
-
-        expect(lookup).not.toHaveBeenCalled();
-        expect(mockChromiumLaunch).not.toHaveBeenCalled();
-      });
-
-      it('uses the pinned proxy without changing service workers or registering routes', async () => {
-        mockStoredSession([]);
-        const { mockBrowser, mockContext, expectPinnedProxy } = setupBrowserMock();
-
-        await expect(authManager.createAuthenticatedContext('https://example.com')).resolves.toEqual({
-          browser: mockBrowser,
-          context: mockContext,
-        });
-
-        expectPinnedProxy();
-        expect(lookup).not.toHaveBeenCalled();
-      });
-    });
-
     describe('performInteractiveLogin', () => {
       it('uses the pinned proxy without changing service workers or registering routes', async () => {
         const { expectPinnedProxy } = setupBrowserMock();
@@ -634,7 +610,7 @@ describe('Auth Module', () => {
           emitResponse(navigationResponse());
         });
 
-        await expect(authManager.validateSessionOrThrow('https://example.com')).rejects.toThrow('Blocked outbound destination');
+        await expect(authManager.validateSession('https://example.com')).rejects.toThrow('Blocked outbound destination');
         expect(mockUnlink).not.toHaveBeenCalled();
         expect(mockPage.off).toHaveBeenCalledWith('response', expect.any(Function));
       });
@@ -645,7 +621,7 @@ describe('Auth Module', () => {
           emitRequestFailed(failedNavigation());
         });
 
-        await expect(authManager.validateSessionOrThrow('https://example.com')).rejects.toThrow('Outbound destination unavailable');
+        await expect(authManager.validateSession('https://example.com')).rejects.toThrow('Outbound destination unavailable');
         expect(mockUnlink).not.toHaveBeenCalled();
         expect(mockPage.off).toHaveBeenCalledWith('requestfailed', expect.any(Function));
       });
@@ -656,7 +632,7 @@ describe('Auth Module', () => {
           emitResponse(navigationResponse({ headerValue: Promise.reject(new Error('headers unavailable')) }));
         });
 
-        await expect(authManager.validateSessionOrThrow('https://example.com')).rejects.toThrow(
+        await expect(authManager.validateSession('https://example.com')).rejects.toThrow(
           'Failed to inspect outbound response: headers unavailable'
         );
         expect(mockUnlink).not.toHaveBeenCalled();
@@ -674,7 +650,7 @@ describe('Auth Module', () => {
           return 'Welcome to the site';
         });
 
-        await expect(authManager.validateSessionOrThrow('https://example.com')).rejects.toThrow('Blocked outbound destination');
+        await expect(authManager.validateSession('https://example.com')).rejects.toThrow('Blocked outbound destination');
         expect(mockUnlink).not.toHaveBeenCalled();
       });
 

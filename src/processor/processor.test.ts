@@ -3,7 +3,7 @@ import { WebDocumentProcessor } from './processor.js';
 import { createMockEmbeddings, createFailingEmbeddings } from '../__mocks__/embeddings.js';
 import type { CrawlResult } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
-import { contentExtractors } from '../crawler/content-extractors.js';
+import { StorybookExtractor } from '../crawler/storybook-extractor.js';
 
 describe('WebDocumentProcessor', () => {
   let processor: WebDocumentProcessor;
@@ -83,7 +83,7 @@ Here's how to use the package.
         opacity: '1',
       }) as unknown as typeof storybookWindow.getComputedStyle;
 
-      const storybook = contentExtractors.storybook as unknown as {
+      const storybook = new StorybookExtractor() as unknown as {
         extractContent(document: Document): Promise<{ content: string; contentFormat: 'markdown'; title?: string }>;
         expandAllTypeValues(table: Element): Promise<void>;
         waitForStorybookAPI(): Promise<void>;
@@ -98,7 +98,7 @@ Here's how to use the package.
         const storybookResult = await processor.process({
           url: 'https://storybook.example.com/button',
           path: '/button',
-          extractorUsed: contentExtractors.storybook.constructor.name,
+          extractorUsed: storybook.constructor.name,
           ...storybookContent,
           title: storybookContent.title || 'Button',
         });

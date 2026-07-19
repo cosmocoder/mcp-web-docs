@@ -1,7 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AuthManager } from '../crawler/auth.js';
 import type { DocsCrawler } from '../crawler/docs-crawler.js';
-import type { StorageState } from '../crawler/crawlee-crawler.js';
 import type { WebDocumentProcessor } from '../processor/processor.js';
 import type { DocumentStore } from '../storage/storage.js';
 import type { DocumentChunk } from '../types.js';
@@ -101,7 +100,7 @@ export class IndexingWorkflow {
       if (savedSession) {
         try {
           const validatedState: ValidatedStorageState = safeJsonParse(savedSession, StorageStateSchema);
-          crawler.setStorageState(validatedState as StorageState);
+          crawler.setStorageState(validatedState);
           logger.info(`[IndexingWorkflow] Using validated authentication session for ${url}`);
         }
         catch (error) {

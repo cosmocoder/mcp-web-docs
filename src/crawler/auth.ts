@@ -14,7 +14,6 @@ import {
   safeJsonParse,
   detectLoginPage,
   isLoginPageUrl,
-  SessionExpiredError,
   type ValidatedStoredSession,
   type LoginPageDetectionResult,
   validatePublicUrl,
@@ -533,31 +532,6 @@ export class AuthManager {
   }
 
   /**
-   * Validate session and throw SessionExpiredError if expired.
-   * This is a convenience method for use in crawling workflows.
-   *
-   * @param url - The protected URL to validate against
-   * @param browserType - Browser type to use for validation
-   * @throws SessionExpiredError if the session has expired
-   */
-  async validateSessionOrThrow(url: string, browserType: BrowserType = 'chromium'): Promise<void> {
-    const result = await this.validateSession(url, browserType);
-
-    if (!result.isValid) {
-      // Clear the expired session
-      await this.clearSession(url);
-      logger.info(`[AuthManager] Cleared expired session for ${new URL(url).hostname}`);
-
-      throw new SessionExpiredError(
-        `Authentication session has expired: ${result.reason}`,
-        url,
-        result.finalUrl || url,
-        result.loginDetection || { isLoginPage: true, confidence: 0.5, reasons: [result.reason || 'Unknown'] }
-      );
-    }
-  }
-
-  /**
    * Get the Playwright browser launcher for a browser type
    */
   private getBrowserLauncher(browserType: BrowserType) {
@@ -954,38 +928,6 @@ export class AuthManager {
     logger.warn(`[AuthManager] Login detection timed out after ${timeoutSecs} seconds`);
     logger.debug(`[AuthManager] Visited ${visitedDomains.size} domains during auth flow`);
     return false;
-  }
-
-  /**
-   * Create a browser context with saved authentication
-   */
-  async createAuthenticatedContext(
-    url: string,
-    browserType: BrowserType = 'chromium'
-  ): Promise<{ browser: Browser; context: BrowserContext } | null> {
-    const storageStateJson = await this.loadSession(url);
-
-    if (!storageStateJson) {
-      return null;
-    }
-
-    validatePublicUrl(url);
-
-    const launcher = this.getBrowserLauncher(browserType);
-    const launchOptions = this.getLaunchOptions(browserType);
-
-    const browser = await launcher.launch({
-      headless: true,
-      ...launchOptions,
-    });
-
-    const storageState = JSON.parse(storageStateJson);
-    const context = await browser.newContext({
-      storageState,
-      proxy: { server: await getOutboundProxyUrl(), bypass: '<-loopback>' },
-    });
-
-    return { browser, context };
   }
 
   /**
