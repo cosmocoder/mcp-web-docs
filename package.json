@@ -71,7 +71,7 @@
     "safe-regex2": "5.1.1",
     "sqlite": "5.1.1",
     "sqlite3": "5.1.7",
-    "typescript": "5.9.3",
+    "typescript": "7.0.2",
     "undici": "7.28.0",
     "zod": "4.4.3"
   },
