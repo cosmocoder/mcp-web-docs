@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
 process.env.CRAWLEE_LOG_LEVEL = 'OFF';
-// Must be the numeric level, not 'OFF': @apify/log resolves names with a truthiness
-// check, and LogLevel.OFF is 0, so 'OFF' falls through to Number('OFF') = NaN and the
-// module-level Log it constructs on import throws. See src/index.log-level.test.ts.
+// Numeric, not 'OFF': @apify/log looks names up with a truthiness check and LogLevel.OFF
+// is 0, so 'OFF' becomes Number('OFF') = NaN and the Log it builds on import throws.
+// Must stay above the crawlee import — the logger reads this once, when it loads.
 process.env.APIFY_LOG_LEVEL = '0';
 
 const { log, Configuration } = await import('crawlee');

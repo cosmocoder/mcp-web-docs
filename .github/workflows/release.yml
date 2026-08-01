@@ -161,6 +161,10 @@ jobs:
         run: npm run build
         shell: bash
 
+      - name: Smoke test the built server
+        run: npm run smoke
+        shell: bash
+
       - name: Save build
         uses: actions/cache/save@v5
         with:
