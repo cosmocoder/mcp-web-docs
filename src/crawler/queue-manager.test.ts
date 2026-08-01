@@ -4,7 +4,7 @@ import type { CrawlResult } from '../types.js';
 import type { SiteDetectionRule } from './site-rules.js';
 import { generateCrawlStorageId } from '../util/docs.js';
 
-const { mockRequestQueue, mockDataset, mockDiscoverUrls, mockRequestQueueOpen, mockDatasetOpen } = vi.hoisted(() => {
+const { mockRequestQueue, mockDiscoverUrls, mockRequestQueueOpen } = vi.hoisted(() => {
   const mockRequestQueue = {
     drop: vi.fn().mockResolvedValue(undefined),
     addRequest: vi.fn().mockResolvedValue(undefined),
@@ -14,17 +14,10 @@ const { mockRequestQueue, mockDataset, mockDiscoverUrls, mockRequestQueueOpen, m
       totalRequestCount: 15,
     }),
   };
-  const mockDataset = {
-    drop: vi.fn().mockResolvedValue(undefined),
-    pushData: vi.fn().mockResolvedValue(undefined),
-  };
-
   return {
     mockRequestQueue,
-    mockDataset,
     mockDiscoverUrls: vi.fn().mockResolvedValue([]),
     mockRequestQueueOpen: vi.fn().mockResolvedValue(mockRequestQueue),
-    mockDatasetOpen: vi.fn().mockResolvedValue(mockDataset),
   };
 });
 
@@ -35,9 +28,6 @@ vi.mock('./llms-txt.js', () => ({
 vi.mock('crawlee', () => ({
   RequestQueue: {
     open: mockRequestQueueOpen,
-  },
-  Dataset: {
-    open: mockDatasetOpen,
   },
   EnqueueStrategy: {
     SameDomain: 'same-domain',
@@ -74,14 +64,6 @@ describe('QueueManager', () => {
         url: 'https://example.com/path/to/page?query=1',
         uniqueKey: '/path/to/page?query=1',
       });
-    });
-
-    it('should clear existing dataset', async () => {
-      const url = 'https://example.com';
-      await queueManager.initialize(url);
-
-      expect(mockDatasetOpen).toHaveBeenCalledWith(generateCrawlStorageId(url));
-      expect(mockDataset.drop).toHaveBeenCalled();
     });
   });
 
@@ -557,37 +539,32 @@ describe('QueueManager', () => {
     });
   });
 
-  describe('addResult and processBatch', () => {
+  describe('addResult and drainResults', () => {
     beforeEach(async () => {
       await queueManager.initialize('https://example.com');
     });
 
-    it('should process batch and return results', async () => {
-      const result: CrawlResult = {
-        url: 'https://example.com/page',
-        path: '/page',
-        content: 'Test content',
+    it('should return the results added since the last drain, in crawl order', () => {
+      const first: CrawlResult = {
+        url: 'https://example.com/first',
+        path: '/first',
+        content: 'First',
         contentFormat: 'text',
-        title: 'Test Page',
+        title: 'First Page',
       };
+      const second: CrawlResult = { ...first, url: 'https://example.com/second', path: '/second', title: 'Second Page' };
 
-      queueManager.addResult(result);
+      queueManager.addResult(first);
+      queueManager.addResult(second);
 
-      const processed = await queueManager.processBatch();
-
-      expect(processed).toHaveLength(1);
-      expect(processed[0]).toEqual(result);
-      expect(mockDatasetOpen).toHaveBeenLastCalledWith(generateCrawlStorageId('https://example.com'));
-      expect(mockDataset.pushData).toHaveBeenCalled();
+      expect(queueManager.drainResults()).toEqual([first, second]);
     });
 
-    it('should return empty array when no results', async () => {
-      const processed = await queueManager.processBatch();
-
-      expect(processed).toHaveLength(0);
+    it('should return empty array when no results', () => {
+      expect(queueManager.drainResults()).toHaveLength(0);
     });
 
-    it('should clear results after processing', async () => {
+    it('should clear results after draining', () => {
       queueManager.addResult({
         url: 'https://example.com/page',
         path: '/page',
@@ -596,28 +573,9 @@ describe('QueueManager', () => {
         title: 'Test',
       });
 
-      await queueManager.processBatch();
-      const secondBatch = await queueManager.processBatch();
+      queueManager.drainResults();
 
-      expect(secondBatch).toHaveLength(0);
-    });
-
-    it('should push data to dataset in chunks', async () => {
-      // Add 7 results
-      for (let i = 0; i < 7; i++) {
-        queueManager.addResult({
-          url: `https://example.com/page${i}`,
-          path: `/page${i}`,
-          content: `Content ${i}`,
-          contentFormat: 'text',
-          title: `Page ${i}`,
-        });
-      }
-
-      await queueManager.processBatch();
-
-      // Should be pushed in chunks of 5
-      expect(mockDataset.pushData).toHaveBeenCalledTimes(2);
+      expect(queueManager.drainResults()).toHaveLength(0);
     });
   });
 
@@ -739,8 +697,7 @@ describe('QueueManager', () => {
       expect(queueManager.getRequestQueue()).toBeNull();
 
       // Results should be cleared
-      const processed = await queueManager.processBatch();
-      expect(processed).toHaveLength(0);
+      expect(queueManager.drainResults()).toHaveLength(0);
     });
 
     it('should handle cleanup errors gracefully', async () => {

@@ -19,7 +19,6 @@ const {
   mockAuthValidateSession,
   mockClearSession,
   mockCloseOutboundProxy,
-  mockDatasetOpen,
   mockFetchFavicon,
   mockIsValidPublicUrl,
   mockLoadConfig,
@@ -50,7 +49,6 @@ const {
   mockAuthValidateSession: vi.fn().mockResolvedValue({ isValid: true }),
   mockClearSession: vi.fn().mockResolvedValue(undefined),
   mockCloseOutboundProxy: vi.fn().mockResolvedValue(undefined),
-  mockDatasetOpen: vi.fn().mockResolvedValue({ drop: vi.fn().mockResolvedValue(undefined) }),
   mockFetchFavicon: vi.fn().mockResolvedValue('https://example.com/favicon.ico'),
   mockIsValidPublicUrl: vi.fn().mockReturnValue(true),
   mockLoadConfig: vi.fn(),
@@ -202,13 +200,11 @@ vi.mock('./util/docs.js', () => ({
     const hostname = new URL(url).hostname;
     return hostname.replace(/\./g, '-');
   }),
-  generateCrawlStorageId: vi.fn().mockImplementation((url: string) => `crawl-${new URL(url).hostname}`),
 }));
 
 vi.mock('crawlee', () => ({
   log: { setLevel: vi.fn(), LEVELS: { OFF: 0 } },
   Configuration: { getGlobalConfig: vi.fn().mockReturnValue({ set: vi.fn() }) },
-  Dataset: { open: mockDatasetOpen },
 }));
 
 const processedPageWithChunk = {
@@ -831,24 +827,20 @@ describe('WebDocsServer', () => {
       );
     });
 
-    it('deletes current and historical crawl datasets independently', async () => {
-      const legacyDrop = vi.fn().mockResolvedValue(undefined);
+    it('reports exactly the items it deleted', async () => {
       mockStoreGetDocument.mockResolvedValueOnce({
         url: 'https://docs.example.com',
         title: '@org/package',
         lastIndexed: new Date(),
       });
-      mockDatasetOpen.mockRejectedValueOnce(new Error('current dataset missing')).mockResolvedValueOnce({ drop: legacyDrop });
 
       const response = (await toolHandler({
         params: { name: 'delete_documentation', arguments: { url: 'https://docs.example.com' } },
       })) as { content: Array<{ text: string }> };
       const payload = JSON.parse(response.content[0].text) as { deletedItems: string[] };
 
-      expect(mockDatasetOpen.mock.calls).toEqual([['crawl-docs.example.com'], ['docs-example-com']]);
-      expect(legacyDrop).toHaveBeenCalledOnce();
-      expect(payload.deletedItems).toContain('crawl cache (Crawlee dataset)');
       expect(mockStoreDeleteDocument).toHaveBeenCalledWith('https://docs.example.com');
+      expect(payload.deletedItems).toEqual(['document metadata (SQLite)', 'vector chunks (LanceDB)']);
     });
 
     it('scopes collection searches to the collection document URLs', async () => {

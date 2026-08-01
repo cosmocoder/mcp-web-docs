@@ -653,7 +653,6 @@ The content extractor couldn't process the page. Try:
 
 - Re-indexing the documentation
 - Checking if the site uses JavaScript rendering (should work with Playwright)
-- Looking at the crawled data in `~/.mcp-web-docs/crawlee/datasets/`
 
 </details>
 
@@ -699,7 +698,7 @@ All data is stored locally in `~/.mcp-web-docs/`:
 ├── docs.db           # SQLite database for document metadata
 ├── vectors/          # LanceDB vector database
 ├── sessions/         # Saved authentication sessions
-└── crawlee/          # Crawlee datasets (cached crawl data)
+└── crawlee/          # Crawlee crawl state (request queues)
 ```
 
 ---
