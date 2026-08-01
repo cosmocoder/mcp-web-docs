@@ -7,7 +7,7 @@ const mockQueueManager = {
   getRequestQueue: vi.fn().mockReturnValue({}),
   handleQueueAndLinks: vi.fn().mockResolvedValue(undefined),
   addResult: vi.fn(),
-  processBatch: vi.fn().mockResolvedValue([]),
+  drainResults: vi.fn().mockReturnValue([]),
   cleanup: vi.fn().mockResolvedValue(undefined),
 };
 const { mockConfiguredErrorHandler } = vi.hoisted(() => ({
@@ -160,7 +160,7 @@ describe('CrawleeCrawler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     crawler = new CrawleeCrawler();
-    mockQueueManager.processBatch.mockResolvedValue([]);
+    mockQueueManager.drainResults.mockReturnValue([]);
   });
 
   describe('crawl', () => {
@@ -409,7 +409,7 @@ describe('CrawleeCrawler', () => {
         { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'text', title: 'Page 2' },
       ];
 
-      mockQueueManager.processBatch.mockResolvedValueOnce(mockResults);
+      mockQueueManager.drainResults.mockReturnValueOnce(mockResults);
 
       const results = await collect(crawler, 'https://example.com');
 
@@ -429,7 +429,7 @@ describe('CrawleeCrawler', () => {
       // drains the queue mid-crawl instead of waiting for the crawl to finish
       const { promise, resolve: finishCrawl } = Promise.withResolvers<typeof successfulRunStats>();
       mockCrawlerRun.mockReturnValueOnce(promise);
-      mockQueueManager.processBatch.mockResolvedValueOnce([mockResult]);
+      mockQueueManager.drainResults.mockReturnValueOnce([mockResult]);
 
       const generator = crawler.crawl('https://example.com');
       const first = await generator.next();
@@ -445,10 +445,10 @@ describe('CrawleeCrawler', () => {
 
       // run() is already resolved, so the loop drains once (empty) and breaks on
       // its first tick — only the drain after the crawl promise can yield this.
-      mockQueueManager.processBatch.mockResolvedValueOnce([]).mockResolvedValueOnce([lateResult]);
+      mockQueueManager.drainResults.mockReturnValueOnce([]).mockReturnValueOnce([lateResult]);
 
       expect(await collect(crawler, 'https://example.com')).toEqual([lateResult]);
-      expect(mockQueueManager.processBatch).toHaveBeenCalledTimes(2);
+      expect(mockQueueManager.drainResults).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -549,7 +549,7 @@ describe('CrawleeCrawler', () => {
       });
 
       const partial: CrawlResult = { url: 'https://example.com/p1', path: '/p1', content: 'P1', contentFormat: 'text', title: 'P1' };
-      mockQueueManager.processBatch.mockResolvedValueOnce([partial]);
+      mockQueueManager.drainResults.mockReturnValueOnce([partial]);
 
       // Pages drained before the failure are still handed to the caller, which
       // then sees the error — the crawl no longer withholds everything until the end

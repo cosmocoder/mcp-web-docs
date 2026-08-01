@@ -12,7 +12,7 @@ import { DocsConfig, loadConfig, isValidPublicUrl, normalizeUrl } from './config
 import { AuthManager } from './crawler/auth.js';
 import { fetchFavicon } from './util/favicon.js';
 import { IndexingStatus } from './types.js';
-import { generateCrawlStorageId, generateDocId } from './util/docs.js';
+import { generateDocId } from './util/docs.js';
 import { logger } from './util/logger.js';
 import { closeOutboundProxy } from './util/outbound-request.js';
 import {
@@ -400,8 +400,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
         },
         {
           name: 'delete_documentation',
-          description:
-            'Delete an indexed documentation site and all its data (vectors, metadata, cached crawl data, and optionally auth session)',
+          description: 'Delete an indexed documentation site and all its data (vectors, metadata, and optionally auth session)',
           inputSchema: {
             type: 'object',
             properties: {
@@ -1180,24 +1179,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
       deletedItems.push('document metadata (SQLite)', 'vector chunks (LanceDB)');
       logger.info(`[WebDocsServer] Deleted document from store: ${normalizedUrl}`);
 
-      // 2. Delete both current and historical Crawlee datasets
-      const datasetIds = [generateCrawlStorageId(normalizedUrl), generateDocId(normalizedUrl, domain)];
-      const { Dataset } = await import('crawlee');
-      const cleanupResults = await Promise.allSettled(
-        datasetIds.map(async (datasetId) => {
-          const dataset = await Dataset.open(datasetId);
-          await dataset.drop();
-          logger.info(`[WebDocsServer] Deleted Crawlee dataset: ${datasetId}`);
-        })
-      );
-      if (cleanupResults.some((result) => result.status === 'fulfilled')) {
-        deletedItems.push('crawl cache (Crawlee dataset)');
-      }
-      if (cleanupResults.some((result) => result.status === 'rejected')) {
-        logger.debug(`[WebDocsServer] Some Crawlee datasets could not be deleted`);
-      }
-
-      // 3. Optionally clear auth session
+      // 2. Optionally clear auth session
       if (clearAuth as boolean) {
         await this.authManager.clearSession(normalizedUrl);
         deletedItems.push('authentication session');

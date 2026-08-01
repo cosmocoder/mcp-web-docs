@@ -1,4 +1,4 @@
-import { RequestQueue, Dataset, Log, EnqueueLinksOptions, EnqueueStrategy } from 'crawlee';
+import { RequestQueue, Log, EnqueueLinksOptions, EnqueueStrategy } from 'crawlee';
 import { generateCrawlStorageId, isPathAllowed } from '../util/docs.js';
 import { CrawlResult } from '../types.js';
 import { SiteDetectionRule } from './site-rules.js';
@@ -7,7 +7,6 @@ import { discoverUrlsFromLlmsTxt } from './llms-txt.js';
 
 export class QueueManager {
   private requestQueue: RequestQueue | null = null;
-  private storageId: string = '';
   private results: CrawlResult[] = [];
   /** Optional path prefix to restrict crawling to URLs under this path */
   private pathPrefix: string = '';
@@ -20,7 +19,7 @@ export class QueueManager {
 
   async initialize(url: string, pathPrefix?: string): Promise<void> {
     const parsedUrl = new URL(url);
-    this.storageId = generateCrawlStorageId(url);
+    const storageId = generateCrawlStorageId(url);
     this.pathPrefix = pathPrefix || '';
     this.allowedHostname = parsedUrl.hostname.toLowerCase();
     this.filteredByPathCount = 0;
@@ -30,12 +29,12 @@ export class QueueManager {
     if (this.pathPrefix) {
       logger.info(`[QueueManager] Path restriction enabled: only crawling URLs under ${this.pathPrefix}`);
     }
-    logger.debug(`[QueueManager] Using storage ID: ${this.storageId}`);
+    logger.debug(`[QueueManager] Using storage ID: ${storageId}`);
 
     // Initialize queue
-    this.requestQueue = await RequestQueue.open(this.storageId);
+    this.requestQueue = await RequestQueue.open(storageId);
     await this.requestQueue.drop();
-    this.requestQueue = await RequestQueue.open(this.storageId);
+    this.requestQueue = await RequestQueue.open(storageId);
 
     // Add initial request (strip any hash from URL)
     const cleanUrl = parsedUrl.origin + parsedUrl.pathname + parsedUrl.search;
@@ -43,10 +42,6 @@ export class QueueManager {
       url: cleanUrl,
       uniqueKey: parsedUrl.pathname + parsedUrl.search,
     });
-
-    // Clear existing dataset
-    const dataset = await Dataset.open(this.storageId);
-    await dataset.drop();
   }
 
   /**
@@ -214,21 +209,9 @@ export class QueueManager {
     });
   }
 
-  async processBatch(): Promise<CrawlResult[]> {
-    if (this.results.length === 0) {
-      return [];
-    }
-
-    const dataset = await Dataset.open(this.storageId);
-    const resultsToProcess = [...this.results];
-    this.results = [];
-
-    // Process in chunks for better memory management
-    for (let i = 0; i < resultsToProcess.length; i += 5) {
-      await dataset.pushData(resultsToProcess.slice(i, i + 5));
-    }
-
-    return resultsToProcess;
+  /** Hand over everything crawled since the last call, leaving the buffer empty. */
+  drainResults(): CrawlResult[] {
+    return this.results.splice(0);
   }
 
   addResult(result: CrawlResult): void {

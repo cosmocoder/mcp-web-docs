@@ -601,7 +601,7 @@ interface CollectionWithDocuments extends Collection {
 - SQLite database: `docs.db`
 - Vector storage: `vectors/`
 - Auth sessions: `sessions/`
-- Crawl cache: `crawlee/`
+- Crawl state (request queues): `crawlee/`
 
 ### Test Environment
 

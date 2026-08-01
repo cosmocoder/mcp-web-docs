@@ -614,7 +614,7 @@ export class CrawleeCrawler extends BaseCrawler {
       while (!this.isAborting) {
         // Yield whatever has been crawled so far rather than waiting for a full batch,
         // so callers can report progress while a slow site is still being crawled.
-        for (const result of await this.queueManager.processBatch()) {
+        for (const result of this.queueManager.drainResults()) {
           yield result;
         }
 
@@ -645,7 +645,7 @@ export class CrawleeCrawler extends BaseCrawler {
         throw new Error(`Crawl failed for ${finalStatistics.requestsFailed} of ${finalStatistics.requestsTotal} pages after retries`);
       }
 
-      for (const result of await this.queueManager.processBatch()) {
+      for (const result of this.queueManager.drainResults()) {
         yield result;
       }
     }
