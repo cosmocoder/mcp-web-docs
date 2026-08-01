@@ -63,21 +63,6 @@ describe('Site Rules', () => {
       expect(page.evaluate).toHaveBeenCalled();
     });
 
-    it('should not block on the top-level content selector', async () => {
-      const page = {
-        evaluate: vi.fn().mockResolvedValue(5),
-        waitForLoadState: vi.fn().mockResolvedValue(undefined),
-        waitForSelector: vi.fn().mockResolvedValue(undefined),
-        waitForTimeout: vi.fn().mockResolvedValue(undefined),
-      } as unknown as Page;
-
-      await storybookRule.prepare?.(page, mockLog);
-
-      // The docs content lives in an iframe on modern Storybook, so this selector
-      // never matches and its timeout is paid on every single page
-      expect(page.waitForSelector).toHaveBeenCalledWith('.sbdocs-content, #docs-root, .docs-story, [class*="story-"]', { timeout: 1000 });
-    });
-
     it('should handle timeout errors gracefully in prepare', async () => {
       const page = {
         evaluate: vi.fn().mockResolvedValue(0),
@@ -86,8 +71,9 @@ describe('Site Rules', () => {
         waitForTimeout: vi.fn().mockResolvedValue(undefined),
       } as unknown as Page;
 
-      // Should not throw
+      // Should not throw, and should still run the sidebar expansion afterwards
       await expect(storybookRule.prepare?.(page, mockLog)).resolves.toBeUndefined();
+      expect(page.evaluate).toHaveBeenCalled();
     });
 
     it('should use StorybookExtractor', () => {
