@@ -613,10 +613,10 @@ export class CrawleeCrawler extends BaseCrawler {
       const crawlerPromise = this.crawler.run();
 
       while (!this.isAborting) {
-        if (this.queueManager.hasEnoughResults()) {
-          for (const result of await this.queueManager.processBatch()) {
-            yield result;
-          }
+        // Yield whatever has been crawled so far rather than waiting for a full batch,
+        // so callers can report progress while a slow site is still being crawled.
+        for (const result of await this.queueManager.processBatch()) {
+          yield result;
         }
 
         if (await Promise.race([crawlerPromise.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 100))])) {

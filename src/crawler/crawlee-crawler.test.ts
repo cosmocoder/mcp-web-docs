@@ -7,7 +7,6 @@ const mockQueueManager = {
   getRequestQueue: vi.fn().mockReturnValue({}),
   handleQueueAndLinks: vi.fn().mockResolvedValue(undefined),
   addResult: vi.fn(),
-  hasEnoughResults: vi.fn().mockReturnValue(false),
   processBatch: vi.fn().mockResolvedValue([]),
   cleanup: vi.fn().mockResolvedValue(undefined),
 };
@@ -162,7 +161,6 @@ describe('CrawleeCrawler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     crawler = new CrawleeCrawler();
-    mockQueueManager.hasEnoughResults.mockReturnValue(false);
     mockQueueManager.processBatch.mockResolvedValue([]);
   });
 
@@ -392,8 +390,6 @@ describe('CrawleeCrawler', () => {
         { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'text', title: 'Page 2' },
       ];
 
-      // Since hasEnoughResults returns false, processBatch is only called once
-      // at the end of crawl (line 388 in crawlee-crawler.ts), so we only need one mock value
       mockQueueManager.processBatch.mockResolvedValueOnce(mockResults);
 
       const results = await collect(crawler, 'https://example.com');
@@ -407,17 +403,28 @@ describe('CrawleeCrawler', () => {
       expect(mockQueueManager.cleanup).toHaveBeenCalled();
     });
 
-    it('should process batch when enough results accumulated', async () => {
-      const mockResults: CrawlResult[] = [
-        { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' },
-      ];
+    it('should yield results while the crawl is still running', async () => {
+      const mockResult: CrawlResult = {
+        url: 'https://example.com/page1',
+        path: '/page1',
+        content: 'Page 1',
+        contentFormat: 'text',
+        title: 'Page 1',
+      };
 
-      mockQueueManager.hasEnoughResults.mockReturnValueOnce(true).mockReturnValue(false);
-      mockQueueManager.processBatch.mockResolvedValueOnce(mockResults).mockResolvedValueOnce([]);
+      // run() stays pending, so the generator can only produce a value if it
+      // drains the queue mid-crawl instead of waiting for the crawl to finish
+      let finishCrawl!: (statistics: typeof successfulRunStats) => void;
+      mockCrawlerRun.mockReturnValueOnce(new Promise((resolve) => (finishCrawl = resolve)));
+      mockQueueManager.processBatch.mockResolvedValueOnce([mockResult]).mockResolvedValue([]);
 
-      const results = await collect(crawler, 'https://example.com');
+      const generator = crawler.crawl('https://example.com');
+      const first = await generator.next();
 
-      expect(results).toHaveLength(1);
+      expect(first.value).toEqual(mockResult);
+
+      finishCrawl(successfulRunStats);
+      await generator.next();
     });
   });
 
@@ -519,7 +526,6 @@ describe('CrawleeCrawler', () => {
 
       await expect(collect(crawler, 'https://example.com')).rejects.toThrow('Crawl failed for 1 of 1 pages after retries');
 
-      expect(mockQueueManager.processBatch).not.toHaveBeenCalled();
       expect(mockQueueManager.cleanup).toHaveBeenCalled();
     });
 
