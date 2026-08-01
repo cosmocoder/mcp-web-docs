@@ -212,7 +212,9 @@ export async function processMarkdownContent(page: CrawlResult): Promise<Process
   catch (error) {
     logger.debug('[MarkdownProcessor] Error processing markdown content:', error);
     logger.debug('[MarkdownProcessor] Error details:', error instanceof Error ? error.stack : error);
-    return undefined;
+    // Rethrow rather than returning undefined: undefined means "nothing to index",
+    // which callers skip, and a genuine failure must not masquerade as an empty page
+    throw error;
   }
 }
 
@@ -296,6 +298,6 @@ export async function processExtractedContent(page: CrawlResult): Promise<Proces
   catch (error) {
     logger.debug('[ExtractedContentProcessor] Error processing extracted content:', error);
     logger.debug('[ExtractedContentProcessor] Error details:', error instanceof Error ? error.stack : error);
-    return undefined;
+    throw error;
   }
 }

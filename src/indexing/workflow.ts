@@ -160,6 +160,7 @@ export class IndexingWorkflow {
       checkCancelled();
 
       const chunks: DocumentChunk[] = [];
+      let skippedPages = 0;
 
       for (let i = 0; i < pages.length; i++) {
         checkCancelled();
@@ -170,9 +171,15 @@ export class IndexingWorkflow {
         try {
           const processed = await processor.process(page);
           logger.debug(`[IndexingWorkflow] Created ${processed.chunks.length} chunks for ${page.path}`);
+          if (processed.chunks.length === 0) {
+            skippedPages++;
+            logger.warn(`[IndexingWorkflow] Skipping ${page.path}: no indexable content`);
+            statusTracker.updateStats(operationId, { pagesSkipped: skippedPages });
+            continue;
+          }
           chunks.push(...processed.chunks);
           statusTracker.updateStats(operationId, {
-            pagesProcessed: i + 1,
+            pagesProcessed: i + 1 - skippedPages,
             chunksCreated: chunks.length,
           });
         }
@@ -216,6 +223,16 @@ export class IndexingWorkflow {
         logger.warn(`[IndexingWorkflow] Pages found: ${pages.length}`);
         logger.warn(`[IndexingWorkflow] Chunks created: ${chunks.length}`);
         statusTracker.failIndexing(operationId, 'No content was extracted from the pages');
+        return;
+      }
+
+      // Most pages empty means extraction is broken, not that the site is. Storing that
+      // would replace a healthy index with a gutted one and report success.
+      if (skippedPages > pages.length / 2) {
+        statusTracker.failIndexing(
+          operationId,
+          `No indexable content on ${skippedPages} of ${pages.length} pages - extraction may be failing, so nothing was stored`
+        );
         return;
       }
 

@@ -118,6 +118,102 @@ describe('IndexingWorkflow', () => {
     expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { chunksCreated: 1 });
   });
 
+  it('skips pages with no indexable content and still stores the rest', async () => {
+    const harness = createHarness({
+      crawl: async function* () {
+        yield { ...page, path: '/good' };
+        yield { ...page, path: '/blank' };
+        yield { ...page, path: '/also-good' };
+      },
+      process: async (crawlResult) => ({
+        metadata: { url: page.url, title: page.title, lastIndexed: new Date() },
+        chunks: crawlResult.path === '/blank' ? [] : [chunk],
+      }),
+    });
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.addDocument).toHaveBeenCalledWith(expect.objectContaining({ chunks: [chunk, chunk] }), expect.anything());
+    expect(harness.statusTracker.completeIndexing).toHaveBeenCalledWith(request.operationId);
+    expect(harness.statusTracker.failIndexing).not.toHaveBeenCalled();
+    // Pin the LAST page count: asserting any matching call would still pass if skipped
+    // pages were counted as processed and the fixture happened to end on a good page
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesSkipped: 1 });
+    const pageCounts = harness.statusTracker.updateStats.mock.calls.filter(([, stats]) => 'pagesProcessed' in stats);
+    expect(pageCounts.at(-1)).toEqual([request.operationId, { pagesProcessed: 2, chunksCreated: 2 }]);
+  });
+
+  it('still fails the whole run when a page fails for any other reason', async () => {
+    const harness = createHarness({
+      crawl: async function* () {
+        yield { ...page, path: '/good' };
+        yield { ...page, path: '/broken' };
+      },
+      process: async (crawlResult) => {
+        if (crawlResult.path === '/broken') {
+          throw new Error('Embedding failed');
+        }
+        return { metadata: { url: page.url, title: page.title, lastIndexed: new Date() }, chunks: [chunk] };
+      },
+    });
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
+      request.operationId,
+      expect.stringContaining('Failed to process /broken')
+    );
+    expect(harness.addDocument).not.toHaveBeenCalled();
+    expect(harness.statusTracker.completeIndexing).not.toHaveBeenCalled();
+  });
+
+  it('stores when exactly half the pages were skipped', async () => {
+    const harness = createHarness({
+      crawl: async function* () {
+        yield { ...page, path: '/good-1' };
+        yield { ...page, path: '/blank-1' };
+        yield { ...page, path: '/good-2' };
+        yield { ...page, path: '/blank-2' };
+      },
+      process: async (crawlResult) => ({
+        metadata: { url: page.url, title: page.title, lastIndexed: new Date() },
+        chunks: crawlResult.path.startsWith('/good') ? [chunk] : [],
+      }),
+    });
+
+    await runWorkflow(harness.workflow, request);
+
+    // The gate is for extraction failing site-wide; half is not enough to call it broken
+    expect(harness.addDocument).toHaveBeenCalledWith(expect.objectContaining({ chunks: [chunk, chunk] }), expect.anything());
+    expect(harness.statusTracker.completeIndexing).toHaveBeenCalledWith(request.operationId);
+  });
+
+  it('refuses to store when most pages were skipped, leaving an existing index untouched', async () => {
+    const harness = createHarness({
+      existingDocument: { url: request.url, title: request.title, lastIndexed: new Date() },
+      crawl: async function* () {
+        yield { ...page, path: '/good' };
+        yield { ...page, path: '/blank-1' };
+        yield { ...page, path: '/blank-2' };
+      },
+      process: async (crawlResult) => ({
+        metadata: { url: page.url, title: page.title, lastIndexed: new Date() },
+        chunks: crawlResult.path === '/good' ? [chunk] : [],
+      }),
+    });
+
+    await runWorkflow(harness.workflow, { ...request, reIndex: true });
+
+    // Some content was extracted, so the run would otherwise have replaced a healthy
+    // index with a gutted one and reported success
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
+      request.operationId,
+      expect.stringContaining('No indexable content on 2 of 3 pages')
+    );
+    expect(harness.addDocument).not.toHaveBeenCalled();
+    expect(harness.statusTracker.completeIndexing).not.toHaveBeenCalled();
+  });
+
   it('reports each crawled page while the crawl is still running', async () => {
     const { promise: secondPageReleased, resolve: releaseSecondPage } = Promise.withResolvers<void>();
     const harness = createHarness({
@@ -195,6 +291,7 @@ describe('IndexingWorkflow', () => {
 
     expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(request.operationId, 'No content was extracted from the pages');
     expect(harness.addDocument).not.toHaveBeenCalled();
+    expect(harness.statusTracker.completeIndexing).not.toHaveBeenCalled();
   });
 
   it.each([

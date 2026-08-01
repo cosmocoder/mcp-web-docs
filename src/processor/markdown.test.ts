@@ -2,6 +2,25 @@ import { processMarkdownContent, processExtractedContent } from './markdown.js';
 import type { CrawlResult } from '../types.js';
 
 describe('Markdown Processor', () => {
+  it.each([
+    ['processMarkdownContent', processMarkdownContent],
+    ['processExtractedContent', processExtractedContent],
+  ])('%s should propagate unexpected errors instead of returning undefined', async (_label, process) => {
+    // undefined means "nothing to index", which the workflow skips silently — a real
+    // failure must not be able to disguise itself as an empty page
+    const exploding = {
+      url: 'https://example.com/boom',
+      path: '/boom',
+      contentFormat: 'markdown',
+      title: 'Boom',
+      get content(): string {
+        throw new Error('parser exploded');
+      },
+    } as unknown as CrawlResult;
+
+    await expect(process(exploding)).rejects.toThrow('parser exploded');
+  });
+
   describe('processMarkdownContent', () => {
     it('should process simple markdown content', async () => {
       const page: CrawlResult = {

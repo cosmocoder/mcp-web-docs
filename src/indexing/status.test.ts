@@ -87,6 +87,13 @@ describe('IndexingStatusTracker', () => {
       tracker.startIndexing('test-id', 'test-id', 'https://example.com', 'Test');
     });
 
+    it('should keep pagesSkipped through later stat updates', () => {
+      tracker.updateStats('test-id', { pagesSkipped: 3 });
+      tracker.updateStats('test-id', { chunksCreated: 20 });
+
+      expect(tracker.getStatus('test-id')).toMatchObject({ pagesSkipped: 3, chunksCreated: 20 });
+    });
+
     it('should update stats incrementally', () => {
       tracker.updateStats('test-id', { pagesFound: 10 });
       let status = tracker.getStatus('test-id');

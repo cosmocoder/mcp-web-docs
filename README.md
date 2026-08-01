@@ -647,9 +647,9 @@ The version is displayed in `list_documentation` output and preserved when re-in
 ## 🚨 Troubleshooting
 
 <details>
-<summary><b>"Failed to parse document content"</b></summary>
+<summary><b>Pages reported as skipped</b></summary>
 
-The content extractor couldn't process the page. Try:
+Indexing reports `N skipped` when the extractor found nothing indexable on those pages — they are left out of the index and the rest of the site is still stored. If most pages are skipped the run fails instead, and nothing is stored, since that usually means extraction is broken rather than the site being empty. Try:
 
 - Re-indexing the documentation
 - Checking if the site uses JavaScript rendering (should work with Playwright)

@@ -13,6 +13,8 @@ export interface IndexingStatus {
   startedAt?: Date;
   pagesFound?: number;
   pagesProcessed?: number;
+  /** Pages that yielded no indexable content and were left out of the index */
+  pagesSkipped?: number;
   chunksCreated?: number;
 }
 

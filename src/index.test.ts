@@ -265,6 +265,38 @@ describe('WebDocsServer', () => {
       expect(mockNotification).toHaveBeenCalledWith(expect.objectContaining({ params: expect.objectContaining({ progressToken }) }));
     });
 
+    it('reports skipped pages in the progress notification', async () => {
+      // Three pages keeps this clear of the majority-skip gate, so the test fails only
+      // when the message itself is wrong
+      mockCrawlerCrawl.mockImplementationOnce(async function* () {
+        yield { url: 'https://skips.example.com/one', path: '/one', content: 'One', contentFormat: 'text', title: 'One' };
+        yield { url: 'https://skips.example.com/two', path: '/two', content: '', contentFormat: 'text', title: 'Two' };
+        yield { url: 'https://skips.example.com/three', path: '/three', content: 'Three', contentFormat: 'text', title: 'Three' };
+      });
+      mockProcessorProcess
+        .mockResolvedValueOnce(processedPageWithChunk)
+        .mockResolvedValueOnce({ metadata: { url: 'https://skips.example.com/two', title: 'Two', lastIndexed: new Date() }, chunks: [] })
+        .mockResolvedValueOnce(processedPageWithChunk);
+
+      await toolHandler({
+        params: {
+          name: 'add_documentation',
+          arguments: { url: 'https://skips.example.com' },
+          _meta: { progressToken: 'skip-token' },
+        },
+      });
+
+      // The count has to reach the message, not just the status object - the message is
+      // what a client actually shows when the run finishes
+      await vi.waitFor(() =>
+        expect(mockNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            params: expect.objectContaining({ message: 'Indexing complete (2/3 pages, 1 skipped)' }),
+          })
+        )
+      );
+    });
+
     it('ignores progress metadata inside tool arguments', async () => {
       const failIndexing = vi.spyOn(IndexingStatusTracker.prototype, 'failIndexing');
 
