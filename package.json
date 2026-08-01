@@ -41,6 +41,7 @@
   "scripts": {
     "build": "tsc && chmod +x build/index.js",
     "start": "node build/index.js",
+    "smoke": "node scripts/smoke.mjs",
     "dev": "tsc -w",
     "lint": "eslint . --ext .js,.ts",
     "lint:fix": "npm run lint -- --fix",
