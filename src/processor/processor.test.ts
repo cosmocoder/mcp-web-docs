@@ -15,6 +15,20 @@ describe('WebDocumentProcessor', () => {
   });
 
   describe('process', () => {
+    it('should throw on an unknown content format instead of skipping the page', async () => {
+      const crawlResult = {
+        url: 'https://example.com/odd',
+        path: '/odd',
+        contentFormat: 'html',
+        title: 'Odd',
+        content: '# Real content that would otherwise chunk fine',
+      } as unknown as CrawlResult;
+
+      // Extractors run in the browser, so an unexpected format is a bug to surface, not
+      // an empty page for the workflow to skip
+      await expect(processor.process(crawlResult)).rejects.toThrow('Unsupported content format');
+    });
+
     it('should process markdown content', async () => {
       const crawlResult: CrawlResult = {
         url: 'https://example.com/docs/readme.md',
@@ -177,7 +191,8 @@ Returns a list of users.
     it.each([
       ['empty', ''],
       ['whitespace-only', '   \n\n   '],
-    ])('should throw error for %s content', async (_, content) => {
+      ['front-matter only', '---\ntitle: Stub\n---\n'],
+    ])('should return no chunks for %s content instead of throwing', async (_, content) => {
       const crawlResult: CrawlResult = {
         url: 'https://example.com/empty',
         path: '/empty',
@@ -186,7 +201,8 @@ Returns a list of users.
         content,
       };
 
-      await expect(processor.process(crawlResult)).rejects.toThrow();
+      // Zero chunks is how the workflow knows to skip the page rather than fail the crawl
+      await expect(processor.process(crawlResult)).resolves.toMatchObject({ chunks: [] });
     });
 
     it('should handle embedding failures gracefully', async () => {

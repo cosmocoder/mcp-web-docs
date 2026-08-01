@@ -45,6 +45,7 @@ export class IndexingStatusTracker {
       description: 'Starting indexing...',
       startedAt: new Date(),
       pagesFound: 0,
+      pagesSkipped: 0,
       pagesProcessed: 0,
       chunksCreated: 0,
     };
@@ -59,7 +60,10 @@ export class IndexingStatusTracker {
     this.notifyListeners(status);
   }
 
-  updateStats(operationId: string, stats: { pagesFound?: number; pagesProcessed?: number; chunksCreated?: number }): void {
+  updateStats(
+    operationId: string,
+    stats: { pagesFound?: number; pagesProcessed?: number; pagesSkipped?: number; chunksCreated?: number }
+  ): void {
     const currentStatus = this.statuses.get(operationId);
     if (!currentStatus) {
       return;
@@ -69,6 +73,7 @@ export class IndexingStatusTracker {
       ...currentStatus,
       pagesFound: stats.pagesFound ?? currentStatus.pagesFound,
       pagesProcessed: stats.pagesProcessed ?? currentStatus.pagesProcessed,
+      pagesSkipped: stats.pagesSkipped ?? currentStatus.pagesSkipped,
       chunksCreated: stats.chunksCreated ?? currentStatus.chunksCreated,
     };
 

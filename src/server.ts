@@ -115,7 +115,8 @@ export class WebDocsServer {
     // Build human-readable message
     let message = status.description;
     if (status.pagesProcessed !== undefined && status.pagesFound !== undefined) {
-      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages)`;
+      const skipped = status.pagesSkipped ? `, ${status.pagesSkipped} skipped` : '';
+      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages${skipped})`;
     }
 
     try {

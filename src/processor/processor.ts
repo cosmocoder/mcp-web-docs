@@ -5,6 +5,17 @@ import { logger } from '../util/logger.js';
 import { parseMetadata } from './metadata-parser.js';
 
 /**
+ * A page that yielded nothing indexable — blank, or stripped to nothing by extraction.
+ * Callers skip these rather than abandoning the crawl; genuine failures still throw.
+ */
+function emptyDocument(crawlResult: CrawlResult): ProcessedDocument {
+  return {
+    metadata: { url: crawlResult.url, title: crawlResult.title, lastIndexed: new Date() },
+    chunks: [],
+  };
+}
+
+/**
  * Create a DocumentChunk with parsed metadata from the content
  */
 function createChunkWithMetadata(
@@ -164,11 +175,15 @@ export class WebDocumentProcessor {
         case 'text':
           processedContent = await processExtractedContent(crawlResult);
           break;
+        default:
+          // Extractors run in the browser, so the format is not type-safe at runtime.
+          // Fail loudly rather than letting a misconfigured extractor look like a blank page.
+          throw new Error(`Unsupported content format: ${crawlResult.contentFormat}`);
       }
 
       if (!processedContent) {
-        logger.error(`[WebDocumentProcessor] Failed to parse document content for ${crawlResult.url}`);
-        throw new Error('Failed to parse document content');
+        logger.warn(`[WebDocumentProcessor] No indexable sections found in ${crawlResult.url}`);
+        return emptyDocument(crawlResult);
       }
 
       logger.debug(`[WebDocumentProcessor] Successfully processed content for ${crawlResult.url}`);
@@ -199,10 +214,8 @@ export class WebDocumentProcessor {
       logger.debug(`[WebDocumentProcessor] Created ${totalChunks} chunks`);
 
       if (chunks.length === 0) {
-        logger.warn(`[WebDocumentProcessor] No valid chunks were created for ${crawlResult.url}`);
-        logger.warn(`[WebDocumentProcessor] Original content length: ${crawlResult.content.length}`);
-        logger.warn(`[WebDocumentProcessor] Processed content length: ${processedContent.content.length}`);
-        throw new Error('No valid chunks were created');
+        logger.warn(`[WebDocumentProcessor] No valid chunks from ${crawlResult.content.length} bytes for ${crawlResult.url}`);
+        return emptyDocument(crawlResult);
       }
 
       logger.debug(`[WebDocumentProcessor] Successfully processed ${crawlResult.url}`);
