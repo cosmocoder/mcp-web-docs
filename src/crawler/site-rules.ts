@@ -31,9 +31,13 @@ export const siteRules: SiteDetectionRule[] = [
     prepare: async (page, log) => {
       await Promise.all([
         page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway')),
+        // Modern Storybook renders docs inside an iframe, so this selector never
+        // matches at the top level and always burns the full timeout. Keep a short
+        // wait for older Storybooks that do render inline; the iframe path is
+        // handled by findContentFrame.
         page
           .waitForSelector('.sbdocs-content, #docs-root, .docs-story, [class*="story-"]', {
-            timeout: 5000,
+            timeout: 1000,
           })
           .catch(() => log.debug('No Storybook content found in main page')),
       ]);
