@@ -562,20 +562,6 @@ describe('QueueManager', () => {
       await queueManager.initialize('https://example.com');
     });
 
-    it('should add results', async () => {
-      const result: CrawlResult = {
-        url: 'https://example.com/page',
-        path: '/page',
-        content: 'Test content',
-        contentFormat: 'text',
-        title: 'Test Page',
-      };
-
-      queueManager.addResult(result);
-
-      expect(await queueManager.processBatch()).toEqual([result]);
-    });
-
     it('should process batch and return results', async () => {
       const result: CrawlResult = {
         url: 'https://example.com/page',

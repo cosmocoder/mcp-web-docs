@@ -81,8 +81,7 @@ function getErrorHandler(name: '__errorHandler' | '__failedRequestHandler'): Err
   return (globalThis as unknown as Record<string, ErrorHandler>)[name];
 }
 
-async function collect(crawler: CrawleeCrawler, url: string): Promise<CrawlResult[]> {
-  const results: CrawlResult[] = [];
+async function collect(crawler: CrawleeCrawler, url: string, results: CrawlResult[] = []): Promise<CrawlResult[]> {
   for await (const result of crawler.crawl(url)) {
     results.push(result);
   }
@@ -404,27 +403,32 @@ describe('CrawleeCrawler', () => {
     });
 
     it('should yield results while the crawl is still running', async () => {
-      const mockResult: CrawlResult = {
-        url: 'https://example.com/page1',
-        path: '/page1',
-        content: 'Page 1',
-        contentFormat: 'text',
-        title: 'Page 1',
-      };
+      const mockResult: CrawlResult = { url: 'https://example.com/p1', path: '/p1', content: 'P1', contentFormat: 'text', title: 'P1' };
 
       // run() stays pending, so the generator can only produce a value if it
       // drains the queue mid-crawl instead of waiting for the crawl to finish
-      let finishCrawl!: (statistics: typeof successfulRunStats) => void;
-      mockCrawlerRun.mockReturnValueOnce(new Promise((resolve) => (finishCrawl = resolve)));
-      mockQueueManager.processBatch.mockResolvedValueOnce([mockResult]).mockResolvedValue([]);
+      const { promise, resolve: finishCrawl } = Promise.withResolvers<typeof successfulRunStats>();
+      mockCrawlerRun.mockReturnValueOnce(promise);
+      mockQueueManager.processBatch.mockResolvedValueOnce([mockResult]);
 
       const generator = crawler.crawl('https://example.com');
       const first = await generator.next();
 
-      expect(first.value).toEqual(mockResult);
+      expect(first).toEqual({ value: mockResult, done: false });
 
       finishCrawl(successfulRunStats);
-      await generator.next();
+      expect((await generator.next()).done).toBe(true);
+    });
+
+    it('should yield results queued after the crawl finishes', async () => {
+      const lateResult: CrawlResult = { url: 'https://example.com/p2', path: '/p2', content: 'P2', contentFormat: 'text', title: 'P2' };
+
+      // run() is already resolved, so the loop drains once (empty) and breaks on
+      // its first tick — only the drain after the crawl promise can yield this.
+      mockQueueManager.processBatch.mockResolvedValueOnce([]).mockResolvedValueOnce([lateResult]);
+
+      expect(await collect(crawler, 'https://example.com')).toEqual([lateResult]);
+      expect(mockQueueManager.processBatch).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -524,8 +528,15 @@ describe('CrawleeCrawler', () => {
         return successfulRunStats;
       });
 
-      await expect(collect(crawler, 'https://example.com')).rejects.toThrow('Crawl failed for 1 of 1 pages after retries');
+      const partial: CrawlResult = { url: 'https://example.com/p1', path: '/p1', content: 'P1', contentFormat: 'text', title: 'P1' };
+      mockQueueManager.processBatch.mockResolvedValueOnce([partial]);
 
+      // Pages drained before the failure are still handed to the caller, which
+      // then sees the error — the crawl no longer withholds everything until the end
+      const yielded: CrawlResult[] = [];
+      await expect(collect(crawler, 'https://example.com', yielded)).rejects.toThrow('Crawl failed for 1 of 1 pages after retries');
+
+      expect(yielded).toEqual([partial]);
       expect(mockQueueManager.cleanup).toHaveBeenCalled();
     });
 
