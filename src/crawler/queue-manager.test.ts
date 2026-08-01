@@ -562,20 +562,6 @@ describe('QueueManager', () => {
       await queueManager.initialize('https://example.com');
     });
 
-    it('should add results', () => {
-      const result: CrawlResult = {
-        url: 'https://example.com/page',
-        path: '/page',
-        content: 'Test content',
-        contentFormat: 'text',
-        title: 'Test Page',
-      };
-
-      queueManager.addResult(result);
-
-      expect(queueManager.hasEnoughResults()).toBe(false);
-    });
-
     it('should process batch and return results', async () => {
       const result: CrawlResult = {
         url: 'https://example.com/page',
@@ -632,40 +618,6 @@ describe('QueueManager', () => {
 
       // Should be pushed in chunks of 5
       expect(mockDataset.pushData).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe('hasEnoughResults', () => {
-    beforeEach(async () => {
-      await queueManager.initialize('https://example.com');
-    });
-
-    it('should return false when below batch size', () => {
-      for (let i = 0; i < 10; i++) {
-        queueManager.addResult({
-          url: `https://example.com/page${i}`,
-          path: `/page${i}`,
-          content: `Content ${i}`,
-          contentFormat: 'text',
-          title: `Page ${i}`,
-        });
-      }
-
-      expect(queueManager.hasEnoughResults()).toBe(false);
-    });
-
-    it('should return true when at batch size', () => {
-      for (let i = 0; i < 20; i++) {
-        queueManager.addResult({
-          url: `https://example.com/page${i}`,
-          path: `/page${i}`,
-          content: `Content ${i}`,
-          contentFormat: 'text',
-          title: `Page ${i}`,
-        });
-      }
-
-      expect(queueManager.hasEnoughResults()).toBe(true);
     });
   });
 

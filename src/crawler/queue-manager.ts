@@ -9,7 +9,6 @@ export class QueueManager {
   private requestQueue: RequestQueue | null = null;
   private storageId: string = '';
   private results: CrawlResult[] = [];
-  private static readonly BATCH_SIZE = 20;
   /** Optional path prefix to restrict crawling to URLs under this path */
   private pathPrefix: string = '';
   /** The allowed hostname - only URLs with this exact hostname (or its subdomains) are allowed */
@@ -234,10 +233,6 @@ export class QueueManager {
 
   addResult(result: CrawlResult): void {
     this.results.push(result);
-  }
-
-  hasEnoughResults(): boolean {
-    return this.results.length >= QueueManager.BATCH_SIZE;
   }
 
   getRequestQueue(): RequestQueue | null {

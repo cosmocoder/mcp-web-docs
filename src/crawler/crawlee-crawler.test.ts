@@ -7,7 +7,6 @@ const mockQueueManager = {
   getRequestQueue: vi.fn().mockReturnValue({}),
   handleQueueAndLinks: vi.fn().mockResolvedValue(undefined),
   addResult: vi.fn(),
-  hasEnoughResults: vi.fn().mockReturnValue(false),
   processBatch: vi.fn().mockResolvedValue([]),
   cleanup: vi.fn().mockResolvedValue(undefined),
 };
@@ -82,8 +81,7 @@ function getErrorHandler(name: '__errorHandler' | '__failedRequestHandler'): Err
   return (globalThis as unknown as Record<string, ErrorHandler>)[name];
 }
 
-async function collect(crawler: CrawleeCrawler, url: string): Promise<CrawlResult[]> {
-  const results: CrawlResult[] = [];
+async function collect(crawler: CrawleeCrawler, url: string, results: CrawlResult[] = []): Promise<CrawlResult[]> {
   for await (const result of crawler.crawl(url)) {
     results.push(result);
   }
@@ -162,7 +160,6 @@ describe('CrawleeCrawler', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     crawler = new CrawleeCrawler();
-    mockQueueManager.hasEnoughResults.mockReturnValue(false);
     mockQueueManager.processBatch.mockResolvedValue([]);
   });
 
@@ -392,8 +389,6 @@ describe('CrawleeCrawler', () => {
         { url: 'https://example.com/page2', path: '/page2', content: 'Page 2', contentFormat: 'text', title: 'Page 2' },
       ];
 
-      // Since hasEnoughResults returns false, processBatch is only called once
-      // at the end of crawl (line 388 in crawlee-crawler.ts), so we only need one mock value
       mockQueueManager.processBatch.mockResolvedValueOnce(mockResults);
 
       const results = await collect(crawler, 'https://example.com');
@@ -407,17 +402,33 @@ describe('CrawleeCrawler', () => {
       expect(mockQueueManager.cleanup).toHaveBeenCalled();
     });
 
-    it('should process batch when enough results accumulated', async () => {
-      const mockResults: CrawlResult[] = [
-        { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' },
-      ];
+    it('should yield results while the crawl is still running', async () => {
+      const mockResult: CrawlResult = { url: 'https://example.com/p1', path: '/p1', content: 'P1', contentFormat: 'text', title: 'P1' };
 
-      mockQueueManager.hasEnoughResults.mockReturnValueOnce(true).mockReturnValue(false);
-      mockQueueManager.processBatch.mockResolvedValueOnce(mockResults).mockResolvedValueOnce([]);
+      // run() stays pending, so the generator can only produce a value if it
+      // drains the queue mid-crawl instead of waiting for the crawl to finish
+      const { promise, resolve: finishCrawl } = Promise.withResolvers<typeof successfulRunStats>();
+      mockCrawlerRun.mockReturnValueOnce(promise);
+      mockQueueManager.processBatch.mockResolvedValueOnce([mockResult]);
 
-      const results = await collect(crawler, 'https://example.com');
+      const generator = crawler.crawl('https://example.com');
+      const first = await generator.next();
 
-      expect(results).toHaveLength(1);
+      expect(first).toEqual({ value: mockResult, done: false });
+
+      finishCrawl(successfulRunStats);
+      expect((await generator.next()).done).toBe(true);
+    });
+
+    it('should yield results queued after the crawl finishes', async () => {
+      const lateResult: CrawlResult = { url: 'https://example.com/p2', path: '/p2', content: 'P2', contentFormat: 'text', title: 'P2' };
+
+      // run() is already resolved, so the loop drains once (empty) and breaks on
+      // its first tick — only the drain after the crawl promise can yield this.
+      mockQueueManager.processBatch.mockResolvedValueOnce([]).mockResolvedValueOnce([lateResult]);
+
+      expect(await collect(crawler, 'https://example.com')).toEqual([lateResult]);
+      expect(mockQueueManager.processBatch).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -517,9 +528,15 @@ describe('CrawleeCrawler', () => {
         return successfulRunStats;
       });
 
-      await expect(collect(crawler, 'https://example.com')).rejects.toThrow('Crawl failed for 1 of 1 pages after retries');
+      const partial: CrawlResult = { url: 'https://example.com/p1', path: '/p1', content: 'P1', contentFormat: 'text', title: 'P1' };
+      mockQueueManager.processBatch.mockResolvedValueOnce([partial]);
 
-      expect(mockQueueManager.processBatch).not.toHaveBeenCalled();
+      // Pages drained before the failure are still handed to the caller, which
+      // then sees the error — the crawl no longer withholds everything until the end
+      const yielded: CrawlResult[] = [];
+      await expect(collect(crawler, 'https://example.com', yielded)).rejects.toThrow('Crawl failed for 1 of 1 pages after retries');
+
+      expect(yielded).toEqual([partial]);
       expect(mockQueueManager.cleanup).toHaveBeenCalled();
     });
 

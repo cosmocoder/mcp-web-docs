@@ -118,6 +118,27 @@ describe('IndexingWorkflow', () => {
     expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { chunksCreated: 1 });
   });
 
+  it('reports each crawled page while the crawl is still running', async () => {
+    const { promise: secondPageReleased, resolve: releaseSecondPage } = Promise.withResolvers<void>();
+    const harness = createHarness({
+      crawl: async function* () {
+        yield { ...page, path: '/one' };
+        await secondPageReleased;
+        yield { ...page, path: '/two' };
+      },
+    });
+
+    const run = runWorkflow(harness.workflow, request);
+
+    await vi.waitFor(() => expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesFound: 1 }));
+    expect(harness.statusTracker.updateStats).not.toHaveBeenCalledWith(request.operationId, { pagesFound: 2 });
+
+    releaseSecondPage();
+    await run;
+
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesFound: 2 });
+  });
+
   it('reindexes only after processing and finishes metadata after the replacement write', async () => {
     const harness = createHarness({
       existingDocument: { url: request.url, title: request.title, lastIndexed: new Date() },
