@@ -226,6 +226,26 @@ describe('CrawleeCrawler', () => {
       }
     });
 
+    it('should await frame readiness before returning the content frame', async () => {
+      const contentFrame = { evaluate: vi.fn().mockResolvedValue(true), waitForLoadState: vi.fn().mockResolvedValue(undefined) };
+      const emptyFrame = { evaluate: vi.fn().mockResolvedValue(false), waitForLoadState: vi.fn() };
+      const findContentFrame = (crawler as unknown as { findContentFrame(page: unknown): Promise<unknown> }).findContentFrame.bind(crawler);
+
+      // Nothing else waits for the frame, so this await is the only thing standing
+      // between a freshly discovered iframe and the extractor reading it
+      await expect(findContentFrame({ frames: () => [emptyFrame, contentFrame] })).resolves.toBe(contentFrame);
+
+      expect(contentFrame.waitForLoadState).toHaveBeenCalledWith('domcontentloaded');
+      expect(emptyFrame.waitForLoadState).not.toHaveBeenCalled();
+    });
+
+    it('should return null when no frame holds Storybook content', async () => {
+      const emptyFrame = { evaluate: vi.fn().mockResolvedValue(false), waitForLoadState: vi.fn() };
+      const findContentFrame = (crawler as unknown as { findContentFrame(page: unknown): Promise<unknown> }).findContentFrame.bind(crawler);
+
+      await expect(findContentFrame({ frames: () => [emptyFrame] })).resolves.toBeNull();
+    });
+
     it.each([
       {
         label: 'exact root URL',

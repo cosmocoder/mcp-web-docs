@@ -71,8 +71,9 @@ describe('Site Rules', () => {
         waitForTimeout: vi.fn().mockResolvedValue(undefined),
       } as unknown as Page;
 
-      // Should not throw
+      // Should not throw, and should still run the sidebar expansion afterwards
       await expect(storybookRule.prepare?.(page, mockLog)).resolves.toBeUndefined();
+      expect(page.evaluate).toHaveBeenCalled();
     });
 
     it('should use StorybookExtractor', () => {

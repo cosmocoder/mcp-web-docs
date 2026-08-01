@@ -29,14 +29,10 @@ export const siteRules: SiteDetectionRule[] = [
       });
     },
     prepare: async (page, log) => {
-      await Promise.all([
-        page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway')),
-        page
-          .waitForSelector('.sbdocs-content, #docs-root, .docs-story, [class*="story-"]', {
-            timeout: 5000,
-          })
-          .catch(() => log.debug('No Storybook content found in main page')),
-      ]);
+      // No wait for the docs content here: modern Storybook renders it inside an
+      // iframe (handled by findContentFrame), and StorybookExtractor polls for it
+      // itself in whichever document it ends up running against.
+      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway'));
 
       // Wait for sidebar to be ready
       await page.waitForSelector('[class*="sidebar"]', { timeout: 5000 }).catch(() => log.debug('No sidebar found'));

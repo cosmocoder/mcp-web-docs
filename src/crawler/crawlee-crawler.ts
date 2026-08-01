@@ -267,7 +267,6 @@ export class CrawleeCrawler extends BaseCrawler {
     const frame = contentFrames.find((f) => f !== null) || null;
     if (frame) {
       logger.debug('Found content in iframe');
-      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
     return frame;
   }
