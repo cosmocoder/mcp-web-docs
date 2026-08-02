@@ -63,7 +63,10 @@ server.stdin.write(`${JSON.stringify(request)}\n`);
 
 try {
   const result = await handshake;
-  console.log(`smoke: ${result.serverInfo?.name} answered initialize (protocol ${result.protocolVersion})`);
+  if (!result?.serverInfo?.name || !result.protocolVersion) {
+    throw new Error(`initialize answered without server info: ${JSON.stringify(result)}`);
+  }
+  console.log(`smoke: ${result.serverInfo.name} answered initialize (protocol ${result.protocolVersion})`);
 }
 catch (error) {
   console.error(`smoke failed: ${error.message}`);
