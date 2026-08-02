@@ -37,6 +37,28 @@ import {
   SearchCollectionArgsSchema,
 } from './util/security.js';
 
+/**
+ * Describe a set of indexing statuses for the calling agent. An empty list deliberately does
+ * not read as success: finished operations are dropped after a couple of minutes, and a reindex
+ * that was refused leaves nothing else behind for a client to notice.
+ */
+export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
+  if (statuses.some((status) => status.status === 'indexing')) {
+    return 'Operations still in progress. Call get_indexing_status again in a few seconds to check progress.';
+  }
+  if (statuses.length === 0) {
+    return (
+      'No indexing operations are being tracked. Recently finished operations are dropped after a few minutes, ' +
+      'so this does not confirm one succeeded - use list_documentation to check what is actually indexed.'
+    );
+  }
+  const unsuccessful = statuses.filter((status) => status.status === 'failed' || status.status === 'cancelled').length;
+  if (unsuccessful > 0) {
+    return `All operations finished, but ${unsuccessful} did not succeed. Check the status entries for why - nothing was stored for those.`;
+  }
+  return 'All operations complete. No need to poll again.';
+}
+
 export class WebDocsServer {
   private server: McpServer;
   private config!: DocsConfig;
@@ -969,16 +991,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     // Get only active operations and recently completed ones (auto-cleans old statuses)
     const statuses = this.statusTracker.getActiveStatuses();
 
-    // Check if any operations are still in progress
-    const hasActiveOperations = statuses.some((s) => s.status === 'indexing');
-
-    // Add instruction for agent
-    const response = {
-      statuses,
-      instruction: hasActiveOperations
-        ? 'Operations still in progress. Call get_indexing_status again in a few seconds to check progress.'
-        : 'All operations complete. No need to poll again.',
-    };
+    const response = { statuses, instruction: describeIndexingStatuses(statuses) };
 
     return {
       content: [
