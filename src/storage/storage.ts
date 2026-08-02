@@ -1518,6 +1518,27 @@ export class DocumentStore {
     }
   }
 
+  /**
+   * Number of distinct pages currently published for a document, used to detect a reindex that
+   * would gut it. Counts pages rather than chunks so the number does not move when chunk sizing
+   * or extraction changes.
+   */
+  async countDocumentPages(url: string): Promise<number> {
+    if (!this.lanceTable) {
+      return 0;
+    }
+
+    // Another DocumentStore instance may have published since this handle was opened
+    await this.lanceTable.checkoutLatest();
+    const visibilityFilter = await this.getJournalVisibilityFilter();
+    const rows = await this.lanceTable
+      .query()
+      .where(`url = '${escapeFilterValue(url)}' AND ${visibilityFilter}`)
+      .select(['path'])
+      .toArray();
+    return new Set(rows.map((row) => String(row.path))).size;
+  }
+
   async getDocument(url: string): Promise<DocumentMetadata | null> {
     if (!this.sqliteReadDb) {
       throw new Error('Storage not initialized');

@@ -12,10 +12,23 @@ import {
   StorageStateSchema,
   type ValidatedStorageState,
 } from '../util/security.js';
+import { isPathAllowed } from '../util/docs.js';
 import { logger } from '../util/logger.js';
 import type { IndexingStatusTracker } from './status.js';
 
-type WorkflowStore = Pick<DocumentStore, 'addDocument' | 'getDocument' | 'optimize'>;
+/**
+ * Whether a reindex deliberately restricted the crawl to a subset of what is already stored.
+ * Only a narrower prefix explains a smaller result - widening or clearing one should return
+ * more pages, which is exactly when the shrink check needs to stay on.
+ */
+function narrowsCrawlScope(next: string | undefined, previous: string | undefined): boolean {
+  if (!next || next === previous) {
+    return false;
+  }
+  return !previous || isPathAllowed(next, previous);
+}
+
+type WorkflowStore = Pick<DocumentStore, 'addDocument' | 'countDocumentPages' | 'getDocument' | 'optimize'>;
 type WorkflowProcessor = Pick<WebDocumentProcessor, 'process'>;
 type WorkflowStatusTracker = Pick<
   IndexingStatusTracker,
@@ -226,6 +239,27 @@ export class IndexingWorkflow {
           `No indexable content on ${skippedPages} of ${pages.length} pages - extraction may be failing, so nothing was stored`
         );
         return;
+      }
+
+      // The gate above only sees pages the crawl actually returned. A crawl that lost pages
+      // outright still arrives here looking healthy, and addDocument replaces rather than
+      // merges - so refuse to overwrite a document with a much smaller one. Count the pages
+      // we are about to store, not the ones we crawled, so the two sides mean the same thing.
+      if (existingDoc && !narrowsCrawlScope(pathPrefix, existingDoc.pathPrefix)) {
+        // A failed count must not discard a whole crawl, so treat it as no opinion
+        const existingPages = await store.countDocumentPages(url).catch((error: unknown) => {
+          logger.warn(`[IndexingWorkflow] Could not count stored pages for ${url}, skipping the shrink check:`, error);
+          return 0;
+        });
+        const storedPages = new Set(chunks.map((chunk) => chunk.path)).size;
+        if (storedPages * 2 <= existingPages) {
+          statusTracker.failIndexing(
+            operationId,
+            `Reindex produced ${storedPages} pages but ${existingPages} are already stored, so the existing index was kept. ` +
+              `Retry if the crawl was incomplete, or delete and re-add the document if the site really is smaller now`
+          );
+          return;
+        }
       }
 
       checkCancelled();

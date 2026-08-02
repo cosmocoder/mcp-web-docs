@@ -67,6 +67,7 @@ vi.mock('crawlee', () => ({
 }));
 
 // Import after mocking
+import { logger } from '../util/logger.js';
 import { CrawleeCrawler } from './crawlee-crawler.js';
 
 type RequestHandler = (context: Record<string, unknown>) => Promise<void>;
@@ -558,6 +559,91 @@ describe('CrawleeCrawler', () => {
 
       expect(yielded).toEqual([partial]);
       expect(mockQueueManager.cleanup).toHaveBeenCalled();
+    });
+
+    it('should yield results when only a few pages fail after retries', async () => {
+      mockCrawlerRun.mockResolvedValueOnce({ requestsFailed: 2, requestsTotal: 124 });
+
+      // Second drain, so the results come through after the failure check rather than before it
+      const partial: CrawlResult = { url: 'https://example.com/p1', path: '/p1', content: 'P1', contentFormat: 'text', title: 'P1' };
+      mockQueueManager.drainResults.mockReturnValueOnce([]).mockReturnValueOnce([partial]);
+
+      await expect(collect(crawler, 'https://example.com')).resolves.toEqual([partial]);
+    });
+
+    it('should warn when it continues with a partial crawl', async () => {
+      mockCrawlerRun.mockResolvedValueOnce({ requestsFailed: 2, requestsTotal: 124 });
+
+      await collect(crawler, 'https://example.com');
+
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Continuing with a partial crawl: 2 of 124'));
+    });
+
+    it('should reject when most pages fail after retries', async () => {
+      mockCrawlerRun.mockResolvedValueOnce({ requestsFailed: 60, requestsTotal: 124 });
+
+      await expect(collect(crawler, 'https://example.com')).rejects.toThrow('Crawl failed for 60 of 124 pages after retries');
+    });
+
+    // A fixed allowance keeps small crawls workable, a ratio keeps big ones honest, and the
+    // minority check stops the fixed allowance from waving through most of a tiny site.
+    it.each([
+      { requestsFailed: 5, requestsTotal: 124, rejects: false },
+      { requestsFailed: 6, requestsTotal: 124, rejects: true },
+      { requestsFailed: 20, requestsTotal: 1000, rejects: false },
+      { requestsFailed: 21, requestsTotal: 1000, rejects: true },
+      { requestsFailed: 4, requestsTotal: 5, rejects: true },
+      { requestsFailed: 5, requestsTotal: 10, rejects: true },
+      { requestsFailed: 4, requestsTotal: 10, rejects: false },
+      { requestsFailed: 3, requestsTotal: 3, rejects: true },
+    ])('should reject $requestsFailed of $requestsTotal failures: $rejects', async ({ requestsFailed, requestsTotal, rejects }) => {
+      mockCrawlerRun.mockResolvedValueOnce({ requestsFailed, requestsTotal });
+
+      if (rejects) {
+        await expect(collect(crawler, 'https://example.com')).rejects.toThrow('after retries');
+      }
+      else {
+        await expect(collect(crawler, 'https://example.com')).resolves.toEqual([]);
+      }
+    });
+
+    it('should reject when the root page fails even if the rest of the crawl succeeds', async () => {
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await getErrorHandler('__failedRequestHandler')(
+          { request: { url: 'https://example.com', userData: {} } },
+          new Error('Navigation timeout')
+        );
+        return { requestsFailed: 1, requestsTotal: 124 };
+      });
+
+      await expect(collect(crawler, 'https://example.com')).rejects.toThrow('the root page https://example.com/ could not be loaded');
+    });
+
+    it('should tolerate a leaf page failing without treating it as a root failure', async () => {
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await getErrorHandler('__failedRequestHandler')(
+          { request: { url: 'https://example.com/leaf', userData: {} } },
+          new Error('Navigation timeout')
+        );
+        return { requestsFailed: 1, requestsTotal: 124 };
+      });
+
+      await expect(collect(crawler, 'https://example.com')).resolves.toEqual([]);
+    });
+
+    it('should not carry a root failure into the next crawl on the same instance', async () => {
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await getErrorHandler('__failedRequestHandler')(
+          { request: { url: 'https://example.com', userData: {} } },
+          new Error('Navigation timeout')
+        );
+        return { requestsFailed: 1, requestsTotal: 124 };
+      });
+      await expect(collect(crawler, 'https://example.com')).rejects.toThrow('could not be loaded');
+
+      // The second crawl has to lose a page too, or the root flag is never consulted
+      mockCrawlerRun.mockResolvedValueOnce({ requestsFailed: 1, requestsTotal: 124 });
+      await expect(collect(crawler, 'https://example.com')).resolves.toEqual([]);
     });
 
     it('should cleanup on error', async () => {
