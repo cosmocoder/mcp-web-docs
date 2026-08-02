@@ -345,7 +345,7 @@ describe('WebDocsServer', () => {
           expect.objectContaining({
             params: expect.objectContaining({
               progressToken,
-              message: expect.stringContaining('No content was extracted'),
+              message: expect.stringContaining('No indexable content on'),
             }),
           })
         );
@@ -475,7 +475,7 @@ describe('WebDocsServer', () => {
           expect(successorNotifications).toEqual(
             expect.arrayContaining([
               expect.objectContaining({ progressToken: secondToken, message: expect.stringContaining('Finding subpages') }),
-              expect.objectContaining({ progressToken: secondToken, message: expect.stringContaining('No content was extracted') }),
+              expect.objectContaining({ progressToken: secondToken, message: expect.stringContaining('No indexable content on') }),
             ])
           );
         }

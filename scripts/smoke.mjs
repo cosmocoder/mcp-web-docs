@@ -63,7 +63,12 @@ server.stdin.write(`${JSON.stringify(request)}\n`);
 
 try {
   const result = await handshake;
-  console.log(`smoke: ${result.serverInfo?.name} answered initialize (protocol ${result.protocolVersion})`);
+  // A reply is not enough — a server that answers `{}` is still broken, and without
+  // this the log below would happily print "undefined answered initialize" and pass.
+  if (!result?.serverInfo?.name || !result.protocolVersion) {
+    throw new Error(`initialize answered without server info: ${JSON.stringify(result)}`);
+  }
+  console.log(`smoke: ${result.serverInfo.name} answered initialize (protocol ${result.protocolVersion})`);
 }
 catch (error) {
   console.error(`smoke failed: ${error.message}`);

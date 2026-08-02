@@ -289,7 +289,10 @@ describe('IndexingWorkflow', () => {
 
     await runWorkflow(harness.workflow, { ...request, reIndex: true });
 
-    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(request.operationId, 'No content was extracted from the pages');
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
+      request.operationId,
+      'No indexable content on 1 of 1 pages - extraction may be failing, so nothing was stored'
+    );
     expect(harness.addDocument).not.toHaveBeenCalled();
     expect(harness.statusTracker.completeIndexing).not.toHaveBeenCalled();
   });

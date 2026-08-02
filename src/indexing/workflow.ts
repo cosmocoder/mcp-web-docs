@@ -218,17 +218,12 @@ export class IndexingWorkflow {
 
       checkCancelled();
 
-      if (chunks.length === 0) {
-        logger.warn(`[IndexingWorkflow] No content was extracted from ${url}`);
-        logger.warn(`[IndexingWorkflow] Pages found: ${pages.length}`);
-        logger.warn(`[IndexingWorkflow] Chunks created: ${chunks.length}`);
-        statusTracker.failIndexing(operationId, 'No content was extracted from the pages');
-        return;
-      }
-
       // Most pages empty means extraction is broken, not that the site is. Storing that
-      // would replace a healthy index with a gutted one and report success.
+      // would replace a healthy index with a gutted one and report success. Every page
+      // that is not skipped contributes at least one chunk, so this also covers the
+      // all-skipped case where nothing at all came back.
       if (skippedPages > pages.length / 2) {
+        logger.warn(`[IndexingWorkflow] Skipped ${skippedPages} of ${pages.length} pages from ${url}, storing nothing`);
         statusTracker.failIndexing(
           operationId,
           `No indexable content on ${skippedPages} of ${pages.length} pages - extraction may be failing, so nothing was stored`
