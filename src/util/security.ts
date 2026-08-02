@@ -335,7 +335,11 @@ const VersionSchema = z
 const PathPrefixSchema = z
   .string()
   .max(500)
-  .refine((val) => val.startsWith('/'), 'Path prefix must start with /');
+  .refine((val) => val.startsWith('/'), 'Path prefix must start with /')
+  // The crawl already ignores a trailing slash, so store one spelling per scope - otherwise
+  // '/docs' and '/docs/' look like a changed prefix when they crawl identically.
+  .transform((val) => val.replace(/\/+$/, ''))
+  .transform((val) => (val === '' ? undefined : val));
 
 /**
  * Schema for add_documentation tool arguments

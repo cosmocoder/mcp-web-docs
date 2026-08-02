@@ -35,11 +35,13 @@ function createHarness(
     createCrawler?: () => DocsCrawler;
     process?: (crawlResult: CrawlResult) => Promise<ProcessedDocument>;
     savedSession?: string;
+    existingPageCount?: number;
   } = {}
 ) {
   const addDocument = vi.fn().mockResolvedValue(undefined);
   const store = {
     addDocument,
+    countDocumentPages: vi.fn().mockResolvedValue(options.existingPageCount ?? 0),
     getDocument: vi.fn().mockResolvedValue(options.existingDocument ?? null),
     optimize: vi.fn().mockResolvedValue({ compacted: false, cleanedUp: false }),
   };
@@ -67,9 +69,10 @@ function createHarness(
   };
   const process = vi.fn(
     options.process ??
-      (async () => ({
+      // Carry the page's path onto its chunks, the way the real processor does
+      (async (crawlResult: CrawlResult) => ({
         metadata: { url: page.url, title: page.title, lastIndexed: new Date() },
-        chunks: [chunk],
+        chunks: [{ ...chunk, path: crawlResult.path }],
       }))
   );
   const processor = { process };
@@ -212,6 +215,123 @@ describe('IndexingWorkflow', () => {
     );
     expect(harness.addDocument).not.toHaveBeenCalled();
     expect(harness.statusTracker.completeIndexing).not.toHaveBeenCalled();
+  });
+
+  function crawlPages(count: number) {
+    return async function* () {
+      for (let i = 0; i < count; i++) {
+        yield { ...page, path: `/p${i}` };
+      }
+    };
+  }
+
+  // Every page extracted cleanly, so the empty-content gate above sees nothing wrong - the
+  // pages are simply missing because the crawl lost them. Losing exactly half is not tolerated.
+  it.each([
+    { crawled: 50, stored: 100, blocked: true },
+    { crawled: 51, stored: 100, blocked: false },
+  ])('reindex crawling $crawled pages against $stored stored is blocked: $blocked', async ({ crawled, stored, blocked }) => {
+    const harness = createHarness({
+      existingDocument: { url: request.url, title: request.title, lastIndexed: new Date() },
+      existingPageCount: stored,
+      crawl: crawlPages(crawled),
+    });
+
+    await runWorkflow(harness.workflow, { ...request, reIndex: true });
+
+    expect(harness.store.countDocumentPages).toHaveBeenCalledWith(request.url);
+    if (blocked) {
+      expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
+        request.operationId,
+        expect.stringContaining(`Reindex produced ${crawled} pages but ${stored} are already stored`)
+      );
+      expect(harness.addDocument).not.toHaveBeenCalled();
+      expect(harness.statusTracker.completeIndexing).not.toHaveBeenCalled();
+    }
+    else {
+      expect(harness.addDocument).toHaveBeenCalledOnce();
+      expect(harness.statusTracker.completeIndexing).toHaveBeenCalled();
+    }
+  });
+
+  it('gates on pages produced, not chunks produced', async () => {
+    const harness = createHarness({
+      existingDocument: { url: request.url, title: request.title, lastIndexed: new Date() },
+      existingPageCount: 100,
+      crawl: crawlPages(50),
+      // 50 pages but 100 chunks - counting chunks would wave this through
+      process: async (crawlResult) => ({
+        metadata: { url: crawlResult.url, title: crawlResult.title, lastIndexed: new Date() },
+        chunks: [
+          { ...chunk, path: crawlResult.path },
+          { ...chunk, path: crawlResult.path },
+        ],
+      }),
+    });
+
+    await runWorkflow(harness.workflow, { ...request, reIndex: true });
+
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
+      request.operationId,
+      expect.stringContaining('Reindex produced 50 pages but 100 are already stored')
+    );
+    expect(harness.addDocument).not.toHaveBeenCalled();
+  });
+
+  it('allows a reindex that deliberately narrows the path prefix', async () => {
+    const harness = createHarness({
+      existingDocument: { url: request.url, title: request.title, lastIndexed: new Date(), pathPrefix: '/docs' },
+      existingPageCount: 100,
+      crawl: crawlPages(1),
+    });
+
+    await runWorkflow(harness.workflow, { ...request, reIndex: true, pathPrefix: '/docs/v2' });
+
+    expect(harness.statusTracker.failIndexing).not.toHaveBeenCalled();
+    expect(harness.addDocument).toHaveBeenCalledOnce();
+  });
+
+  // Widening or clearing the prefix should return more pages, so a shrink is still suspicious
+  it.each([
+    { label: 'cleared', pathPrefix: undefined },
+    { label: 'widened', pathPrefix: '/' + 'docs'.slice(0, 2) },
+  ])('still gates a reindex whose prefix was $label', async ({ pathPrefix }) => {
+    const harness = createHarness({
+      existingDocument: { url: request.url, title: request.title, lastIndexed: new Date(), pathPrefix: '/docs' },
+      existingPageCount: 100,
+      crawl: crawlPages(1),
+    });
+
+    await runWorkflow(harness.workflow, { ...request, reIndex: true, pathPrefix });
+
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
+      request.operationId,
+      expect.stringContaining('Reindex produced 1 pages but 100 are already stored')
+    );
+    expect(harness.addDocument).not.toHaveBeenCalled();
+  });
+
+  it('keeps indexing when the stored page count cannot be read', async () => {
+    const harness = createHarness({
+      existingDocument: { url: request.url, title: request.title, lastIndexed: new Date() },
+      existingPageCount: 100,
+      crawl: crawlPages(1),
+    });
+    harness.store.countDocumentPages.mockRejectedValue(new Error('lance unavailable'));
+
+    await runWorkflow(harness.workflow, { ...request, reIndex: true });
+
+    expect(harness.statusTracker.failIndexing).not.toHaveBeenCalled();
+    expect(harness.addDocument).toHaveBeenCalledOnce();
+  });
+
+  it('does not gate the first index of a document on a stored page count', async () => {
+    const harness = createHarness({ existingPageCount: 100 });
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.store.countDocumentPages).not.toHaveBeenCalled();
+    expect(harness.addDocument).toHaveBeenCalledOnce();
   });
 
   it('reports each crawled page while the crawl is still running', async () => {

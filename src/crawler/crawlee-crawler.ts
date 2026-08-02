@@ -38,6 +38,15 @@ function normalizeQueuedUrl(url: string): string {
   return parsed.origin + parsed.pathname + parsed.search;
 }
 
+/**
+ * A crawl may lose a few pages to flaky rendering without being a failed crawl. Tolerate
+ * whichever is larger: a small fixed number of pages, or this share of the crawl. The fixed
+ * number is what makes small crawls workable, so it is paired with a minority check at the
+ * use site - otherwise it would wave through most of a handful-of-pages site.
+ */
+const MIN_TOLERATED_FAILED_PAGES = 5;
+const MAX_TOLERATED_FAILED_PAGE_RATIO = 0.02;
+
 interface NavigationAttempt {
   failedUrl?: string;
   outboundFailure?: BlockedOutboundRequestError | OutboundRequestFailedError;
@@ -58,6 +67,8 @@ export class CrawleeCrawler extends BaseCrawler {
   /** Optional path prefix to restrict crawling */
   private pathPrefix?: string;
   private terminalRootFailure?: OutboundRequestFailedError;
+  /** The root page failed for any reason, not just the outbound failures terminalRootFailure covers */
+  private rootPageFailed: boolean = false;
   private navigationAttempts = new WeakMap<object, NavigationAttempt>();
 
   private cleanupNavigationListener(request: object): void {
@@ -337,6 +348,7 @@ export class CrawleeCrawler extends BaseCrawler {
     this.isFirstPage = true;
     this.sessionExpiredError = null;
     this.terminalRootFailure = undefined;
+    this.rootPageFailed = false;
     this.navigationAttempts = new WeakMap();
     this.expectedUrl = normalizeQueuedUrl(url);
     this.skippedExternalPages = 0;
@@ -434,8 +446,13 @@ export class CrawleeCrawler extends BaseCrawler {
         const failedUrl = attempt?.failedUrl;
         const outboundFailure =
           attempt?.outboundFailure ?? (failedUrl ? await classifyOutboundFailure(failedUrl) : normalizeOutboundFailure(error));
-        if (normalizeQueuedUrl(context.request.url) === this.expectedUrl && outboundFailure instanceof OutboundRequestFailedError) {
-          this.terminalRootFailure = outboundFailure;
+        if (normalizeQueuedUrl(context.request.url) === this.expectedUrl) {
+          // Any root failure is terminal. terminalRootFailure only carries the outbound ones,
+          // so timeouts, bad status codes and extractor crashes need their own flag.
+          this.rootPageFailed = true;
+          if (outboundFailure instanceof OutboundRequestFailedError) {
+            this.terminalRootFailure = outboundFailure;
+          }
         }
         this.navigationAttempts.delete(requestKey);
         await crawlerOptions.failedRequestHandler?.(context, error);
@@ -642,7 +659,22 @@ export class CrawleeCrawler extends BaseCrawler {
       }
 
       if (finalStatistics.requestsFailed > 0) {
-        throw new Error(`Crawl failed for ${finalStatistics.requestsFailed} of ${finalStatistics.requestsTotal} pages after retries`);
+        // Losing the entry point is terminal however well the rest of the crawl went, and it is
+        // not covered by terminalRootFailure above, which only carries outbound failures.
+        if (this.rootPageFailed) {
+          throw new Error(`Crawl failed: the root page ${this.expectedUrl} could not be loaded`);
+        }
+
+        // A few unreachable leaf pages shouldn't throw away everything else we crawled, but a
+        // partial crawl can go on to replace a complete index, so tolerate only a small loss -
+        // and never a loss that is half the crawl or more, however small the crawl is.
+        const tolerated = Math.max(MIN_TOLERATED_FAILED_PAGES, finalStatistics.requestsTotal * MAX_TOLERATED_FAILED_PAGE_RATIO);
+        if (finalStatistics.requestsFailed > tolerated || finalStatistics.requestsFailed * 2 >= finalStatistics.requestsTotal) {
+          throw new Error(`Crawl failed for ${finalStatistics.requestsFailed} of ${finalStatistics.requestsTotal} pages after retries`);
+        }
+        logger.warn(
+          `[CrawleeCrawler] Continuing with a partial crawl: ${finalStatistics.requestsFailed} of ${finalStatistics.requestsTotal} pages failed after retries`
+        );
       }
 
       for (const result of this.queueManager.drainResults()) {

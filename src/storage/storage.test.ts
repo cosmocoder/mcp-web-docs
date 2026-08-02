@@ -184,6 +184,54 @@ describe('DocumentStore', () => {
       expect(retrieved).toBeDefined();
     });
 
+    function createDocumentWithPages(url: string, title: string, paths: string[]): ProcessedDocument {
+      const document = createTestDocument(url, title, paths.length);
+      document.chunks.forEach((chunk, index) => (chunk.path = paths[index]));
+      return document;
+    }
+
+    it('counts distinct pages rather than chunks', async () => {
+      const url = 'https://example.com/counted';
+      await store.addDocument(createDocumentWithPages(url, 'Counted', ['/a', '/a', '/b']));
+      await store.addDocument(createTestDocument('https://example.com/other', 'Other', 2));
+
+      expect(await store.countDocumentPages(url)).toBe(2);
+      expect(await store.countDocumentPages('https://example.com/missing')).toBe(0);
+    });
+
+    it('sees pages published by another store instance', async () => {
+      const url = 'https://example.com/peer-published';
+      // Pin this handle to the current table version before the peer writes
+      expect(await store.countDocumentPages(url)).toBe(0);
+
+      const peer = await openPeerStore();
+      await peer.addDocument(createDocumentWithPages(url, 'Peer', ['/a', '/b', '/c']));
+
+      expect(await store.countDocumentPages(url)).toBe(3);
+    });
+
+    it('excludes rows from a generation that was never published', async () => {
+      const url = 'https://example.com/unpublished-pages';
+      await store.addDocument(createDocumentWithPages(url, 'Original', ['/a', '/b']));
+
+      // Fail the publish so the replacement's rows stay in the table unpublished
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const originalRun = sqliteDb.run.bind(sqliteDb);
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        if (String(sql).includes('INSERT INTO documents')) {
+          throw new Error('injected publication failure');
+        }
+        return originalRun(sql, ...params);
+      });
+      vi.spyOn(replacementInternals(), 'finishDocumentReplacement').mockRejectedValueOnce(new Error('injected cleanup failure'));
+
+      const replacement = createDocumentWithPages(url, 'Replacement', ['/c', '/d', '/e', '/f']);
+      await expect(store.addDocument(replacement)).rejects.toThrow('injected publication failure');
+
+      // Without the journal visibility filter this would see the abandoned generation too
+      expect(await store.countDocumentPages(url)).toBe(2);
+    });
+
     it('attempts every close when an earlier resource fails', async () => {
       const internals = replacementInternals();
       const closes = [
