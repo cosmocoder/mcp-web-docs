@@ -29,85 +29,34 @@ export const siteRules: SiteDetectionRule[] = [
       });
     },
     prepare: async (page, log) => {
-      // No wait for the docs content here: modern Storybook renders it inside an
-      // iframe (handled by findContentFrame), and StorybookExtractor polls for it
-      // itself in whichever document it ends up running against.
-      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway'));
-
-      // Wait for sidebar to be ready
+      // Only the sidebar is prepared here, and only to feed link discovery. The docs
+      // content belongs to the extractor, which runs inside the preview iframe and
+      // polls for its own. Waiting for the sidebar is the real precondition, so there
+      // is no networkidle wait: Storybook keeps chattering long after the tree is up.
       await page.waitForSelector('[class*="sidebar"]', { timeout: 5000 }).catch(() => log.debug('No sidebar found'));
 
-      // First expand all section buttons
+      // A show/hide toggle, so it gets clicked exactly once - clicking it again re-hides
+      // the sections and the link count oscillates.
       await page.evaluate(() => {
-        const buttons = Array.from(document.querySelectorAll('button.sidebar-subheading-action'));
-        buttons.forEach((button) => (button as HTMLButtonElement).click());
+        document.querySelectorAll<HTMLButtonElement>('button.sidebar-subheading-action').forEach((button) => button.click());
       });
 
-      // Wait for any new content to appear
-      await page.waitForTimeout(500);
+      // Expanding a root reveals nested groups that reveal more, and a group carries no
+      // link of its own - so settle on nothing being left collapsed rather than on the
+      // link count, which stalls on a group whose children are all groups.
+      // Buttons only: div.search-field keeps aria-expanded="false" forever.
+      for (let pass = 0; pass < 8; pass++) {
+        const collapsed = await page.evaluate(() => {
+          const buttons = document.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]');
+          buttons.forEach((button) => button.click());
+          return buttons.length;
+        });
 
-      // Then expand any remaining collapsed sections
-      await page.evaluate(() => {
-        const expandButtons = Array.from(document.querySelectorAll('[aria-expanded="false"]'));
-        expandButtons.forEach((button) => (button as HTMLButtonElement).click());
-      });
-
-      // Wait for all animations and content updates to complete
-      await page.waitForTimeout(1000);
-
-      // Scroll to bottom to trigger lazy loading of ArgTypes tables
-      await page.evaluate(async () => {
-        // Find the content iframe
-        const iframe = document.querySelector('iframe') as HTMLIFrameElement;
-        const contentDoc = iframe?.contentDocument || document;
-
-        // Scroll to bottom to load all content
-        const scrollContainer = contentDoc.querySelector('.sbdocs-content, #docs-root, body');
-        if (scrollContainer) {
-          scrollContainer.scrollTo(0, scrollContainer.scrollHeight);
-          await new Promise((resolve) => setTimeout(resolve, 500));
-          scrollContainer.scrollTo(0, 0);
+        if (collapsed === 0) {
+          break;
         }
-      });
-
-      // Click on "Show code" buttons to reveal code examples
-      await page.evaluate(() => {
-        const showCodeButtons = Array.from(document.querySelectorAll('button')).filter((btn) =>
-          btn.textContent?.toLowerCase().includes('show code')
-        );
-        showCodeButtons.slice(0, 3).forEach((btn) => btn.click()); // Limit to first 3
-      });
-
-      await page.waitForTimeout(500);
-
-      // Expand ArgTypes table rows and "Show more" buttons
-      await page.evaluate(async () => {
-        const iframe = document.querySelector('iframe') as HTMLIFrameElement;
-        const contentDoc = iframe?.contentDocument || document;
-
-        // Click expand buttons in args table
-        const expandBtns = contentDoc.querySelectorAll(
-          '[class*="argstable"] button[aria-expanded="false"], ' + '[class*="argtable"] button[aria-expanded="false"]'
-        );
-        expandBtns.forEach((btn) => (btn as HTMLButtonElement).click());
-
-        // Click all "Show X more..." buttons to reveal full type lists
-        const showMoreBtns = Array.from(contentDoc.querySelectorAll('button')).filter(
-          (btn) => btn.textContent?.includes('Show') && btn.textContent?.includes('more')
-        );
-        for (const btn of showMoreBtns) {
-          btn.click();
-          await new Promise((resolve) => setTimeout(resolve, 100));
-        }
-      });
-
-      await page.waitForTimeout(500);
-
-      // Log the number of links found for debugging
-      const linkCount = await page.evaluate(() => {
-        return document.querySelectorAll('.sidebar-item a, [data-nodetype="story"] a, [data-nodetype="document"] a').length;
-      });
-      log.debug(`Found ${linkCount} sidebar links after expansion`);
+        await page.waitForTimeout(100);
+      }
     },
     linkSelectors: [
       '.sidebar-item a',

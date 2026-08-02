@@ -1,3 +1,4 @@
+import { JSDOM } from 'jsdom';
 import type { Page } from 'playwright';
 import type { Log } from 'crawlee';
 import { siteRules } from './site-rules.js';
@@ -51,7 +52,7 @@ describe('Site Rules', () => {
 
     it('should expand sidebar sections in prepare', async () => {
       const page = {
-        evaluate: vi.fn().mockResolvedValue(5),
+        evaluate: vi.fn().mockResolvedValue(0),
         waitForLoadState: vi.fn().mockResolvedValue(undefined),
         waitForSelector: vi.fn().mockResolvedValue(undefined),
         waitForTimeout: vi.fn().mockResolvedValue(undefined),
@@ -59,7 +60,7 @@ describe('Site Rules', () => {
 
       await storybookRule.prepare?.(page, mockLog);
 
-      expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 5000 });
+      expect(page.waitForSelector).toHaveBeenCalledWith('[class*="sidebar"]', { timeout: 5000 });
       expect(page.evaluate).toHaveBeenCalled();
     });
 
@@ -74,6 +75,65 @@ describe('Site Rules', () => {
       // Should not throw, and should still run the sidebar expansion afterwards
       await expect(storybookRule.prepare?.(page, mockLog)).resolves.toBeUndefined();
       expect(page.evaluate).toHaveBeenCalled();
+    });
+
+    it('should expand a group-only sidebar without re-hiding it, then stop', async () => {
+      // Mirrors the shapes the live sidebar actually has: everything collapsible is a
+      // <button>, 'sidebar-subheading-action' is a show/hide toggle, div.search-field
+      // keeps aria-expanded="false" forever, and the two intermediate groups carry no
+      // link of their own - only the innermost one reveals stories.
+      const dom = new JSDOM(`<!doctype html><body><div class="sidebar hidden">
+        <div class="search-field" aria-expanded="false"></div>
+        <button class="sidebar-subheading-action"></button>
+        <button class="group" aria-expanded="false"></button>
+        <div id="slot"></div>
+      </div></body>`);
+      const doc = dom.window.document;
+      const sidebar = doc.querySelector('.sidebar')!;
+      const slot = doc.querySelector('#slot')!;
+      let depth = 0;
+
+      sidebar.querySelector('button.sidebar-subheading-action')!.addEventListener('click', () => {
+        sidebar.classList.toggle('hidden');
+      });
+      doc.addEventListener('click', (event) => {
+        const target = event.target as Element;
+        if (!target.matches?.('button.group') || sidebar.classList.contains('hidden')) {
+          return;
+        }
+        target.setAttribute('aria-expanded', 'true');
+        // Two levels of group before any story appears - a loop that settles on the
+        // link count sees zero new links here and quits before reaching them.
+        if (++depth < 3) {
+          slot.insertAdjacentHTML('beforeend', '<button class="group" aria-expanded="false"></button>');
+          return;
+        }
+        slot.insertAdjacentHTML('beforeend', '<div class="sidebar-item"><a href="/story">story</a></div>');
+      });
+
+      const originalDocument = globalThis.document;
+      globalThis.document = doc as unknown as Document;
+      const page = {
+        waitForLoadState: vi.fn().mockResolvedValue(undefined),
+        waitForSelector: vi.fn().mockResolvedValue(undefined),
+        waitForTimeout: vi.fn().mockResolvedValue(undefined),
+        evaluate: vi.fn(async (fn: (arg?: unknown) => unknown, arg?: unknown) => fn(arg)),
+      } as unknown as Page;
+
+      try {
+        await storybookRule.prepare?.(page, mockLog);
+      }
+      finally {
+        globalThis.document = originalDocument;
+      }
+
+      // Reached the story behind two link-less groups
+      expect(doc.querySelectorAll('.sidebar-item a')).toHaveLength(1);
+      expect(doc.querySelectorAll('button[aria-expanded="false"]')).toHaveLength(0);
+      // Toggle clicked exactly once - a second click would re-hide everything
+      expect(sidebar.classList.contains('hidden')).toBe(false);
+      // The permanently-collapsed search field must not keep the loop running
+      expect(vi.mocked(page.evaluate).mock.calls.length).toBeLessThan(9);
     });
 
     it('should use StorybookExtractor', () => {
