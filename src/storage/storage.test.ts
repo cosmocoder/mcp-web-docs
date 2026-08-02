@@ -199,6 +199,22 @@ describe('DocumentStore', () => {
       expect(await store.countDocumentPages('https://example.com/missing')).toBe(0);
     });
 
+    it('deletes and searches a document whose URL contains a backslash', async () => {
+      const url = 'https://example.com/a?q=\\b';
+      await store.addDocument(createDocumentWithContent(url, 'Backslash', 'backslash content'));
+
+      expect(await store.getDocument(url)).toMatchObject({ title: 'Backslash' });
+      expect(await store.countDocumentPages(url)).toBe(1);
+      expect(await storedContents(store, url)).toEqual(['backslash content']);
+
+      await store.deleteDocument(url);
+
+      // Over-escaping made the Lance delete a silent no-op, leaving orphaned rows behind
+      expect(await store.getDocument(url)).toBeNull();
+      expect(await store.countDocumentPages(url)).toBe(0);
+      expect(await storedContents(store, url)).toEqual([]);
+    });
+
     it('sees pages published by another store instance', async () => {
       const url = 'https://example.com/peer-published';
       // Pin this handle to the current table version before the peer writes
