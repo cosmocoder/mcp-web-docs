@@ -129,6 +129,16 @@ describe('IndexingStatusTracker', () => {
       expect(status?.description).toBe('Indexing complete');
     });
 
+    it('should say so when pages are missing from the index', () => {
+      tracker.updateStats('test-id', { pagesFound: 120, pagesFailed: 4 });
+      tracker.completeIndexing('test-id');
+
+      const status = tracker.getStatus('test-id');
+      expect(status?.status).toBe('complete');
+      expect(status?.pagesFailed).toBe(4);
+      expect(status?.description).toBe('Indexing complete, but 4 pages could not be fetched and are missing from the index');
+    });
+
     it('should ignore completion for unknown ids', () => {
       tracker.completeIndexing('unknown-id');
       // Should not throw

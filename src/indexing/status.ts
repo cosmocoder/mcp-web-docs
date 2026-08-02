@@ -46,6 +46,7 @@ export class IndexingStatusTracker {
       startedAt: new Date(),
       pagesFound: 0,
       pagesSkipped: 0,
+      pagesFailed: 0,
       pagesProcessed: 0,
       chunksCreated: 0,
     };
@@ -62,7 +63,7 @@ export class IndexingStatusTracker {
 
   updateStats(
     operationId: string,
-    stats: { pagesFound?: number; pagesProcessed?: number; pagesSkipped?: number; chunksCreated?: number }
+    stats: { pagesFound?: number; pagesProcessed?: number; pagesSkipped?: number; pagesFailed?: number; chunksCreated?: number }
   ): void {
     const currentStatus = this.statuses.get(operationId);
     if (!currentStatus) {
@@ -74,6 +75,7 @@ export class IndexingStatusTracker {
       pagesFound: stats.pagesFound ?? currentStatus.pagesFound,
       pagesProcessed: stats.pagesProcessed ?? currentStatus.pagesProcessed,
       pagesSkipped: stats.pagesSkipped ?? currentStatus.pagesSkipped,
+      pagesFailed: stats.pagesFailed ?? currentStatus.pagesFailed,
       chunksCreated: stats.chunksCreated ?? currentStatus.chunksCreated,
     };
 
@@ -146,7 +148,10 @@ export class IndexingStatusTracker {
       ...currentStatus,
       status: 'complete',
       progress: 1,
-      description: 'Indexing complete',
+      // Say so when the index is knowingly missing pages, rather than reporting a clean success
+      description: currentStatus.pagesFailed
+        ? `Indexing complete, but ${currentStatus.pagesFailed} pages could not be fetched and are missing from the index`
+        : 'Indexing complete',
     };
 
     this.statuses.set(operationId, status);

@@ -35,7 +35,7 @@ type WorkflowStatusTracker = Pick<
   'cancelIndexing' | 'completeIndexing' | 'failIndexing' | 'getStatus' | 'updateProgress' | 'updateStats'
 >;
 type WorkflowAuthManager = Pick<AuthManager, 'clearSession' | 'loadSession'>;
-type WorkflowCrawler = Pick<DocsCrawler, 'abort' | 'crawl' | 'setPathPrefix' | 'setStorageState'>;
+type WorkflowCrawler = Pick<DocsCrawler, 'abort' | 'crawl' | 'failedPageCount' | 'setPathPrefix' | 'setStorageState'>;
 
 export interface IndexingRequest {
   operationId: string;
@@ -169,7 +169,12 @@ export class IndexingWorkflow {
 
       logger.info(`[IndexingWorkflow] Found ${pages.length} pages to process`);
       logger.info('[IndexingWorkflow] Starting content processing and embedding generation');
-      statusTracker.updateStats(operationId, { pagesFound: pages.length });
+      // A tolerated partial crawl otherwise looks identical to a complete one
+      const failedPages = crawler.failedPageCount;
+      if (failedPages > 0) {
+        logger.warn(`[IndexingWorkflow] Crawl could not fetch ${failedPages} pages, indexing the rest`);
+      }
+      statusTracker.updateStats(operationId, { pagesFound: pages.length, pagesFailed: failedPages });
       checkCancelled();
 
       const chunks: DocumentChunk[] = [];

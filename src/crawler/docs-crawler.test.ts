@@ -19,6 +19,7 @@ const mockCrawleeAbort = vi.fn();
 const mockCrawleeConstructor = vi.fn();
 const mockSetStorageState = vi.fn();
 const mockSetPathPrefix = vi.fn();
+const mockFailedPageCount = vi.fn().mockReturnValue(0);
 vi.mock('./crawlee-crawler.js', () => ({
   CrawleeCrawler: function (...args: unknown[]) {
     mockCrawleeConstructor(...args);
@@ -27,6 +28,9 @@ vi.mock('./crawlee-crawler.js', () => ({
       abort: mockCrawleeAbort,
       setStorageState: mockSetStorageState,
       setPathPrefix: mockSetPathPrefix,
+      get failedPageCount() {
+        return mockFailedPageCount();
+      },
     };
   },
 }));
@@ -198,6 +202,62 @@ describe('DocsCrawler', () => {
         }
 
         expect(mockSetStorageState).toHaveBeenCalledWith(storageState);
+      });
+
+      it('reports the pages the underlying crawl could not fetch', async () => {
+        mockFailedPageCount.mockReturnValue(3);
+        mockCrawleeCrawl.mockImplementation(async function* () {
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
+        });
+
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of crawler.crawl('https://example.com')) {
+          // Just consume results
+        }
+
+        expect(crawler.failedPageCount).toBe(3);
+      });
+
+      it('does not carry a failed page count over to a GitHub crawl', async () => {
+        mockFailedPageCount.mockReturnValue(3);
+        mockCrawleeCrawl.mockImplementation(async function* () {
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
+        });
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of crawler.crawl('https://example.com')) {
+          // Just consume results
+        }
+        expect(crawler.failedPageCount).toBe(3);
+
+        // The GitHub path never touches the Crawlee counter, so it has to be cleared up front
+        mockGitHubCrawl.mockImplementation(async function* () {
+          yield { url: 'https://github.com/o/r', path: '/README.md', content: 'Readme', contentFormat: 'text', title: 'Readme' };
+        });
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of crawler.crawl('https://github.com/o/r')) {
+          // Just consume results
+        }
+
+        expect(crawler.failedPageCount).toBe(0);
+      });
+
+      it('resets the failed page count when a new crawl starts', async () => {
+        mockFailedPageCount.mockReturnValue(3);
+        mockCrawleeCrawl.mockImplementation(async function* () {
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
+        });
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of crawler.crawl('https://example.com')) {
+          // Just consume results
+        }
+
+        mockFailedPageCount.mockReturnValue(0);
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of crawler.crawl('https://example.com')) {
+          // Just consume results
+        }
+
+        expect(crawler.failedPageCount).toBe(0);
       });
     });
   });
