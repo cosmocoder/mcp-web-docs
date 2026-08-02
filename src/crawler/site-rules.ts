@@ -13,16 +13,6 @@ export interface SiteDetectionRule {
   linkSelectors?: string[];
 }
 
-/** Sidebar anchors Storybook uses for stories and docs pages, across versions. */
-const STORYBOOK_LINK_SELECTORS = [
-  '.sidebar-item a',
-  '[data-nodetype="root"] a',
-  '[data-nodetype="group"] a',
-  '[data-nodetype="document"] a',
-  '[data-nodetype="story"] a',
-  '[data-item-id] a',
-];
-
 export const siteRules: SiteDetectionRule[] = [
   {
     type: 'storybook',
@@ -39,12 +29,10 @@ export const siteRules: SiteDetectionRule[] = [
       });
     },
     prepare: async (page, log) => {
-      // No wait for the docs content here: modern Storybook renders it inside an
-      // iframe (handled by findContentFrame), and StorybookExtractor polls for it
-      // itself in whichever document it ends up running against.
-      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway'));
-
-      // Wait for sidebar to be ready
+      // Only the sidebar is prepared here, and only to feed link discovery. The docs
+      // content belongs to the extractor, which runs inside the preview iframe and
+      // polls for its own. Waiting for the sidebar is the real precondition, so there
+      // is no networkidle wait: Storybook keeps chattering long after the tree is up.
       await page.waitForSelector('[class*="sidebar"]', { timeout: 5000 }).catch(() => log.debug('No sidebar found'));
 
       // A show/hide toggle, so it gets clicked exactly once - clicking it again re-hides
@@ -53,29 +41,31 @@ export const siteRules: SiteDetectionRule[] = [
         document.querySelectorAll<HTMLButtonElement>('button.sidebar-subheading-action').forEach((button) => button.click());
       });
 
-      // Expanding one section can reveal more collapsed ones, and expanding is idempotent
-      // (a node stops matching once it is open), so repeat until no new links turn up.
-      // Nothing here touches the docs content: the extractor runs inside the preview
-      // iframe and does its own expanding there.
-      const selector = STORYBOOK_LINK_SELECTORS.join(', ');
-      let linkCount = -1;
-
+      // Expanding a root reveals nested groups that reveal more, and a group carries no
+      // link of its own - so settle on nothing being left collapsed rather than on the
+      // link count, which stalls on a group whose children are all groups.
+      // Buttons only: div.search-field keeps aria-expanded="false" forever.
       for (let pass = 0; pass < 8; pass++) {
-        const found = await page.evaluate((linkSelector) => {
-          document.querySelectorAll<HTMLButtonElement>('[aria-expanded="false"]').forEach((button) => button.click());
-          return document.querySelectorAll(linkSelector).length;
-        }, selector);
+        const collapsed = await page.evaluate(() => {
+          const buttons = document.querySelectorAll<HTMLButtonElement>('button[aria-expanded="false"]');
+          buttons.forEach((button) => button.click());
+          return buttons.length;
+        });
 
-        if (found === linkCount) {
+        if (collapsed === 0) {
           break;
         }
-        linkCount = found;
         await page.waitForTimeout(100);
       }
-
-      log.debug(`Found ${linkCount} sidebar links after expansion`);
     },
-    linkSelectors: STORYBOOK_LINK_SELECTORS,
+    linkSelectors: [
+      '.sidebar-item a',
+      '[data-nodetype="root"] a',
+      '[data-nodetype="group"] a',
+      '[data-nodetype="document"] a',
+      '[data-nodetype="story"] a',
+      '[data-item-id] a',
+    ],
   },
   {
     type: 'github',

@@ -22,6 +22,8 @@ describe('StorybookExtractor', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const extractorAny = extractor as any;
 
+    // waitForStorybookAPI reads a bare `document`, which only exists inside the browser
+    // - these tests pass the JSDOM document in as an argument instead
     vi.spyOn(extractorAny, 'waitForStorybookAPI').mockResolvedValue(undefined);
     // Mock expandAllTypeValues to skip setTimeout delays in props table processing
     vi.spyOn(extractorAny, 'expandAllTypeValues').mockResolvedValue(undefined);
@@ -34,10 +36,7 @@ describe('StorybookExtractor', () => {
     vi.restoreAllMocks();
   });
 
-  /**
-   * For fixtures that never render content: runs the real polling loop to exhaustion
-   * on fake timers, so the 5s budget costs no wall-clock.
-   */
+  /** Runs the real polling loop to exhaustion on fake timers, costing no wall-clock. */
   const extractWithoutWaiting = async (doc: Document) => {
     vi.useFakeTimers();
     try {
@@ -145,6 +144,20 @@ describe('StorybookExtractor', () => {
 
       expect(result.content).toBe('');
       expect(result.metadata.type).toBe('overview');
+    });
+
+    it('should not sleep when the docs area is already rendered', async () => {
+      const doc = createDocument('<html><body><div id="docs-root"><h1>Ready</h1><p>Rendered</p></div></body></html>');
+
+      // Fake timers are never advanced, so anything that sleeps before its first
+      // check never resolves and this times out.
+      vi.useFakeTimers();
+      try {
+        await expect(extractor.extractContent(doc)).resolves.toMatchObject({ title: 'Ready' });
+      }
+      finally {
+        vi.useRealTimers();
+      }
     });
 
     it('should extract from #docs-root element', async () => {

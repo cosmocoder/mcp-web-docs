@@ -52,7 +52,7 @@ describe('Site Rules', () => {
 
     it('should expand sidebar sections in prepare', async () => {
       const page = {
-        evaluate: vi.fn().mockResolvedValue(5),
+        evaluate: vi.fn().mockResolvedValue(0),
         waitForLoadState: vi.fn().mockResolvedValue(undefined),
         waitForSelector: vi.fn().mockResolvedValue(undefined),
         waitForTimeout: vi.fn().mockResolvedValue(undefined),
@@ -60,7 +60,7 @@ describe('Site Rules', () => {
 
       await storybookRule.prepare?.(page, mockLog);
 
-      expect(page.waitForLoadState).toHaveBeenCalledWith('networkidle', { timeout: 5000 });
+      expect(page.waitForSelector).toHaveBeenCalledWith('[class*="sidebar"]', { timeout: 5000 });
       expect(page.evaluate).toHaveBeenCalled();
     });
 
@@ -77,31 +77,38 @@ describe('Site Rules', () => {
       expect(page.evaluate).toHaveBeenCalled();
     });
 
-    it('should expand every section without re-hiding any, then stop', async () => {
-      // Models the two sidebar controls: 'sidebar-subheading-action' is a show/hide
-      // toggle, and each collapsed node reveals one link and one nested node when
-      // clicked. Clicking the toggle a second time hides everything again.
+    it('should expand a group-only sidebar without re-hiding it, then stop', async () => {
+      // Mirrors the shapes the live sidebar actually has: everything collapsible is a
+      // <button>, 'sidebar-subheading-action' is a show/hide toggle, div.search-field
+      // keeps aria-expanded="false" forever, and the two intermediate groups carry no
+      // link of their own - only the innermost one reveals stories.
       const dom = new JSDOM(`<!doctype html><body><div class="sidebar hidden">
+        <div class="search-field" aria-expanded="false"></div>
         <button class="sidebar-subheading-action"></button>
-        <div class="section" aria-expanded="false"></div>
+        <button class="group" aria-expanded="false"></button>
+        <div id="slot"></div>
       </div></body>`);
       const doc = dom.window.document;
       const sidebar = doc.querySelector('.sidebar')!;
+      const slot = doc.querySelector('#slot')!;
       let depth = 0;
 
-      sidebar.querySelector('button')!.addEventListener('click', () => {
+      sidebar.querySelector('button.sidebar-subheading-action')!.addEventListener('click', () => {
         sidebar.classList.toggle('hidden');
       });
       doc.addEventListener('click', (event) => {
         const target = event.target as Element;
-        if (!target.matches?.('.section') || sidebar.classList.contains('hidden')) {
+        if (!target.matches?.('button.group') || sidebar.classList.contains('hidden')) {
           return;
         }
         target.setAttribute('aria-expanded', 'true');
-        if (depth++ < 2) {
-          target.insertAdjacentHTML('afterend', `<div class="sidebar-item"><a href="/s${depth}">s${depth}</a></div>`);
-          target.insertAdjacentHTML('afterend', '<div class="section" aria-expanded="false"></div>');
+        // Two levels of group before any story appears - a loop that settles on the
+        // link count sees zero new links here and quits before reaching them.
+        if (++depth < 3) {
+          slot.insertAdjacentHTML('beforeend', '<button class="group" aria-expanded="false"></button>');
+          return;
         }
+        slot.insertAdjacentHTML('beforeend', '<div class="sidebar-item"><a href="/story">story</a></div>');
       });
 
       const originalDocument = globalThis.document;
@@ -120,12 +127,13 @@ describe('Site Rules', () => {
         globalThis.document = originalDocument;
       }
 
-      // Every section opened and stayed open - a toggle clicked twice would hide them
+      // Reached the story behind two link-less groups
+      expect(doc.querySelectorAll('.sidebar-item a')).toHaveLength(1);
+      expect(doc.querySelectorAll('button[aria-expanded="false"]')).toHaveLength(0);
+      // Toggle clicked exactly once - a second click would re-hide everything
       expect(sidebar.classList.contains('hidden')).toBe(false);
-      expect(doc.querySelectorAll('.sidebar-item a')).toHaveLength(2);
-      expect(doc.querySelectorAll('[aria-expanded="false"]')).toHaveLength(0);
-      // Stopped once the count settled rather than burning all 8 passes
-      expect(vi.mocked(page.evaluate).mock.calls.length).toBeLessThan(6);
+      // The permanently-collapsed search field must not keep the loop running
+      expect(vi.mocked(page.evaluate).mock.calls.length).toBeLessThan(9);
     });
 
     it('should use StorybookExtractor', () => {
