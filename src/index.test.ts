@@ -247,6 +247,15 @@ describe('WebDocsServer', () => {
       toolHandler = requestHandlers.at(-1)!;
     });
 
+    // 'crawlee' is mocked above, so @apify/log is not otherwise loaded and this import
+    // evaluates it against whatever index.ts set. A level it cannot parse throws here,
+    // the way it threw on startup when the value was 'OFF' rather than '0'.
+    it('sets APIFY_LOG_LEVEL to a level @apify/log accepts', async () => {
+      const { default: log } = await import('@apify/log');
+
+      expect(log.getLevel()).toBe(0);
+    });
+
     it.each([
       { progressToken: 0, url: 'https://progress-zero.example.com' },
       { progressToken: '', url: 'https://progress-empty.example.com' },

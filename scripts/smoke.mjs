@@ -63,8 +63,6 @@ server.stdin.write(`${JSON.stringify(request)}\n`);
 
 try {
   const result = await handshake;
-  // A reply is not enough — a server that answers `{}` is still broken, and without
-  // this the log below would happily print "undefined answered initialize" and pass.
   if (!result?.serverInfo?.name || !result.protocolVersion) {
     throw new Error(`initialize answered without server info: ${JSON.stringify(result)}`);
   }
