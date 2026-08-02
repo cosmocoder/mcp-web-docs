@@ -15,20 +15,14 @@ describe('StorybookExtractor', () => {
     // Mock console.error to suppress expected warnings in tests
     consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    // Mock the private waiting methods to skip delays (using spyOn on instance)
-    // These mocks are necessary because:
-    // - waitForStorybookAPI checks for window.__STORYBOOK_CLIENT_API__ which doesn't exist in JSDOM
-    // - waitForStorybookContent uses polling with timeouts
-    // - expandSidebarSections and waitForSidebar interact with UI elements
+    // waitForStorybookContent is deliberately NOT mocked: the fixtures below render
+    // their content up front, so the real method returns on its first check without
+    // sleeping. Stubbing it out is what hid it looking for a sidebar inside the
+    // preview iframe, which cost ~7s a page and found nothing.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const extractorAny = extractor as any;
 
     vi.spyOn(extractorAny, 'waitForStorybookAPI').mockResolvedValue(undefined);
-    vi.spyOn(extractorAny, 'waitForStorybookContent').mockImplementation((doc: unknown) => {
-      return Promise.resolve((doc as Document).querySelector('.sbdocs-content, #docs-root'));
-    });
-    vi.spyOn(extractorAny, 'expandSidebarSections').mockResolvedValue(undefined);
-    vi.spyOn(extractorAny, 'waitForSidebar').mockResolvedValue(undefined);
     // Mock expandAllTypeValues to skip setTimeout delays in props table processing
     vi.spyOn(extractorAny, 'expandAllTypeValues').mockResolvedValue(undefined);
   });
@@ -39,6 +33,22 @@ describe('StorybookExtractor', () => {
     consoleErrorSpy.mockRestore();
     vi.restoreAllMocks();
   });
+
+  /**
+   * For fixtures that never render content: runs the real polling loop to exhaustion
+   * on fake timers, so the 5s budget costs no wall-clock.
+   */
+  const extractWithoutWaiting = async (doc: Document) => {
+    vi.useFakeTimers();
+    try {
+      const pending = extractor.extractContent(doc);
+      await vi.runAllTimersAsync();
+      return await pending;
+    }
+    finally {
+      vi.useRealTimers();
+    }
+  };
 
   const createDocument = (html: string): Document => {
     const dom = new JSDOM(html, {
@@ -131,7 +141,7 @@ describe('StorybookExtractor', () => {
         </html>
       `);
 
-      const result = await extractor.extractContent(doc);
+      const result = await extractWithoutWaiting(doc);
 
       expect(result.content).toBe('');
       expect(result.metadata.type).toBe('overview');
@@ -464,13 +474,13 @@ describe('StorybookExtractor', () => {
     it('should return empty result when no content found', async () => {
       const doc = createDocument('<html><body></body></html>');
 
-      const result = await extractor.extractContent(doc);
+      const result = await extractWithoutWaiting(doc);
 
       expect(result.content).toBe('');
       expect(result.metadata.type).toBe('overview');
     });
 
-    it('should handle missing h1 gracefully', async () => {
+    it('should return nothing for a docs area with no h1', async () => {
       const doc = createDocument(`
         <html>
           <body>
@@ -482,10 +492,12 @@ describe('StorybookExtractor', () => {
         </html>
       `);
 
-      const result = await extractor.extractContent(doc);
+      const result = await extractWithoutWaiting(doc);
 
-      // Without h1, name should be empty string (pattern is still created)
-      expect(result.metadata.pattern?.name).toBe('');
+      // An h1 is how the extractor tells rendered docs from a half-built page, so a
+      // docs area without one never counts as ready and the page is left unindexed.
+      expect(result.content).toBe('');
+      expect(result.metadata.pattern).toBeUndefined();
     });
   });
 

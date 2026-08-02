@@ -1,3 +1,4 @@
+import { JSDOM } from 'jsdom';
 import type { Page } from 'playwright';
 import type { Log } from 'crawlee';
 import { siteRules } from './site-rules.js';
@@ -74,6 +75,57 @@ describe('Site Rules', () => {
       // Should not throw, and should still run the sidebar expansion afterwards
       await expect(storybookRule.prepare?.(page, mockLog)).resolves.toBeUndefined();
       expect(page.evaluate).toHaveBeenCalled();
+    });
+
+    it('should expand every section without re-hiding any, then stop', async () => {
+      // Models the two sidebar controls: 'sidebar-subheading-action' is a show/hide
+      // toggle, and each collapsed node reveals one link and one nested node when
+      // clicked. Clicking the toggle a second time hides everything again.
+      const dom = new JSDOM(`<!doctype html><body><div class="sidebar hidden">
+        <button class="sidebar-subheading-action"></button>
+        <div class="section" aria-expanded="false"></div>
+      </div></body>`);
+      const doc = dom.window.document;
+      const sidebar = doc.querySelector('.sidebar')!;
+      let depth = 0;
+
+      sidebar.querySelector('button')!.addEventListener('click', () => {
+        sidebar.classList.toggle('hidden');
+      });
+      doc.addEventListener('click', (event) => {
+        const target = event.target as Element;
+        if (!target.matches?.('.section') || sidebar.classList.contains('hidden')) {
+          return;
+        }
+        target.setAttribute('aria-expanded', 'true');
+        if (depth++ < 2) {
+          target.insertAdjacentHTML('afterend', `<div class="sidebar-item"><a href="/s${depth}">s${depth}</a></div>`);
+          target.insertAdjacentHTML('afterend', '<div class="section" aria-expanded="false"></div>');
+        }
+      });
+
+      const originalDocument = globalThis.document;
+      globalThis.document = doc as unknown as Document;
+      const page = {
+        waitForLoadState: vi.fn().mockResolvedValue(undefined),
+        waitForSelector: vi.fn().mockResolvedValue(undefined),
+        waitForTimeout: vi.fn().mockResolvedValue(undefined),
+        evaluate: vi.fn(async (fn: (arg?: unknown) => unknown, arg?: unknown) => fn(arg)),
+      } as unknown as Page;
+
+      try {
+        await storybookRule.prepare?.(page, mockLog);
+      }
+      finally {
+        globalThis.document = originalDocument;
+      }
+
+      // Every section opened and stayed open - a toggle clicked twice would hide them
+      expect(sidebar.classList.contains('hidden')).toBe(false);
+      expect(doc.querySelectorAll('.sidebar-item a')).toHaveLength(2);
+      expect(doc.querySelectorAll('[aria-expanded="false"]')).toHaveLength(0);
+      // Stopped once the count settled rather than burning all 8 passes
+      expect(vi.mocked(page.evaluate).mock.calls.length).toBeLessThan(6);
     });
 
     it('should use StorybookExtractor', () => {

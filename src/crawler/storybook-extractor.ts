@@ -510,93 +510,30 @@ export class StorybookExtractor implements ContentExtractor {
     return typeValues.join(' \\| ');
   }
 
-  private async waitForSidebar(document: Document): Promise<void> {
+  /**
+   * Polls for the rendered docs area. Nothing here touches the sidebar: this runs inside
+   * the preview iframe, which has no sidebar, and sidebar expansion exists to feed link
+   * discovery, which has already happened on the main page by the time we extract.
+   */
+  private async waitForStorybookContent(document: Document): Promise<Element | null> {
     const maxAttempts = 20;
     const delay = 250;
 
+    // Checked before the first sleep: a page that already rendered costs nothing here.
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      const sidebar = document.querySelector('[class*="sidebar"]');
-      if (sidebar) {
-        // Wait for sidebar content to load
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  }
-
-  private async expandSidebarSections(document: Document): Promise<void> {
-    try {
-      // Wait for sidebar to be ready
-      await this.waitForSidebar(document);
-
-      // Find all sidebar-subheading-action buttons (the "Show/Hide" buttons)
-      const sidebarButtons = document.querySelectorAll('button.sidebar-subheading-action');
-      console.error(`[StorybookExtractor] Found ${sidebarButtons.length} sidebar buttons to expand`);
-
-      // First pass: Click all buttons to show all sections
-      for (const button of sidebarButtons) {
-        if (this.isElementVisible(button)) {
-          (button as HTMLButtonElement).click();
-          // Wait for content to update
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      }
-
-      // Wait for any new buttons that might appear
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      // Second pass: Click any new buttons that appeared
-      const newButtons = document.querySelectorAll('button.sidebar-subheading-action');
-      console.error(`[StorybookExtractor] Found ${newButtons.length} total sidebar buttons after expansion`);
-
-      for (const button of newButtons) {
-        if (this.isElementVisible(button)) {
-          (button as HTMLButtonElement).click();
-          // Wait for content to update
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      }
-
-      // Final wait to ensure all sections have expanded
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-    }
-    catch (error) {
-      console.error('[StorybookExtractor] Error expanding sidebar sections:', error);
-    }
-  }
-
-  private async waitForStorybookContent(document: Document): Promise<Element | null> {
-    const maxAttempts = 10;
-    const delay = 500;
-
-    // First, expand all sidebar sections
-    await this.expandSidebarSections(document);
-
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, delay));
-
       const mainArea = document.querySelector('.sbdocs-content, #docs-root');
-      if (!mainArea) {
-        continue;
-      }
-
       const hasContent =
-        mainArea.querySelector('h1') &&
+        mainArea?.querySelector('h1') &&
         (mainArea.querySelector('p') ||
           mainArea.querySelector('table') ||
           mainArea.querySelector('ul, ol') ||
           mainArea.querySelector('[class*="docblock"]'));
 
       if (hasContent) {
-        await new Promise((resolve) => setTimeout(resolve, 500));
         return mainArea;
       }
 
-      const loadingIndicator = document.querySelector('[class*="loading"], [class*="pending"]');
-      if (!loadingIndicator) {
-        console.warn('No loading indicator found but content is missing');
-      }
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
 
     return null;
