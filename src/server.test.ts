@@ -13,9 +13,18 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   },
 }));
 
+// Overridden to a value the production message cannot coincidentally match. Asserting against
+// the real 2 minutes proved nothing: the test computed the same expression as the code, so
+// hardcoding "2 minutes" in the message passed. The tracker class is kept intact - it closes
+// over the original constant, so its own expiry behaviour is untouched.
+vi.mock('./indexing/status.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./indexing/status.js')>()),
+  COMPLETED_STATUS_TTL_MS: 7 * 60 * 1000,
+}));
+
 import type { IndexingStatus } from './types.js';
 import { COMPLETED_STATUS_TTL_MS } from './indexing/status.js';
-import { describeIndexingStatuses, WebDocsServer } from './server.js';
+import { describeIndexingStatuses, POLLING_INSTRUCTION, WebDocsServer } from './server.js';
 
 const statusOf = (status: IndexingStatus['status']): IndexingStatus => ({
   operationId: 'o',
@@ -49,17 +58,14 @@ describe('WebDocsServer MCP dispatch', () => {
 
 describe('describeIndexingStatuses', () => {
   it('does not report an empty list as success', () => {
-    // A refused reindex changes nothing else a client can see, and its status is dropped
-    // after a couple of minutes - so "nothing tracked" must not read as "it worked"
-    const instruction = describeIndexingStatuses([]);
-
-    // Asserted positively: a reworded success claim would slip past `not.toContain('complete')`
-    expect(instruction).toContain('does not confirm one succeeded');
-    expect(instruction).toContain('list_documentation');
-  });
-
-  it('names the TTL the tracker actually uses', () => {
-    expect(describeIndexingStatuses([])).toContain(`dropped after ${COMPLETED_STATUS_TTL_MS / 60_000} minutes`);
+    // A refused reindex changes nothing else a client can see, and its status is dropped once
+    // the TTL passes - so "nothing tracked" must not read as "it worked". Asserted in full:
+    // fragment matching let a message keep the expected phrases and still bolt on a success
+    // claim, and the retention window has to track the constant rather than be narrated.
+    expect(describeIndexingStatuses([])).toBe(
+      `No indexing operations are being tracked. Recently finished operations are dropped after ${COMPLETED_STATUS_TTL_MS / 60_000} minutes, ` +
+        'so this does not confirm one succeeded - use list_documentation to check what is actually indexed.'
+    );
   });
 
   it('asks the caller to keep polling while work is in flight', () => {
@@ -84,14 +90,28 @@ describe('describeIndexingStatuses', () => {
 
     expect(instruction).toContain('2 did not succeed');
     expect(instruction).toContain('list_documentation');
-  });
-
-  it('does not claim nothing was stored for an operation that did not succeed', () => {
-    // A cancel can land after addDocument has already committed the document
-    expect(describeIndexingStatuses([statusOf('cancelled')])).not.toContain('nothing was stored');
+    // A cancel can land after addDocument has already committed the document, so the message
+    // must not claim otherwise
+    expect(instruction).not.toContain('nothing was stored');
   });
 
   it('reports a clean success only when every operation succeeded', () => {
     expect(describeIndexingStatuses([statusOf('complete'), statusOf('complete')])).toBe('All operations complete. No need to poll again.');
+  });
+});
+
+describe('POLLING_INSTRUCTION', () => {
+  it('does not narrate the retention window', () => {
+    // Polling cadence is this string's own business. How long a finished status survives is
+    // COMPLETED_STATUS_TTL_MS, and a copy quoted here goes stale and contradicts
+    // describeIndexingStatuses, which the agent reads moments later.
+    expect(POLLING_INSTRUCTION).not.toMatch(/\b(minute|hour)s?\b/);
+    expect(POLLING_INSTRUCTION).not.toContain('dropped after');
+  });
+
+  it('sends the agent to the status response rather than restating it', () => {
+    expect(POLLING_INSTRUCTION).toContain('none are tracked');
+    expect(POLLING_INSTRUCTION).toContain('follow the instruction in that response');
+    expect(POLLING_INSTRUCTION).toContain('Do not ask the user');
   });
 });

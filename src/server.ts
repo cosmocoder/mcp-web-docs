@@ -39,8 +39,12 @@ import {
 
 /**
  * Describe a set of indexing statuses for the calling agent. An empty list deliberately does
- * not read as success: finished operations are dropped after a couple of minutes, and a reindex
- * that was refused leaves nothing else behind for a client to notice.
+ * not read as success: finished operations are dropped once COMPLETED_STATUS_TTL_MS passes, and
+ * a reindex that was refused leaves nothing else behind for a client to notice.
+ *
+ * This is the only place that turns statuses into prose for a client. Callers that want to tell
+ * an agent how to poll should point at it (see POLLING_INSTRUCTION) rather than restate it -
+ * a copy goes stale the moment the retention window or a branch changes.
  */
 export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
   const unsuccessful = statuses.filter((status) => status.status === 'failed' || status.status === 'cancelled').length;
@@ -66,6 +70,16 @@ export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
   }
   return 'All operations complete. No need to poll again.';
 }
+
+/**
+ * Told to an agent when it kicks off an indexing operation. Deliberately states no fact that
+ * describeIndexingStatuses will state better a moment later - it only has to get the agent
+ * polling, keep it polling without asking, and stop it treating an empty list as success.
+ */
+export const POLLING_INSTRUCTION =
+  'IMPORTANT: Poll get_indexing_status every few seconds until it reports that every operation ' +
+  'has finished or that none are tracked, then follow the instruction in that response. ' +
+  'Do not ask the user - just keep polling automatically.';
 
 export class WebDocsServer {
   private server: McpServer;
@@ -779,8 +793,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
               message: `Started indexing ${normalizedUrl}`,
               docId,
               operationId,
-              instruction:
-                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until it reports every operation has finished, or until it reports no operations are tracked - finished operations are dropped after a couple of minutes, so an empty list means you polled too late, not that it succeeded. Either way, confirm the result with list_documentation. Do not ask the user - just keep polling automatically.',
+              instruction: POLLING_INSTRUCTION,
             },
             null,
             2
@@ -984,8 +997,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
                 : `Started re-indexing ${normalizedUrl}`,
               docId,
               operationId,
-              instruction:
-                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until it reports every operation has finished, or until it reports no operations are tracked - finished operations are dropped after a couple of minutes, so an empty list means you polled too late, not that it succeeded. Either way, confirm the result with list_documentation. Do not ask the user - just keep polling automatically.',
+              instruction: POLLING_INSTRUCTION,
             },
             null,
             2
