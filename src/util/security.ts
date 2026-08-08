@@ -99,8 +99,7 @@ export function escapeFilterValue(value: string): string {
 /**
  * Escape a value for use as a literal inside a LanceDB LIKE pattern. Needs more than
  * escapeFilterValue: here DataFusion does treat a backslash as an escape character, even with no
- * ESCAPE clause, and % and _ are wildcards. Escapes the whole value, so any wildcard the caller
- * wants has to be appended around the result.
+ * ESCAPE clause, and % and _ are wildcards.
  * @param value - User-provided value to escape
  * @returns Escaped value safe to interpolate into a LIKE pattern
  */

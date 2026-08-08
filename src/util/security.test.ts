@@ -147,6 +147,17 @@ describe('Security Utilities', () => {
       expect(escapeLikeLiteral('under_score')).toBe('under\\_score');
     });
 
+    // Every wildcard, whatever precedes it. A guard written to avoid double-escaping - matching
+    // `[^\\]%` or `(?<!\\)%` - passes the test above and leaves these live, so a filterUrl of
+    // `_secret` would match unrelated documents.
+    it('should escape a wildcard at the start, repeated, and behind a backslash', () => {
+      expect(escapeLikeLiteral('%')).toBe('\\%');
+      expect(escapeLikeLiteral('_')).toBe('\\_');
+      expect(escapeLikeLiteral('%%')).toBe('\\%\\%');
+      expect(escapeLikeLiteral('__')).toBe('\\_\\_');
+      expect(escapeLikeLiteral('a\\%b')).toBe('a\\\\\\%b');
+    });
+
     it('should still escape quotes', () => {
       expect(escapeLikeLiteral("x' OR published = true OR url = 'y")).toBe("x'' OR published = true OR url = ''y");
     });

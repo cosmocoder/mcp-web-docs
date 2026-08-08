@@ -11,8 +11,7 @@ export interface IndexingStatus {
   error?: string;
   // Enhanced tracking fields
   startedAt?: Date;
-  /** Pages the crawl fetched and yielded. Excludes both pagesFailed and pages dropped for
-   * redirecting off-domain, so it is not the total attempted */
+  /** Pages the crawl fetched and yielded. Not the total attempted: it excludes pagesFailed, and pages dropped mid-crawl */
   pagesFound?: number;
   pagesProcessed?: number;
   /** Pages that yielded no indexable content and were left out of the index */
