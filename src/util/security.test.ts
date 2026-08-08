@@ -149,12 +149,15 @@ describe('Security Utilities', () => {
       expect(escapeLikeLiteral('under_score')).toBe('under\\_score');
     });
 
-    // Position matters, and the test above only covers a wildcard with characters on both sides.
-    // An escaper that skips the first character, guards against double-escaping (`[^\\]%`,
-    // `(?<!\\)%`), or leaves a trailing backslash alone passes it while breaking real filters: an
-    // unescaped `_` makes `_secret` match unrelated documents, and a trailing backslash swallows
-    // the `%` that buildSearchWhereClause appends, turning a prefix match into no match.
+    // Position and length both matter, and the test above only covers a wildcard with a character
+    // in front of it. An escaper that skips the first character, guards against double-escaping,
+    // collapses runs, or spares a trailing backslash passes it while breaking real filters:
+    // a bare `%` left unescaped matches every row, so a scoped search silently becomes unscoped,
+    // and a trailing backslash swallows the `%` that buildSearchWhereClause appends, turning a
+    // prefix match into no match.
     it('should escape wildcards and backslashes in every position', () => {
+      expect(escapeLikeLiteral('%')).toBe(String.raw`\%`);
+      expect(escapeLikeLiteral('_')).toBe(String.raw`\_`);
       expect(escapeLikeLiteral('%%')).toBe(String.raw`\%\%`);
       expect(escapeLikeLiteral('__')).toBe(String.raw`\_\_`);
       expect(escapeLikeLiteral(String.raw`a\%b`)).toBe(String.raw`a\\\%b`);
