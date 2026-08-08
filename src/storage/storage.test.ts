@@ -2608,69 +2608,45 @@ describe('DocumentStore', () => {
   });
 
   describe('url filter escaping', () => {
-    /**
-     * Values built from the characters that carry meaning in a LIKE pattern, so most of them
-     * contain a wildcard, a backslash or a quote in some position. Seeded rather than random: a
-     * failure has to be reproducible, and the point is to stop depending on which literals
-     * someone thought to write by hand.
-     */
-    function generateValues(seed: number, count: number): string[] {
-      const alphabet = ['a', 'b', '\\', '%', '_', "'", '/', '.'];
-      let state = seed;
-      const next = () => {
-        state = (state * 1103515245 + 12345) % 2 ** 31;
-        return state / 2 ** 31;
-      };
-      const values = new Set<string>();
-      for (let i = 0; i < count; i++) {
-        let value = '';
-        for (let j = 0; j <= Math.floor(next() * 5); j++) {
-          value += alphabet[Math.floor(next() * alphabet.length)];
-        }
-        values.add(value);
-      }
-      return [...values];
-    }
+    // Exhaustive over every one-to-three-character string of the characters that carry meaning in a
+    // LIKE pattern, so coverage does not depend on which literals someone wrote by hand. Each value
+    // is a decoy for the others, shortest first so the simplest failure is the one reported.
+    const alphabet = ['a', 'b', '\\', '%', '_', "'"];
+    const values = alphabet
+      .flatMap((a) => [a, ...alphabet.flatMap((b) => [a + b, ...alphabet.map((c) => a + b + c)])])
+      .sort((left, right) => left.length - right.length);
 
-    // Every hand-written case in security.test.ts pins one input someone chose. This pins the
-    // property instead: whatever the value, the escaped filter selects exactly the rows a prefix
-    // match should select. Each value doubles as a decoy for the others.
-    it('selects exactly the rows a prefix match should, for every generated value', async () => {
-      const values = generateValues(20260808, 400);
+    it('selects exactly the rows a prefix match should, for every value', async () => {
       const connection = await connect(join(tempDir, 'filter-escaping'));
       const table = await connection.createTable(
         'rows',
-        values.map((url) => ({ url, vector: [0] }))
+        values.map((url) => ({ url }))
       );
 
-      // Collected rather than asserted per value: a bad escaper fails a whole class of inputs, and
-      // the class is the diagnosis. A raw assertion would report one value, and an unescaped quote
-      // throws a DataFusion parse error that never names the value at all.
-      const failures: string[] = [];
       for (const value of values) {
         // Built exactly as buildSearchWhereClause builds it, including the appended wildcard
         const where = `url LIKE '${escapeLikeLiteral(value)}%'`;
-        const expected = values.filter((candidate) => candidate.startsWith(value)).sort();
-        try {
-          const rows = await table.query().where(where).select(['url']).toArray();
-          const matched = rows.map((row) => String(row.url)).sort();
-          if (matched.join(' ') !== expected.join(' ')) {
-            // Counts plus a sample of the difference. A wrong escaper over-matches by hundreds of
-            // rows, and printing them all buries the one thing that matters: which value did it.
-            const extra = matched.filter((url) => !expected.includes(url));
-            const missing = expected.filter((url) => !matched.includes(url));
-            failures.push(
-              `${JSON.stringify(value)}: +${extra.length} unexpected ${JSON.stringify(extra.slice(0, 3))}, ` +
-                `-${missing.length} missing ${JSON.stringify(missing.slice(0, 3))}`
-            );
-          }
-        }
-        catch (error) {
-          failures.push(`${JSON.stringify(value)}: ${where} threw ${String(error).slice(0, 60)}`);
-        }
-      }
+        // Caught rather than thrown: an unescaped quote makes DataFusion throw, and its error
+        // never names the value that produced it
+        const matched = await table
+          .query()
+          .where(where)
+          .select(['url'])
+          .toArray()
+          .then((rows) =>
+            rows
+              .map((row) => String(row.url))
+              .sort()
+              .join(',')
+          )
+          .catch((error) => `threw ${String(error).slice(0, 60)}`);
 
-      expect(failures.slice(0, 5), `${failures.length} of ${values.length} values failed`).toEqual([]);
+        const expected = values
+          .filter((candidate) => candidate.startsWith(value))
+          .sort()
+          .join(',');
+        expect(matched, `filterUrl ${JSON.stringify(value)} -> ${where}`).toBe(expected);
+      }
     });
   });
 });
