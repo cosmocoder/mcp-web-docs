@@ -96,7 +96,25 @@ describe('describeIndexingStatuses', () => {
   });
 
   it('reports a clean success only when every operation succeeded', () => {
-    expect(describeIndexingStatuses([statusOf('complete'), statusOf('complete')])).toBe('All operations complete. No need to poll again.');
+    expect(describeIndexingStatuses([statusOf('complete'), statusOf('complete')])).toBe(
+      'All operations complete. No need to poll again. Use list_documentation to confirm what is indexed.'
+    );
+  });
+
+  // Every message an agent can stop on has to point somewhere it can verify: a failure it was
+  // told about on an earlier poll ages out of the TTL, so any of these can be the last thing it
+  // reads while an earlier failure is already invisible. The in-flight message is excluded on
+  // purpose - there is nothing to confirm yet, and it must not read as a reason to stop.
+  it.each([
+    ['empty', []],
+    ['some unsuccessful', [statusOf('complete'), statusOf('failed')]],
+    ['all successful', [statusOf('complete')]],
+  ])('points the terminal %s message at list_documentation', (_name, statuses) => {
+    expect(describeIndexingStatuses(statuses)).toContain('list_documentation');
+  });
+
+  it('does not send the caller off to verify while work is still running', () => {
+    expect(describeIndexingStatuses([statusOf('indexing')])).not.toContain('list_documentation');
   });
 });
 

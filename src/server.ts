@@ -38,13 +38,13 @@ import {
 } from './util/security.js';
 
 /**
- * Describe a set of indexing statuses for the calling agent. An empty list deliberately does
- * not read as success: finished operations are dropped once COMPLETED_STATUS_TTL_MS passes, and
- * a reindex that was refused leaves nothing else behind for a client to notice.
+ * Describe a set of indexing statuses for the calling agent, and the only place that turns
+ * statuses into prose for a client. An empty list deliberately does not read as success:
+ * finished operations are dropped once COMPLETED_STATUS_TTL_MS passes, and a reindex that was
+ * refused leaves nothing else behind for a client to notice.
  *
- * This is the only place that turns statuses into prose for a client. Callers that want to tell
- * an agent how to poll should point at it (see POLLING_INSTRUCTION) rather than restate it -
- * a copy goes stale the moment the retention window or a branch changes.
+ * Every branch points at list_documentation, because any of them can be reached after an
+ * earlier operation has already aged out unseen.
  */
 export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
   const unsuccessful = statuses.filter((status) => status.status === 'failed' || status.status === 'cancelled').length;
@@ -68,13 +68,18 @@ export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
     // already committed the document. The per-operation description says what actually happened.
     return `All operations finished, but ${unsuccessful} did not succeed. Check the status entries for why, and use list_documentation to confirm what is actually indexed.`;
   }
-  return 'All operations complete. No need to poll again.';
+  // Only true of what is still tracked. A failure the caller was told about on an earlier poll
+  // can have aged out by now, so this cannot be the one branch that skips list_documentation.
+  return 'All operations complete. No need to poll again. Use list_documentation to confirm what is indexed.';
 }
 
 /**
  * Told to an agent when it kicks off an indexing operation. Deliberately states no fact that
  * describeIndexingStatuses will state better a moment later - it only has to get the agent
- * polling, keep it polling without asking, and stop it treating an empty list as success.
+ * polling, keep it polling without asking, and hand off to the status response.
+ *
+ * Point at that function rather than restating it here: a copy goes stale the moment the
+ * retention window or a branch changes, which is exactly how this string went wrong before.
  */
 export const POLLING_INSTRUCTION =
   'IMPORTANT: Poll get_indexing_status every few seconds until it reports that every operation ' +
