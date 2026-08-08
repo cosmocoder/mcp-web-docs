@@ -56,8 +56,7 @@ export function isPathAllowed(pathname: string, prefix: string): boolean {
 /**
  * Whether a crawl deliberately restricted itself to a subset of a previous crawl's scope.
  * Only a narrower prefix explains a smaller result - widening or clearing one should return more
- * pages. Shared so the shrink check and the page count it measures against agree on when a smaller
- * crawl is legitimate: two rules here means one of them lets a shrink through unnoticed.
+ * pages, and an unchanged one explains nothing at all.
  */
 export function narrowsCrawlScope(next: string | undefined, previous: string | undefined): boolean {
   if (!next || next === previous) {

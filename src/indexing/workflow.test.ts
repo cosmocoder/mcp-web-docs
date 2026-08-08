@@ -310,10 +310,12 @@ describe('IndexingWorkflow', () => {
     expect(harness.addDocument).toHaveBeenCalledOnce();
   });
 
-  // Widening or clearing the prefix should return more pages, so a shrink is still suspicious
+  // Widening or clearing the prefix should return more pages, so a shrink is still suspicious, and
+  // an unchanged prefix is the ordinary reindex the gate exists for
   it.each([
     { label: 'cleared', pathPrefix: undefined },
     { label: 'widened', pathPrefix: '/' + 'docs'.slice(0, 2) },
+    { label: 'left unchanged', pathPrefix: '/docs' },
   ])('still gates a reindex whose prefix was $label', async ({ pathPrefix }) => {
     const harness = createHarness({
       existingDocument: { url: request.url, title: request.title, lastIndexed: new Date(), pathPrefix: '/docs' },

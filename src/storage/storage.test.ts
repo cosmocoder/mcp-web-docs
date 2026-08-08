@@ -216,42 +216,72 @@ describe('DocumentStore', () => {
       expect(await store.getPageHighWaterMark(url)).toBe(6);
     });
 
-    // Only a narrowing restarts it. A wider scope covers everything the mark was measured over, so
-    // restarting on any prefix change reopens the ratchet: a prefix toggled back and forth loses
-    // just under half at every step, and the shrink check passes every one of them.
+    // Only a narrowing restarts it. A wider scope covers everything the mark was measured over, and
+    // an unchanged one is the ordinary reindex the check exists for, so restarting on anything but a
+    // narrowing reopens the ratchet: the peak is discarded while the check still runs, and a crawl
+    // losing just under half passes at every step.
     it.each([
-      { label: 'narrows', from: '/docs', to: '/docs/v2', expected: 1 },
+      { label: 'narrows', from: '/docs', to: '/docs/v2', expected: 3 },
       { label: 'widens', from: '/docs/v2', to: '/docs', expected: 4 },
       { label: 'is cleared', from: '/docs', to: undefined, expected: 4 },
       { label: 'moves sideways', from: '/docs', to: '/guide', expected: 4 },
+      { label: 'is unchanged', from: '/docs', to: '/docs', expected: 4 },
     ])('restarts the mark only when the crawl scope $label', async ({ from, to, expected }) => {
       const url = 'https://example.com/rescoped';
-      const first = createDocumentWithPages(url, 'First', ['/a', '/b', '/c', '/d']);
-      first.metadata.pathPrefix = from;
-      await store.addDocument(first);
+      const crawl = async (paths: string[], pathPrefix: string | undefined) => {
+        const document = createDocumentWithPages(url, 'Rescoped', paths);
+        document.metadata.pathPrefix = pathPrefix;
+        await store.addDocument(document);
+      };
 
-      const second = createDocumentWithPages(url, 'Second', ['/x']);
-      second.metadata.pathPrefix = to;
-      await store.addDocument(second);
+      await crawl(['/a', '/b', '/c', '/d'], from);
+      await crawl(['/a', '/b', '/c'], to);
+      // Smaller again under the new scope, so the mark and the live count differ - otherwise the
+      // narrowing case asserts a number the live count supplies whether the mark was written or not
+      await crawl(['/a'], to);
 
+      expect(await store.countDocumentPages(url)).toBe(1);
       expect(await store.getPageHighWaterMark(url)).toBe(expected);
     });
 
-    // The mark is read inside the publication transaction, and a deferred transaction that opens
-    // with a read pins a WAL snapshot: a peer commit arriving before the write then fails the
-    // upgrade with SQLITE_BUSY, which nothing here retries, so a finished crawl is discarded.
-    it('opens the publication transaction in IMMEDIATE mode, so its read cannot pin a snapshot', async () => {
+    // Were the publication transaction deferred, the mark's read would pin a WAL snapshot and this
+    // peer commit would fail our write upgrade with SQLITE_BUSY, which nothing here retries - losing
+    // a finished crawl to a write that touched an unrelated document.
+    it('holds the write lock across its own read, so a peer commit cannot break a publication', async () => {
+      const url = 'https://example.com/write-locked';
+      await store.addDocument(createDocumentWithPages(url, 'Locked', ['/a']));
+
+      // busy_timeout 0 so a blocked peer fails at once rather than waiting: awaiting a peer that
+      // waits would deadlock against the very lock this asserts we hold
+      const peer = await open({ filename: join(tempDir, 'docs.db'), driver: sqlite3.Database });
+      await peer.exec('PRAGMA busy_timeout = 0;');
       const sqliteDb = replacementInternals().sqliteDb!;
-      const run = sqliteDb.run.bind(sqliteDb);
-      const statements: string[] = [];
-      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
-        statements.push(String(sql));
-        return run(sql, ...params);
+      const get = sqliteDb.get.bind(sqliteDb);
+      let peerOutcome = 'not attempted';
+      vi.spyOn(sqliteDb, 'get').mockImplementation(async (sql, ...params) => {
+        const row = await get(sql, ...params);
+        if (peerOutcome === 'not attempted' && String(sql).includes('SELECT path_prefix, max_pages')) {
+          peerOutcome = await peer
+            .run('INSERT OR REPLACE INTO documents (url, title, last_indexed) VALUES (?, ?, ?)', [
+              'https://example.com/unrelated-peer',
+              'Peer',
+              new Date().toISOString(),
+            ])
+            .then(() => 'landed')
+            .catch((error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return row;
       });
 
-      await store.addDocument(createDocumentWithPages('https://example.com/immediate', 'Immediate', ['/a']));
+      try {
+        await store.addDocument(createDocumentWithPages(url, 'Republished', ['/a', '/b']));
+      }
+      finally {
+        await peer.close();
+      }
 
-      expect(statements).toContain('BEGIN IMMEDIATE TRANSACTION');
+      expect(peerOutcome).toMatch(/^rejected: SQLITE_BUSY/);
+      expect(await store.countDocumentPages(url)).toBe(2);
     });
 
     it('falls back to the live count for a document stored before the mark existed', async () => {

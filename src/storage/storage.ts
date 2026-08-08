@@ -592,10 +592,8 @@ export class DocumentStore {
       await stopHeartbeat();
       await this.renewReplacementLease(preparedJournal);
 
-      // IMMEDIATE, not deferred: upsertMetadata reads before it writes, and a deferred transaction
-      // that opens with a read pins a WAL snapshot. A peer commit landing before the write then
-      // fails the upgrade with SQLITE_BUSY, which no retry here treats as retryable, discarding a
-      // finished crawl. Taking the write lock up front makes the peer wait instead.
+      // IMMEDIATE, not deferred: upsertMetadata reads before it writes, and a deferred transaction's
+      // read pins a WAL snapshot, so a peer commit fails the upgrade with an unretried SQLITE_BUSY
       await sqliteDb.run('BEGIN IMMEDIATE TRANSACTION');
       transactionStarted = true;
       signal?.throwIfAborted();
@@ -1681,7 +1679,8 @@ export class DocumentStore {
     logger.debug(`[DocumentStore] Setting tags for ${url}:`, tags);
 
     try {
-      await this.sqliteDb.run('BEGIN TRANSACTION');
+      // IMMEDIATE because the check below reads before this transaction writes - see addDocumentUnlocked
+      await this.sqliteDb.run('BEGIN IMMEDIATE TRANSACTION');
 
       // Verify the document exists inside the transaction to prevent race conditions
       const row = await this.sqliteDb.get<{ url: string }>('SELECT url FROM documents WHERE url = ?', [url]);
@@ -2093,7 +2092,8 @@ export class DocumentStore {
     const notFound: string[] = [];
     const alreadyInCollection: string[] = [];
 
-    await this.sqliteDb.run('BEGIN TRANSACTION');
+    // IMMEDIATE because the existence check below reads before this transaction writes
+    await this.sqliteDb.run('BEGIN IMMEDIATE TRANSACTION');
 
     try {
       for (const url of urls) {
