@@ -18,6 +18,7 @@ import {
   SearchOptions,
 } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
+import { narrowsCrawlScope } from '../util/docs.js';
 import { logger } from '../util/logger.js';
 import { escapeFilterValue, escapeLikeLiteral } from '../util/security.js';
 
@@ -591,7 +592,11 @@ export class DocumentStore {
       await stopHeartbeat();
       await this.renewReplacementLease(preparedJournal);
 
-      await sqliteDb.run('BEGIN TRANSACTION');
+      // IMMEDIATE, not deferred: upsertMetadata reads before it writes, and a deferred transaction
+      // that opens with a read pins a WAL snapshot. A peer commit landing before the write then
+      // fails the upgrade with SQLITE_BUSY, which no retry here treats as retryable, discarding a
+      // finished crawl. Taking the write lock up front makes the peer wait instead.
+      await sqliteDb.run('BEGIN IMMEDIATE TRANSACTION');
       transactionStarted = true;
       signal?.throwIfAborted();
       await this.upsertMetadata(doc.metadata, new Set(doc.chunks.map((chunk) => chunk.path)).size);
@@ -798,9 +803,8 @@ export class DocumentStore {
   }
 
   /**
-   * Writes the metadata, and with it the largest page count this document has held. A changed
-   * prefix covers a different slice of the site, so the mark from the previous slice no longer
-   * describes this document and starts again from this crawl.
+   * Also records the largest page count this document has held, which only a narrower crawl scope
+   * restarts: a wider one covers everything the mark was measured over and more.
    */
   private async upsertMetadata(metadata: ProcessedDocument['metadata'], pageCount: number): Promise<void> {
     if (!this.sqliteDb) {
@@ -814,7 +818,9 @@ export class DocumentStore {
       'SELECT path_prefix, max_pages FROM documents WHERE url = ?',
       [metadata.url]
     );
-    const maxPages = previous?.path_prefix === pathPrefix ? Math.max(previous?.max_pages ?? 0, pageCount) : pageCount;
+    const maxPages = narrowsCrawlScope(pathPrefix ?? undefined, previous?.path_prefix ?? undefined)
+      ? pageCount
+      : Math.max(previous?.max_pages ?? 0, pageCount);
 
     await this.sqliteDb.run(
       `INSERT INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix, max_pages)
@@ -1565,7 +1571,8 @@ export class DocumentStore {
    * The largest page count this document has held under its current crawl scope. The shrink check
    * compares against this rather than the live count, because against the live count a run of
    * reindexes that each lose just under half walks the index down with every step passing.
-   * Falls back to the live count for documents last written before the mark was recorded.
+   * The live count is the floor, so a document last written before the mark existed, or one whose
+   * SQLite mark is behind the pages LanceDB is serving, is still checked against something real.
    */
   async getPageHighWaterMark(url: string): Promise<number> {
     if (!this.sqliteReadDb) {

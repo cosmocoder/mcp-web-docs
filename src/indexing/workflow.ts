@@ -12,21 +12,9 @@ import {
   StorageStateSchema,
   type ValidatedStorageState,
 } from '../util/security.js';
-import { isPathAllowed } from '../util/docs.js';
+import { narrowsCrawlScope } from '../util/docs.js';
 import { logger } from '../util/logger.js';
 import type { IndexingStatusTracker } from './status.js';
-
-/**
- * Whether a reindex deliberately restricted the crawl to a subset of what is already stored.
- * Only a narrower prefix explains a smaller result - widening or clearing one should return
- * more pages, which is exactly when the shrink check needs to stay on.
- */
-function narrowsCrawlScope(next: string | undefined, previous: string | undefined): boolean {
-  if (!next || next === previous) {
-    return false;
-  }
-  return !previous || isPathAllowed(next, previous);
-}
 
 type WorkflowStore = Pick<DocumentStore, 'addDocument' | 'getDocument' | 'getPageHighWaterMark' | 'optimize'>;
 type WorkflowProcessor = Pick<WebDocumentProcessor, 'process'>;

@@ -201,9 +201,6 @@ describe('DocumentStore', () => {
       expect(await store.countDocumentPages('https://example.com/missing')).toBe(0);
     });
 
-    // The mark is what keeps the shrink check from ratcheting: measured against the live count,
-    // each reindex only has to beat half of the one before it, so a run of them walks the index
-    // down to nothing while every single step looks acceptable.
     it('keeps the largest page count a document has held, not the most recent one', async () => {
       const url = 'https://example.com/high-water';
       await store.addDocument(createDocumentWithPages(url, 'Peak', ['/a', '/b', '/c', '/d']));
@@ -212,19 +209,49 @@ describe('DocumentStore', () => {
       expect(await store.countDocumentPages(url)).toBe(3);
       expect(await store.getPageHighWaterMark(url)).toBe(4);
       expect(await store.getPageHighWaterMark('https://example.com/missing')).toBe(0);
+
+      // Also rises with a site that grows, or the check freezes at whatever the first crawl found
+      await store.addDocument(createDocumentWithPages(url, 'Grown', ['/a', '/b', '/c', '/d', '/e', '/f']));
+
+      expect(await store.getPageHighWaterMark(url)).toBe(6);
     });
 
-    // Otherwise a deliberate narrowing leaves a mark from the wider crawl behind, and the next
-    // reindex of the narrowed document is measured against pages it is no longer asked to fetch
-    it('restarts the mark when the crawl scope changes', async () => {
-      const url = 'https://example.com/renarrowed';
-      await store.addDocument(createDocumentWithPages(url, 'Whole site', ['/a', '/b', '/c', '/d']));
+    // Only a narrowing restarts it. A wider scope covers everything the mark was measured over, so
+    // restarting on any prefix change reopens the ratchet: a prefix toggled back and forth loses
+    // just under half at every step, and the shrink check passes every one of them.
+    it.each([
+      { label: 'narrows', from: '/docs', to: '/docs/v2', expected: 1 },
+      { label: 'widens', from: '/docs/v2', to: '/docs', expected: 4 },
+      { label: 'is cleared', from: '/docs', to: undefined, expected: 4 },
+      { label: 'moves sideways', from: '/docs', to: '/guide', expected: 4 },
+    ])('restarts the mark only when the crawl scope $label', async ({ from, to, expected }) => {
+      const url = 'https://example.com/rescoped';
+      const first = createDocumentWithPages(url, 'First', ['/a', '/b', '/c', '/d']);
+      first.metadata.pathPrefix = from;
+      await store.addDocument(first);
 
-      const narrowed = createDocumentWithPages(url, 'Just one section', ['/docs/a']);
-      narrowed.metadata.pathPrefix = '/docs';
-      await store.addDocument(narrowed);
+      const second = createDocumentWithPages(url, 'Second', ['/x']);
+      second.metadata.pathPrefix = to;
+      await store.addDocument(second);
 
-      expect(await store.getPageHighWaterMark(url)).toBe(1);
+      expect(await store.getPageHighWaterMark(url)).toBe(expected);
+    });
+
+    // The mark is read inside the publication transaction, and a deferred transaction that opens
+    // with a read pins a WAL snapshot: a peer commit arriving before the write then fails the
+    // upgrade with SQLITE_BUSY, which nothing here retries, so a finished crawl is discarded.
+    it('opens the publication transaction in IMMEDIATE mode, so its read cannot pin a snapshot', async () => {
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const run = sqliteDb.run.bind(sqliteDb);
+      const statements: string[] = [];
+      vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
+        statements.push(String(sql));
+        return run(sql, ...params);
+      });
+
+      await store.addDocument(createDocumentWithPages('https://example.com/immediate', 'Immediate', ['/a']));
+
+      expect(statements).toContain('BEGIN IMMEDIATE TRANSACTION');
     });
 
     it('falls back to the live count for a document stored before the mark existed', async () => {
@@ -418,7 +445,7 @@ describe('DocumentStore', () => {
       let begins = 0;
 
       vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
-        if (String(sql) === 'BEGIN TRANSACTION') {
+        if (String(sql).startsWith('BEGIN')) {
           events.push(`begin:${++begins}`);
         }
         if (String(sql) === 'COMMIT') {
