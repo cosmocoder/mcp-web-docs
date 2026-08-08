@@ -15,6 +15,8 @@ export interface IndexingStatus {
   pagesProcessed?: number;
   /** Pages that yielded no indexable content and were left out of the index */
   pagesSkipped?: number;
+  /** Pages the crawl could not fetch at all, so the index is missing them */
+  pagesFailed?: number;
   chunksCreated?: number;
 }
 

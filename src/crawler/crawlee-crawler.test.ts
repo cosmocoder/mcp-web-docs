@@ -579,6 +579,24 @@ describe('CrawleeCrawler', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Continuing with a partial crawl: 2 of 124'));
     });
 
+    it('should expose how many pages a tolerated partial crawl lost', async () => {
+      mockCrawlerRun.mockResolvedValueOnce({ requestsFailed: 2, requestsTotal: 124 });
+
+      await collect(crawler, 'https://example.com');
+
+      expect(crawler.failedPageCount).toBe(2);
+    });
+
+    it('should report no lost pages for a complete crawl', async () => {
+      mockCrawlerRun.mockResolvedValueOnce({ requestsFailed: 2, requestsTotal: 124 });
+      await collect(crawler, 'https://example.com');
+
+      mockCrawlerRun.mockResolvedValueOnce({ requestsFailed: 0, requestsTotal: 124 });
+      await collect(crawler, 'https://example.com');
+
+      expect(crawler.failedPageCount).toBe(0);
+    });
+
     it('should reject when most pages fail after retries', async () => {
       mockCrawlerRun.mockResolvedValueOnce({ requestsFailed: 60, requestsTotal: 124 });
 

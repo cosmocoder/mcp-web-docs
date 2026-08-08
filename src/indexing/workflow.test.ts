@@ -36,6 +36,7 @@ function createHarness(
     process?: (crawlResult: CrawlResult) => Promise<ProcessedDocument>;
     savedSession?: string;
     existingPageCount?: number;
+    failedPageCount?: number;
   } = {}
 ) {
   const addDocument = vi.fn().mockResolvedValue(undefined);
@@ -59,6 +60,7 @@ function createHarness(
   };
   const crawler = {
     abort: vi.fn(),
+    failedPageCount: options.failedPageCount ?? 0,
     crawl:
       options.crawl ??
       async function* () {
@@ -119,6 +121,23 @@ describe('IndexingWorkflow', () => {
     expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesFound: 1 });
     expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesProcessed: 1, chunksCreated: 1 });
     expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { chunksCreated: 1 });
+  });
+
+  it('reports pages the crawl could not fetch', async () => {
+    const harness = createHarness({ failedPageCount: 3 });
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesFound: 1, pagesFailed: 3 });
+    expect(harness.statusTracker.completeIndexing).toHaveBeenCalledWith(request.operationId);
+  });
+
+  it('reports no failed pages for a complete crawl', async () => {
+    const harness = createHarness();
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesFound: 1, pagesFailed: 0 });
   });
 
   it('skips pages with no indexable content and still stores the rest', async () => {

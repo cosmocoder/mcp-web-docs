@@ -116,7 +116,8 @@ export class WebDocsServer {
     let message = status.description;
     if (status.pagesProcessed !== undefined && status.pagesFound !== undefined) {
       const skipped = status.pagesSkipped ? `, ${status.pagesSkipped} skipped` : '';
-      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages${skipped})`;
+      const failed = status.pagesFailed ? `, ${status.pagesFailed} could not be fetched` : '';
+      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages${skipped}${failed})`;
     }
 
     try {

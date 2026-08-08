@@ -27,6 +27,13 @@ export class DocsCrawler {
   /**
    * Set authentication storage state (cookies) to use when crawling
    */
+  private failedPages: number = 0;
+
+  /** Pages lost to a tolerated partial crawl. Only meaningful once crawl() has finished. */
+  get failedPageCount(): number {
+    return this.failedPages;
+  }
+
   setStorageState(state: ValidatedStorageState): void {
     this.storageState = state;
     logger.info(`[DocsCrawler] Set storage state with ${state.cookies?.length || 0} cookies`);
@@ -35,6 +42,7 @@ export class DocsCrawler {
   async *crawl(url: string): AsyncGenerator<CrawlResult, void, unknown> {
     const startUrl = new URL(url);
     logger.debug(`[DocsCrawler] Starting crawl of ${startUrl}`);
+    this.failedPages = 0;
 
     if (this.isAborting) {
       logger.debug('[DocsCrawler] Crawl aborted');
@@ -106,6 +114,7 @@ export class DocsCrawler {
       throw e;
     }
     finally {
+      this.failedPages = crawleeCrawler.failedPageCount;
       if (this.activeCrawler === crawleeCrawler) {
         this.activeCrawler = undefined;
       }

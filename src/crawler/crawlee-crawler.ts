@@ -69,6 +69,12 @@ export class CrawleeCrawler extends BaseCrawler {
   private terminalRootFailure?: OutboundRequestFailedError;
   /** The root page failed for any reason, not just the outbound failures terminalRootFailure covers */
   private rootPageFailed: boolean = false;
+  private failedPages: number = 0;
+
+  /** Pages lost to a tolerated partial crawl. Only meaningful once crawl() has finished. */
+  get failedPageCount(): number {
+    return this.failedPages;
+  }
   private navigationAttempts = new WeakMap<object, NavigationAttempt>();
 
   private cleanupNavigationListener(request: object): void {
@@ -349,6 +355,7 @@ export class CrawleeCrawler extends BaseCrawler {
     this.sessionExpiredError = null;
     this.terminalRootFailure = undefined;
     this.rootPageFailed = false;
+    this.failedPages = 0;
     this.navigationAttempts = new WeakMap();
     this.expectedUrl = normalizeQueuedUrl(url);
     this.skippedExternalPages = 0;
@@ -672,6 +679,7 @@ export class CrawleeCrawler extends BaseCrawler {
         if (finalStatistics.requestsFailed > tolerated || finalStatistics.requestsFailed * 2 >= finalStatistics.requestsTotal) {
           throw new Error(`Crawl failed for ${finalStatistics.requestsFailed} of ${finalStatistics.requestsTotal} pages after retries`);
         }
+        this.failedPages = finalStatistics.requestsFailed;
         logger.warn(
           `[CrawleeCrawler] Continuing with a partial crawl: ${finalStatistics.requestsFailed} of ${finalStatistics.requestsTotal} pages failed after retries`
         );
