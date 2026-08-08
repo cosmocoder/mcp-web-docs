@@ -26,9 +26,10 @@ type LanceDBConnection = Awaited<ReturnType<typeof lancedb.connect>>;
 type LanceDBTable = Awaited<ReturnType<LanceDBConnection['openTable']>>;
 
 /**
- * Every transaction here takes the write lock at BEGIN. Deferred is the trap: one that opens with a
- * read pins a WAL snapshot, and the upgrade to a write then fails with SQLITE_BUSY immediately,
- * without waiting out busy_timeout - discarding work that a wait would have saved.
+ * Deferred is the trap: a transaction that opens with a read pins a WAL snapshot, and its upgrade to
+ * a write then fails with SQLITE_BUSY at once, without waiting out busy_timeout - discarding work a
+ * wait would have saved. Every transaction here uses this, including those that write first and
+ * cannot hit that, because a mode chosen per site has to be re-derived at every new one.
  */
 const BEGIN_WRITE_TRANSACTION = 'BEGIN IMMEDIATE TRANSACTION';
 
