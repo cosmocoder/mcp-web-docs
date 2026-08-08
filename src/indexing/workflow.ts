@@ -335,8 +335,13 @@ export class IndexingWorkflow {
         return;
       }
       catch (error) {
+        // SQLITE_BUSY means another process held the write lock past our timeout. Without it here a
+        // finished crawl is thrown away over a write that had nothing to do with this document.
         const isRetryable =
-          error instanceof Error && (error.message.includes('Commit conflict') || error.message.startsWith('Replacement lease lost for '));
+          error instanceof Error &&
+          (error.message.includes('Commit conflict') ||
+            error.message.startsWith('Replacement lease lost for ') ||
+            error.message.includes('SQLITE_BUSY'));
         if (isRetryable && attempt < maxRetries) {
           logger.warn(`[IndexingWorkflow] Storage conflict, retrying (${attempt}/${maxRetries})...`);
           await delay(1000 * attempt, undefined, { signal });

@@ -524,10 +524,12 @@ describe('IndexingWorkflow', () => {
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
 
-  it('retries transient commit conflicts before succeeding', async () => {
+  // SQLITE_BUSY included: another process holding the write lock is exactly as transient as a commit
+  // conflict, and discarding a finished crawl over it is the failure the shrink check exists to avoid
+  it.each(['Commit conflict', 'SQLITE_BUSY: database is locked'])('retries a transient %s before succeeding', async (message) => {
     vi.useFakeTimers();
     const harness = createHarness();
-    harness.addDocument.mockRejectedValueOnce(new Error('Commit conflict')).mockResolvedValueOnce(undefined);
+    harness.addDocument.mockRejectedValueOnce(new Error(message)).mockResolvedValueOnce(undefined);
 
     const run = runWorkflow(harness.workflow, request);
     await vi.runAllTimersAsync();

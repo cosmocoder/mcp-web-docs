@@ -25,6 +25,13 @@ import { escapeFilterValue, escapeLikeLiteral } from '../util/security.js';
 type LanceDBConnection = Awaited<ReturnType<typeof lancedb.connect>>;
 type LanceDBTable = Awaited<ReturnType<LanceDBConnection['openTable']>>;
 
+/**
+ * Every transaction here takes the write lock at BEGIN. Deferred is the trap: one that opens with a
+ * read pins a WAL snapshot, and the upgrade to a write then fails with SQLITE_BUSY immediately,
+ * without waiting out busy_timeout - discarding work that a wait would have saved.
+ */
+const BEGIN_WRITE_TRANSACTION = 'BEGIN IMMEDIATE TRANSACTION';
+
 type LanceDbRow = {
   generation: string;
   published: boolean;
@@ -592,9 +599,7 @@ export class DocumentStore {
       await stopHeartbeat();
       await this.renewReplacementLease(preparedJournal);
 
-      // IMMEDIATE, not deferred: upsertMetadata reads before it writes, and a deferred transaction's
-      // read pins a WAL snapshot, so a peer commit fails the upgrade with an unretried SQLITE_BUSY
-      await sqliteDb.run('BEGIN IMMEDIATE TRANSACTION');
+      await sqliteDb.run(BEGIN_WRITE_TRANSACTION);
       transactionStarted = true;
       signal?.throwIfAborted();
       await this.upsertMetadata(doc.metadata, new Set(doc.chunks.map((chunk) => chunk.path)).size);
@@ -1493,7 +1498,7 @@ export class DocumentStore {
     try {
       const preparedJournal = await this.captureCleanupGenerations(lease);
       await this.renewReplacementLease(preparedJournal);
-      await sqliteDb.run('BEGIN TRANSACTION');
+      await sqliteDb.run(BEGIN_WRITE_TRANSACTION);
       transactionStarted = true;
 
       // Delete tags first (in case foreign key cascade isn't enabled)
@@ -1679,8 +1684,7 @@ export class DocumentStore {
     logger.debug(`[DocumentStore] Setting tags for ${url}:`, tags);
 
     try {
-      // IMMEDIATE because the check below reads before this transaction writes - see addDocumentUnlocked
-      await this.sqliteDb.run('BEGIN IMMEDIATE TRANSACTION');
+      await this.sqliteDb.run(BEGIN_WRITE_TRANSACTION);
 
       // Verify the document exists inside the transaction to prevent race conditions
       const row = await this.sqliteDb.get<{ url: string }>('SELECT url FROM documents WHERE url = ?', [url]);
@@ -1888,7 +1892,7 @@ export class DocumentStore {
           throw new Error(`Collection "${newNormalizedName}" already exists`);
         }
 
-        await this.sqliteDb.run('BEGIN TRANSACTION');
+        await this.sqliteDb.run(BEGIN_WRITE_TRANSACTION);
 
         // Create collection with new name
         const newDescription = updates.description ?? existing.description;
@@ -2092,8 +2096,7 @@ export class DocumentStore {
     const notFound: string[] = [];
     const alreadyInCollection: string[] = [];
 
-    // IMMEDIATE because the existence check below reads before this transaction writes
-    await this.sqliteDb.run('BEGIN IMMEDIATE TRANSACTION');
+    await this.sqliteDb.run(BEGIN_WRITE_TRANSACTION);
 
     try {
       for (const url of urls) {
@@ -2176,7 +2179,7 @@ export class DocumentStore {
     const removed: string[] = [];
     const notInCollection: string[] = [];
 
-    await this.sqliteDb.run('BEGIN TRANSACTION');
+    await this.sqliteDb.run(BEGIN_WRITE_TRANSACTION);
 
     try {
       for (const url of urls) {

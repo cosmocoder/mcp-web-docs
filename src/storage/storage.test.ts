@@ -216,10 +216,8 @@ describe('DocumentStore', () => {
       expect(await store.getPageHighWaterMark(url)).toBe(6);
     });
 
-    // Only a narrowing restarts it. A wider scope covers everything the mark was measured over, and
-    // an unchanged one is the ordinary reindex the check exists for, so restarting on anything but a
-    // narrowing reopens the ratchet: the peak is discarded while the check still runs, and a crawl
-    // losing just under half passes at every step.
+    // Restarting on anything but a narrowing reopens the ratchet: the peak is discarded while the
+    // check still runs, so a crawl losing just under half passes at every step.
     it.each([
       { label: 'narrows', from: '/docs', to: '/docs/v2', expected: 3 },
       { label: 'widens', from: '/docs/v2', to: '/docs', expected: 4 },
@@ -244,12 +242,10 @@ describe('DocumentStore', () => {
       expect(await store.getPageHighWaterMark(url)).toBe(expected);
     });
 
-    // Were the publication transaction deferred, the mark's read would pin a WAL snapshot and this
-    // peer commit would fail our write upgrade with SQLITE_BUSY, which nothing here retries - losing
-    // a finished crawl to a write that touched an unrelated document.
+    // Deferred, the mark's read would pin a WAL snapshot and this peer write to an unrelated
+    // document would break the publication - see BEGIN_WRITE_TRANSACTION.
     it('holds the write lock across its own read, so a peer commit cannot break a publication', async () => {
       const url = 'https://example.com/write-locked';
-      await store.addDocument(createDocumentWithPages(url, 'Locked', ['/a']));
 
       // busy_timeout 0 so a blocked peer fails at once rather than waiting: awaiting a peer that
       // waits would deadlock against the very lock this asserts we hold
@@ -274,7 +270,7 @@ describe('DocumentStore', () => {
       });
 
       try {
-        await store.addDocument(createDocumentWithPages(url, 'Republished', ['/a', '/b']));
+        await store.addDocument(createDocumentWithPages(url, 'Published', ['/a', '/b']));
       }
       finally {
         await peer.close();
@@ -1252,7 +1248,7 @@ describe('DocumentStore', () => {
       const deleteReady = deferred();
       const deleteReleased = deferred();
       vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
-        if (String(sql) === 'BEGIN TRANSACTION') {
+        if (String(sql).startsWith('BEGIN')) {
           deleteReady.resolve();
           await deleteReleased.promise;
         }
