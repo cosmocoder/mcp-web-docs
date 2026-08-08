@@ -68,10 +68,6 @@ describe('describeIndexingStatuses', () => {
     expect(describeIndexingStatuses([statusOf('complete'), statusOf('indexing')])).toContain('still in progress');
   });
 
-  it('keeps polling while an operation is queued but not yet started', () => {
-    expect(describeIndexingStatuses([statusOf('pending')])).toContain('still in progress');
-  });
-
   it('still surfaces failures while another operation is in flight', () => {
     // The failed entry ages out on its own, so a message that swallows it loses it for good
     const instruction = describeIndexingStatuses([statusOf('indexing'), statusOf('failed')]);

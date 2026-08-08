@@ -5,12 +5,13 @@ export interface IndexingStatus {
   id: string;
   url: string;
   title: string;
-  status: 'pending' | 'indexing' | 'complete' | 'failed' | 'cancelled';
+  status: 'indexing' | 'complete' | 'failed' | 'cancelled';
   progress: number;
   description: string;
   error?: string;
   // Enhanced tracking fields
   startedAt?: Date;
+  /** Pages the crawl fetched and yielded. Not the total attempted: it excludes pagesFailed, and pages dropped mid-crawl */
   pagesFound?: number;
   pagesProcessed?: number;
   /** Pages that yielded no indexable content and were left out of the index */

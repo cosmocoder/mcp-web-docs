@@ -19,7 +19,7 @@ import {
 } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
 import { logger } from '../util/logger.js';
-import { escapeFilterValue } from '../util/security.js';
+import { escapeFilterValue, escapeLikeLiteral } from '../util/security.js';
 
 type LanceDBConnection = Awaited<ReturnType<typeof lancedb.connect>>;
 type LanceDBTable = Awaited<ReturnType<LanceDBConnection['openTable']>>;
@@ -109,10 +109,7 @@ function buildSearchWhereClause(visibilityFilter: string, options: SearchOptions
     conditions.push(`type = '${escapeFilterValue(options.filterByType)}'`);
   }
   if (options.filterUrl) {
-    // LIKE only: unlike an equality literal, DataFusion does treat \ as an escape character
-    // here even with no ESCAPE clause, so these three replaces are required, not leftovers.
-    const escapedUrl = escapeFilterValue(options.filterUrl).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
-    conditions.push(`url LIKE '${escapedUrl}%'`);
+    conditions.push(`url LIKE '${escapeLikeLiteral(options.filterUrl)}%'`);
   }
   if (options.filterUrls) {
     conditions.push(buildExactUrlCondition(options.filterUrls));

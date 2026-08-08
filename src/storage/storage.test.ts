@@ -10,6 +10,8 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProcessedDocument, DocumentChunk } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
 import type { Database } from 'sqlite';
+import { connect } from '@lancedb/lancedb';
+import { escapeLikeLiteral } from '../util/security.js';
 import type { Table } from '@lancedb/lancedb';
 
 type ReplacementInternals = {
@@ -2602,6 +2604,49 @@ describe('DocumentStore', () => {
         expect(frontendCollection?.documents.length).toBe(1);
         expect(reactCollection?.documents.length).toBe(1);
       });
+    });
+  });
+
+  describe('url filter escaping', () => {
+    // Exhaustive over every one-to-three-character string of the characters that carry meaning in a
+    // LIKE pattern, so coverage does not depend on which literals someone wrote by hand. Each value
+    // is a decoy for the others, shortest first so the simplest failure is the one reported.
+    const alphabet = ['a', 'b', '\\', '%', '_', "'"];
+    const values = alphabet
+      .flatMap((a) => [a, ...alphabet.flatMap((b) => [a + b, ...alphabet.map((c) => a + b + c)])])
+      .sort((left, right) => left.length - right.length);
+
+    it('selects exactly the rows a prefix match should, for every value', async () => {
+      const connection = await connect(join(tempDir, 'filter-escaping'));
+      const table = await connection.createTable(
+        'rows',
+        values.map((url) => ({ url }))
+      );
+
+      for (const value of values) {
+        // Built exactly as buildSearchWhereClause builds it, including the appended wildcard
+        const where = `url LIKE '${escapeLikeLiteral(value)}%'`;
+        // Caught rather than thrown: an unescaped quote makes DataFusion throw, and its error
+        // never names the value that produced it
+        const matched = await table
+          .query()
+          .where(where)
+          .select(['url'])
+          .toArray()
+          .then((rows) =>
+            rows
+              .map((row) => String(row.url))
+              .sort()
+              .join(',')
+          )
+          .catch((error) => `threw ${String(error).slice(0, 60)}`);
+
+        const expected = values
+          .filter((candidate) => candidate.startsWith(value))
+          .sort()
+          .join(',');
+        expect(matched, `filterUrl ${JSON.stringify(value)} -> ${where}`).toBe(expected);
+      }
     });
   });
 });

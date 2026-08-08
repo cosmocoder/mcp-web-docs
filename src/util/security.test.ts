@@ -2,6 +2,7 @@ import {
   encryptData,
   decryptData,
   escapeFilterValue,
+  escapeLikeLiteral,
   validatePublicUrl,
   isSafeRegex,
   createSafeRegex,
@@ -131,6 +132,41 @@ describe('Security Utilities', () => {
       expect(escaped).toBe("''; DROP TABLE users; --");
       // Escaped string still contains doubled quotes (which is safe)
       expect(escaped.split("''").length).toBe(2); // One doubled quote
+    });
+  });
+
+  describe('LIKE Literal Escaping', () => {
+    // String.raw throughout: these expectations are only reviewable if the backslashes can be
+    // counted by eye rather than decoded
+    it('should double backslashes, unlike an equality literal', () => {
+      expect(escapeLikeLiteral(String.raw`path\to\file`)).toBe(String.raw`path\\to\\file`);
+      expect(escapeFilterValue(String.raw`path\to\file`)).toBe(String.raw`path\to\file`);
+    });
+
+    // Backslash doubling has to run before the wildcards, or their escapes get doubled too
+    it('should escape the wildcards so a value only matches itself', () => {
+      expect(escapeLikeLiteral('100%')).toBe('100\\%');
+      expect(escapeLikeLiteral('under_score')).toBe('under\\_score');
+    });
+
+    // Position and length both matter, and the test above only covers a wildcard with a character
+    // in front of it. An escaper that skips the first character, guards against double-escaping,
+    // collapses runs, or spares a trailing backslash passes it while breaking real filters:
+    // a bare `%` left unescaped matches every row, so a scoped search silently becomes unscoped,
+    // and a trailing backslash swallows the `%` that buildSearchWhereClause appends, turning a
+    // prefix match into no match.
+    it('should escape wildcards and backslashes in every position', () => {
+      expect(escapeLikeLiteral('%')).toBe(String.raw`\%`);
+      expect(escapeLikeLiteral('_')).toBe(String.raw`\_`);
+      expect(escapeLikeLiteral('%%')).toBe(String.raw`\%\%`);
+      expect(escapeLikeLiteral('__')).toBe(String.raw`\_\_`);
+      expect(escapeLikeLiteral(String.raw`a\%b`)).toBe(String.raw`a\\\%b`);
+      // String.raw cannot express a trailing backslash - this is `a\` becoming `a\\`
+      expect(escapeLikeLiteral('a\\')).toBe('a\\\\');
+    });
+
+    it('should still escape quotes', () => {
+      expect(escapeLikeLiteral("x' OR published = true OR url = 'y")).toBe("x'' OR published = true OR url = ''y");
     });
   });
 
