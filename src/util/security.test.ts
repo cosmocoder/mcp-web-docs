@@ -101,8 +101,12 @@ describe('Security Utilities', () => {
       expect(escapeFilterValue("it's")).toBe("it''s");
     });
 
-    it('should escape backslashes', () => {
-      expect(escapeFilterValue('path\\to\\file')).toBe('path\\\\to\\\\file');
+    it('should leave backslashes alone so the filter still matches the stored value', () => {
+      expect(escapeFilterValue('path\\to\\file')).toBe('path\\to\\file');
+    });
+
+    it('should not let a backslash smuggle a quote out of the literal', () => {
+      expect(escapeFilterValue("x\\' OR published = true OR url = 'y")).toBe("x\\'' OR published = true OR url = ''y");
     });
 
     it('should remove null bytes', () => {

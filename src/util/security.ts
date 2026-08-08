@@ -83,11 +83,13 @@ export function escapeFilterValue(value: string): string {
     throw new Error('Filter value must be a string');
   }
 
-  // Escape single quotes by doubling them (SQL-style escaping)
-  // Also escape backslashes to prevent escape sequence injection
+  // Escape single quotes by doubling them (SQL-style escaping). Backslashes are deliberately
+  // left alone: DataFusion treats them literally inside a single-quoted string, so doubling
+  // them stops the filter matching the stored value while adding nothing - a quote cannot be
+  // smuggled in behind a backslash. This holds for equality, IN and != only. A LIKE pattern
+  // needs more, which buildSearchWhereClause in storage.ts adds on top.
   return (
     value
-      .replace(/\\/g, '\\\\') // Escape backslashes first
       .replace(/'/g, "''") // Escape single quotes
       .replace(/\0/g, '') // Remove null bytes
       // eslint-disable-next-line no-control-regex
