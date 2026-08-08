@@ -5,7 +5,7 @@ import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, typ
 import { DocumentStore } from './storage/storage.js';
 import { FastEmbeddings } from './embeddings/fastembed.js';
 import { WebDocumentProcessor } from './processor/processor.js';
-import { IndexingStatusTracker } from './indexing/status.js';
+import { COMPLETED_STATUS_TTL_MS, IndexingStatusTracker } from './indexing/status.js';
 import { IndexingQueueManager } from './indexing/queue-manager.js';
 import { IndexingWorkflow } from './indexing/workflow.js';
 import { DocsConfig, loadConfig, isValidPublicUrl, normalizeUrl } from './config.js';
@@ -36,6 +36,46 @@ import {
   RemoveFromCollectionArgsSchema,
   SearchCollectionArgsSchema,
 } from './util/security.js';
+
+/**
+ * Turn indexing statuses into prose for the calling agent. An empty list deliberately does not
+ * read as success: finished operations are dropped once COMPLETED_STATUS_TTL_MS passes, and a
+ * reindex refused by the shrink guard leaves nothing else behind for a client to notice.
+ */
+export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
+  const unsuccessful = statuses.filter((status) => status.status === 'failed' || status.status === 'cancelled').length;
+
+  // Carries the failure count too: a concurrent operation can fail and age out of the TTL before
+  // the slow one finishes, and a caller told only "still in progress" would never hear about it.
+  if (statuses.some((status) => status.status === 'indexing' || status.status === 'pending')) {
+    const alsoUnsuccessful =
+      unsuccessful > 0 ? ` ${unsuccessful} of the tracked operations already did not succeed - check the status entries.` : '';
+    return `Operations still in progress. Call get_indexing_status again in a few seconds to check progress.${alsoUnsuccessful}`;
+  }
+  if (statuses.length === 0) {
+    return (
+      `No indexing operations are being tracked. Recently finished operations are dropped after ${COMPLETED_STATUS_TTL_MS / 60_000} minutes, ` +
+      'so this does not confirm one succeeded - use list_documentation to check what is actually indexed.'
+    );
+  }
+  if (unsuccessful > 0) {
+    // Must not claim nothing was stored: a cancel can land after addDocument has committed.
+    return `All operations finished, but ${unsuccessful} did not succeed. Check the status entries for why, and use list_documentation to confirm what is actually indexed.`;
+  }
+  // Complete is only true of what is still tracked, so this points at list_documentation like
+  // every other terminal branch - an earlier failure may already have aged out unseen.
+  return 'All operations complete. No need to poll again. Use list_documentation to confirm what is indexed.';
+}
+
+/**
+ * Told to an agent when it kicks off an indexing operation. Points at describeIndexingStatuses
+ * rather than restating anything it says - a copy here goes stale the moment the retention
+ * window or a branch changes.
+ */
+export const POLLING_INSTRUCTION =
+  'IMPORTANT: Poll get_indexing_status every few seconds until it reports that every operation ' +
+  'has finished or that none are tracked, then follow the instruction in that response. ' +
+  'Do not ask the user - just keep polling automatically.';
 
 export class WebDocsServer {
   private server: McpServer;
@@ -750,8 +790,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
               message: `Started indexing ${normalizedUrl}`,
               docId,
               operationId,
-              instruction:
-                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.',
+              instruction: POLLING_INSTRUCTION,
             },
             null,
             2
@@ -955,8 +994,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
                 : `Started re-indexing ${normalizedUrl}`,
               docId,
               operationId,
-              instruction:
-                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.',
+              instruction: POLLING_INSTRUCTION,
             },
             null,
             2
@@ -970,16 +1008,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
     // Get only active operations and recently completed ones (auto-cleans old statuses)
     const statuses = this.statusTracker.getActiveStatuses();
 
-    // Check if any operations are still in progress
-    const hasActiveOperations = statuses.some((s) => s.status === 'indexing');
-
-    // Add instruction for agent
-    const response = {
-      statuses,
-      instruction: hasActiveOperations
-        ? 'Operations still in progress. Call get_indexing_status again in a few seconds to check progress.'
-        : 'All operations complete. No need to poll again.',
-    };
+    const response = { statuses, instruction: describeIndexingStatuses(statuses) };
 
     return {
       content: [
