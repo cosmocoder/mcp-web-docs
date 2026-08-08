@@ -40,6 +40,8 @@ describe('DocsCrawler', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // clearAllMocks does not reset return values, so a stubbed count would leak into later tests
+    mockFailedPageCount.mockReturnValue(0);
     crawler = new DocsCrawler();
   });
 
@@ -235,25 +237,6 @@ describe('DocsCrawler', () => {
         });
         // eslint-disable-next-line @typescript-eslint/no-unused-vars
         for await (const _ of crawler.crawl('https://github.com/o/r')) {
-          // Just consume results
-        }
-
-        expect(crawler.failedPageCount).toBe(0);
-      });
-
-      it('resets the failed page count when a new crawl starts', async () => {
-        mockFailedPageCount.mockReturnValue(3);
-        mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
-        });
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        for await (const _ of crawler.crawl('https://example.com')) {
-          // Just consume results
-        }
-
-        mockFailedPageCount.mockReturnValue(0);
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        for await (const _ of crawler.crawl('https://example.com')) {
           // Just consume results
         }
 

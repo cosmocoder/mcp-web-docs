@@ -150,7 +150,7 @@ export class IndexingStatusTracker {
       progress: 1,
       // Say so when the index is knowingly missing pages, rather than reporting a clean success
       description: currentStatus.pagesFailed
-        ? `Indexing complete, but ${currentStatus.pagesFailed} pages could not be fetched and are missing from the index`
+        ? `Indexing complete, but ${currentStatus.pagesFailed} ${currentStatus.pagesFailed === 1 ? 'page' : 'pages'} could not be fetched and ${currentStatus.pagesFailed === 1 ? 'is' : 'are'} missing from the index`
         : 'Indexing complete',
     };
 

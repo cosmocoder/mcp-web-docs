@@ -169,11 +169,9 @@ export class IndexingWorkflow {
 
       logger.info(`[IndexingWorkflow] Found ${pages.length} pages to process`);
       logger.info('[IndexingWorkflow] Starting content processing and embedding generation');
-      // A tolerated partial crawl otherwise looks identical to a complete one
+      // A tolerated partial crawl otherwise looks identical to a complete one. The crawler
+      // already warns about it on stderr, so this only needs to reach the client.
       const failedPages = crawler.failedPageCount;
-      if (failedPages > 0) {
-        logger.warn(`[IndexingWorkflow] Crawl could not fetch ${failedPages} pages, indexing the rest`);
-      }
       statusTracker.updateStats(operationId, { pagesFound: pages.length, pagesFailed: failedPages });
       checkCancelled();
 
