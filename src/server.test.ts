@@ -14,6 +14,7 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
 }));
 
 import type { IndexingStatus } from './types.js';
+import { COMPLETED_STATUS_TTL_MS } from './indexing/status.js';
 import { describeIndexingStatuses, WebDocsServer } from './server.js';
 
 const statusOf = (status: IndexingStatus['status']): IndexingStatus => ({
@@ -37,9 +38,11 @@ describe('WebDocsServer MCP dispatch', () => {
       content: Array<{ type: string; text: string }>;
     };
 
+    // Compared against the function rather than a literal, so the handler cannot stop routing
+    // through it and still pass by hardcoding the same wording
     expect(JSON.parse(response.content[0].text)).toEqual({
       statuses: [],
-      instruction: expect.stringContaining('No indexing operations are being tracked'),
+      instruction: describeIndexingStatuses([]),
     });
   });
 });
@@ -50,19 +53,42 @@ describe('describeIndexingStatuses', () => {
     // after a couple of minutes - so "nothing tracked" must not read as "it worked"
     const instruction = describeIndexingStatuses([]);
 
-    expect(instruction).not.toContain('complete');
+    // Asserted positively: a reworded success claim would slip past `not.toContain('complete')`
+    expect(instruction).toContain('does not confirm one succeeded');
     expect(instruction).toContain('list_documentation');
+  });
+
+  it('names the TTL the tracker actually uses', () => {
+    expect(describeIndexingStatuses([])).toContain(`dropped after ${COMPLETED_STATUS_TTL_MS / 60_000} minutes`);
   });
 
   it('asks the caller to keep polling while work is in flight', () => {
     expect(describeIndexingStatuses([statusOf('complete'), statusOf('indexing')])).toContain('still in progress');
   });
 
+  it('keeps polling while an operation is queued but not yet started', () => {
+    expect(describeIndexingStatuses([statusOf('pending')])).toContain('still in progress');
+  });
+
+  it('still surfaces failures while another operation is in flight', () => {
+    // The failed entry ages out of the TTL on its own, so if this message swallows it the
+    // caller never hears about it at all
+    const instruction = describeIndexingStatuses([statusOf('indexing'), statusOf('failed')]);
+
+    expect(instruction).toContain('still in progress');
+    expect(instruction).toContain('1 of the tracked operations already did not succeed');
+  });
+
   it('calls out operations that did not succeed', () => {
     const instruction = describeIndexingStatuses([statusOf('complete'), statusOf('failed'), statusOf('cancelled')]);
 
     expect(instruction).toContain('2 did not succeed');
-    expect(instruction).toContain('nothing was stored');
+    expect(instruction).toContain('list_documentation');
+  });
+
+  it('does not claim nothing was stored for an operation that did not succeed', () => {
+    // A cancel can land after addDocument has already committed the document
+    expect(describeIndexingStatuses([statusOf('cancelled')])).not.toContain('nothing was stored');
   });
 
   it('reports a clean success only when every operation succeeded', () => {

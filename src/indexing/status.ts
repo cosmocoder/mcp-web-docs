@@ -2,7 +2,7 @@ import { SingleBar, MultiBar } from 'cli-progress';
 import { IndexingStatus } from '../types.js';
 
 /** How long to keep completed/failed statuses before auto-cleanup (2 minutes) */
-const COMPLETED_STATUS_TTL_MS = 2 * 60 * 1000;
+export const COMPLETED_STATUS_TTL_MS = 2 * 60 * 1000;
 
 export class IndexingStatusTracker {
   private multibar: MultiBar;

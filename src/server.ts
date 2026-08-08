@@ -5,7 +5,7 @@ import { CallToolRequestSchema, ErrorCode, ListToolsRequestSchema, McpError, typ
 import { DocumentStore } from './storage/storage.js';
 import { FastEmbeddings } from './embeddings/fastembed.js';
 import { WebDocumentProcessor } from './processor/processor.js';
-import { IndexingStatusTracker } from './indexing/status.js';
+import { COMPLETED_STATUS_TTL_MS, IndexingStatusTracker } from './indexing/status.js';
 import { IndexingQueueManager } from './indexing/queue-manager.js';
 import { IndexingWorkflow } from './indexing/workflow.js';
 import { DocsConfig, loadConfig, isValidPublicUrl, normalizeUrl } from './config.js';
@@ -43,18 +43,26 @@ import {
  * that was refused leaves nothing else behind for a client to notice.
  */
 export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
-  if (statuses.some((status) => status.status === 'indexing')) {
-    return 'Operations still in progress. Call get_indexing_status again in a few seconds to check progress.';
+  const unsuccessful = statuses.filter((status) => status.status === 'failed' || status.status === 'cancelled').length;
+
+  // Report in-flight work first, but not at the cost of hiding a failure: a concurrent operation
+  // on another URL can fail and then age out of the TTL before the slow one finishes, so a caller
+  // told only "still in progress" would never hear about it at all.
+  if (statuses.some((status) => status.status === 'indexing' || status.status === 'pending')) {
+    const alsoUnsuccessful =
+      unsuccessful > 0 ? ` ${unsuccessful} of the tracked operations already did not succeed - check the status entries.` : '';
+    return `Operations still in progress. Call get_indexing_status again in a few seconds to check progress.${alsoUnsuccessful}`;
   }
   if (statuses.length === 0) {
     return (
-      'No indexing operations are being tracked. Recently finished operations are dropped after a few minutes, ' +
+      `No indexing operations are being tracked. Recently finished operations are dropped after ${COMPLETED_STATUS_TTL_MS / 60_000} minutes, ` +
       'so this does not confirm one succeeded - use list_documentation to check what is actually indexed.'
     );
   }
-  const unsuccessful = statuses.filter((status) => status.status === 'failed' || status.status === 'cancelled').length;
   if (unsuccessful > 0) {
-    return `All operations finished, but ${unsuccessful} did not succeed. Check the status entries for why - nothing was stored for those.`;
+    // Deliberately does not claim nothing was stored: a cancel can land after addDocument has
+    // already committed the document. The per-operation description says what actually happened.
+    return `All operations finished, but ${unsuccessful} did not succeed. Check the status entries for why, and use list_documentation to confirm what is actually indexed.`;
   }
   return 'All operations complete. No need to poll again.';
 }
@@ -772,7 +780,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
               docId,
               operationId,
               instruction:
-                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.',
+                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until it reports every operation has finished, or until it reports no operations are tracked - finished operations are dropped after a couple of minutes, so an empty list means you polled too late, not that it succeeded. Either way, confirm the result with list_documentation. Do not ask the user - just keep polling automatically.',
             },
             null,
             2
@@ -977,7 +985,7 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
               docId,
               operationId,
               instruction:
-                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until status is "complete" or "failed". Do not ask the user - just keep polling automatically.',
+                'IMPORTANT: You MUST call get_indexing_status repeatedly (every few seconds) until it reports every operation has finished, or until it reports no operations are tracked - finished operations are dropped after a couple of minutes, so an empty list means you polled too late, not that it succeeded. Either way, confirm the result with list_documentation. Do not ask the user - just keep polling automatically.',
             },
             null,
             2
