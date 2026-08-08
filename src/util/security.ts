@@ -73,10 +73,10 @@ export function decryptData(encryptedData: string): string {
 }
 
 /**
- * Escape special characters for LanceDB filter expressions
- * Prevents SQL/filter injection attacks
+ * Escape a value for a LanceDB equality, IN or != comparison. Prevents SQL/filter injection.
+ * For a LIKE pattern use escapeLikeLiteral instead - it needs more than this.
  * @param value - User-provided value to escape
- * @returns Escaped value safe for use in filter expressions
+ * @returns Escaped value safe for use inside a single-quoted filter literal
  */
 export function escapeFilterValue(value: string): string {
   if (typeof value !== 'string') {
@@ -86,8 +86,7 @@ export function escapeFilterValue(value: string): string {
   // Escape single quotes by doubling them (SQL-style escaping). Backslashes are deliberately
   // left alone: DataFusion treats them literally inside a single-quoted string, so doubling
   // them stops the filter matching the stored value while adding nothing - a quote cannot be
-  // smuggled in behind a backslash. This holds for equality, IN and != only. A LIKE pattern
-  // needs more, which buildSearchWhereClause in storage.ts adds on top.
+  // smuggled in behind a backslash.
   return (
     value
       .replace(/'/g, "''") // Escape single quotes
@@ -95,6 +94,18 @@ export function escapeFilterValue(value: string): string {
       // eslint-disable-next-line no-control-regex
       .replace(/[\u0000-\u001f\u007f]/g, '')
   ); // Remove control characters
+}
+
+/**
+ * Escape a value for use as a literal inside a LanceDB LIKE pattern. Needs more than
+ * escapeFilterValue: here DataFusion does treat a backslash as an escape character, even with no
+ * ESCAPE clause, and % and _ are wildcards. Escapes the whole value, so any wildcard the caller
+ * wants has to be appended around the result.
+ * @param value - User-provided value to escape
+ * @returns Escaped value safe to interpolate into a LIKE pattern
+ */
+export function escapeLikeLiteral(value: string): string {
+  return escapeFilterValue(value).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
 }
 
 /**

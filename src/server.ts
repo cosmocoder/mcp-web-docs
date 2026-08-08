@@ -47,7 +47,7 @@ export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
 
   // Carries the failure count too: a concurrent operation can fail and age out of the TTL before
   // the slow one finishes, and a caller told only "still in progress" would never hear about it.
-  if (statuses.some((status) => status.status === 'indexing' || status.status === 'pending')) {
+  if (statuses.some((status) => status.status === 'indexing')) {
     const alsoUnsuccessful =
       unsuccessful > 0 ? ` ${unsuccessful} of the tracked operations already did not succeed - check the status entries.` : '';
     return `Operations still in progress. Call get_indexing_status again in a few seconds to check progress.${alsoUnsuccessful}`;

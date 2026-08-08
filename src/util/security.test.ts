@@ -2,6 +2,7 @@ import {
   encryptData,
   decryptData,
   escapeFilterValue,
+  escapeLikeLiteral,
   validatePublicUrl,
   isSafeRegex,
   createSafeRegex,
@@ -131,6 +132,23 @@ describe('Security Utilities', () => {
       expect(escaped).toBe("''; DROP TABLE users; --");
       // Escaped string still contains doubled quotes (which is safe)
       expect(escaped.split("''").length).toBe(2); // One doubled quote
+    });
+  });
+
+  describe('LIKE Literal Escaping', () => {
+    it('should double backslashes, unlike an equality literal', () => {
+      expect(escapeLikeLiteral('path\\to\\file')).toBe('path\\\\to\\\\file');
+      expect(escapeFilterValue('path\\to\\file')).toBe('path\\to\\file');
+    });
+
+    // Backslash doubling has to run before the wildcards, or their escapes get doubled too
+    it('should escape the wildcards so a value only matches itself', () => {
+      expect(escapeLikeLiteral('100%')).toBe('100\\%');
+      expect(escapeLikeLiteral('under_score')).toBe('under\\_score');
+    });
+
+    it('should still escape quotes', () => {
+      expect(escapeLikeLiteral("x' OR published = true OR url = 'y")).toBe("x'' OR published = true OR url = ''y");
     });
   });
 
