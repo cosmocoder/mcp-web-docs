@@ -23,14 +23,19 @@ export default defineConfig([
   {
     // A deferred transaction that opens with a read fails its upgrade to a write without waiting out
     // busy_timeout. BEGIN_WRITE_TRANSACTION states the rule; this is what stops the next call site
-    // being written with the reflex spelling, compiling, and passing every test.
+    // being written with the reflex spelling, compiling, and passing every test. Any BEGIN that is
+    // not IMMEDIATE is deferred, including a bare `BEGIN`, so match the mode rather than one spelling.
     files: ['src/storage/**/*.ts'],
     ignores: ['src/storage/**/*.test.ts'],
     rules: {
       'no-restricted-syntax': [
         'error',
         {
-          selector: "Literal[value='BEGIN TRANSACTION']",
+          selector: 'Literal[value=/^\\s*BEGIN\\b(?!\\s+IMMEDIATE)/i]',
+          message: 'Open transactions with BEGIN_WRITE_TRANSACTION so the write lock is taken at BEGIN.',
+        },
+        {
+          selector: 'TemplateElement[value.raw=/^\\s*BEGIN\\b(?!\\s+IMMEDIATE)/i]',
           message: 'Open transactions with BEGIN_WRITE_TRANSACTION so the write lock is taken at BEGIN.',
         },
       ],
