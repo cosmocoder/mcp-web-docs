@@ -109,6 +109,8 @@ function buildSearchWhereClause(visibilityFilter: string, options: SearchOptions
     conditions.push(`type = '${escapeFilterValue(options.filterByType)}'`);
   }
   if (options.filterUrl) {
+    // LIKE only: unlike an equality literal, DataFusion does treat \ as an escape character
+    // here even with no ESCAPE clause, so these three replaces are required, not leftovers.
     const escapedUrl = escapeFilterValue(options.filterUrl).replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
     conditions.push(`url LIKE '${escapedUrl}%'`);
   }

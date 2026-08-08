@@ -215,6 +215,18 @@ describe('DocumentStore', () => {
       expect(await storedContents(store, url)).toEqual([]);
     });
 
+    // A url filter becomes a LIKE pattern, where % and _ are wildcards. Unescaped, these
+    // would also match the decoys, scoping a search to the wrong documents.
+    it('treats % and _ in a url filter as literals, not wildcards', async () => {
+      await store.addDocument(createDocumentWithContent('https://example.com/a%b', 'Pct', 'pct content'));
+      await store.addDocument(createDocumentWithContent('https://example.com/aZZb', 'PctDecoy', 'pct decoy content'));
+      await store.addDocument(createDocumentWithContent('https://example.com/c_d', 'Us', 'us content'));
+      await store.addDocument(createDocumentWithContent('https://example.com/cXd', 'UsDecoy', 'us decoy content'));
+
+      expect(await storedContents(store, 'https://example.com/a%b')).toEqual(['pct content']);
+      expect(await storedContents(store, 'https://example.com/c_d')).toEqual(['us content']);
+    });
+
     it('sees pages published by another store instance', async () => {
       const url = 'https://example.com/peer-published';
       // Pin this handle to the current table version before the peer writes
