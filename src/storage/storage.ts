@@ -458,6 +458,13 @@ export class DocumentStore {
         ALTER TABLE documents ADD COLUMN path_prefix TEXT;
       `,
     },
+    {
+      version: 7,
+      description: 'Persist the largest page count each document has held',
+      sql: `
+        ALTER TABLE documents ADD COLUMN max_pages INTEGER;
+      `,
+    },
   ];
 
   /**
@@ -587,7 +594,7 @@ export class DocumentStore {
       await sqliteDb.run('BEGIN TRANSACTION');
       transactionStarted = true;
       signal?.throwIfAborted();
-      await this.upsertMetadata(doc.metadata);
+      await this.upsertMetadata(doc.metadata, new Set(doc.chunks.map((chunk) => chunk.path)).size);
       if (tags !== undefined) {
         await this.replaceDocumentTags(url, tags);
       }
@@ -790,14 +797,28 @@ export class DocumentStore {
     }));
   }
 
-  private async upsertMetadata(metadata: ProcessedDocument['metadata']): Promise<void> {
+  /**
+   * Writes the metadata, and with it the largest page count this document has held. A changed
+   * prefix covers a different slice of the site, so the mark from the previous slice no longer
+   * describes this document and starts again from this crawl.
+   */
+  private async upsertMetadata(metadata: ProcessedDocument['metadata'], pageCount: number): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
 
+    const pathPrefix = metadata.pathPrefix ?? null;
+    // Read on the write connection, inside the publication transaction, so no concurrent
+    // publication can land between the read and the write
+    const previous = await this.sqliteDb.get<{ path_prefix: string | null; max_pages: number | null }>(
+      'SELECT path_prefix, max_pages FROM documents WHERE url = ?',
+      [metadata.url]
+    );
+    const maxPages = previous?.path_prefix === pathPrefix ? Math.max(previous?.max_pages ?? 0, pageCount) : pageCount;
+
     await this.sqliteDb.run(
-      `INSERT INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix, max_pages)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(url) DO UPDATE SET
          title = excluded.title,
          favicon = excluded.favicon,
@@ -805,7 +826,8 @@ export class DocumentStore {
          requires_auth = excluded.requires_auth,
          auth_domain = excluded.auth_domain,
          version = excluded.version,
-         path_prefix = excluded.path_prefix`,
+         path_prefix = excluded.path_prefix,
+         max_pages = excluded.max_pages`,
       [
         metadata.url,
         metadata.title,
@@ -814,7 +836,8 @@ export class DocumentStore {
         metadata.requiresAuth ? 1 : 0,
         metadata.authDomain ?? null,
         metadata.version ?? null,
-        metadata.pathPrefix ?? null,
+        pathPrefix,
+        maxPages,
       ]
     );
   }
@@ -1536,6 +1559,21 @@ export class DocumentStore {
       .select(['path'])
       .toArray();
     return new Set(rows.map((row) => String(row.path))).size;
+  }
+
+  /**
+   * The largest page count this document has held under its current crawl scope. The shrink check
+   * compares against this rather than the live count, because against the live count a run of
+   * reindexes that each lose just under half walks the index down with every step passing.
+   * Falls back to the live count for documents last written before the mark was recorded.
+   */
+  async getPageHighWaterMark(url: string): Promise<number> {
+    if (!this.sqliteReadDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const row = await this.sqliteReadDb.get<{ max_pages: number | null }>('SELECT max_pages FROM documents WHERE url = ?', [url]);
+    return Math.max(await this.countDocumentPages(url), row?.max_pages ?? 0);
   }
 
   async getDocument(url: string): Promise<DocumentMetadata | null> {

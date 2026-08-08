@@ -35,14 +35,14 @@ function createHarness(
     createCrawler?: () => DocsCrawler;
     process?: (crawlResult: CrawlResult) => Promise<ProcessedDocument>;
     savedSession?: string;
-    existingPageCount?: number;
+    previousPageCount?: number;
     failedPageCount?: number;
   } = {}
 ) {
   const addDocument = vi.fn().mockResolvedValue(undefined);
   const store = {
     addDocument,
-    countDocumentPages: vi.fn().mockResolvedValue(options.existingPageCount ?? 0),
+    getPageHighWaterMark: vi.fn().mockResolvedValue(options.previousPageCount ?? 0),
     getDocument: vi.fn().mockResolvedValue(options.existingDocument ?? null),
     optimize: vi.fn().mockResolvedValue({ compacted: false, cleanedUp: false }),
   };
@@ -252,17 +252,17 @@ describe('IndexingWorkflow', () => {
   ])('reindex crawling $crawled pages against $stored stored is blocked: $blocked', async ({ crawled, stored, blocked }) => {
     const harness = createHarness({
       existingDocument: { url: request.url, title: request.title, lastIndexed: new Date() },
-      existingPageCount: stored,
+      previousPageCount: stored,
       crawl: crawlPages(crawled),
     });
 
     await runWorkflow(harness.workflow, { ...request, reIndex: true });
 
-    expect(harness.store.countDocumentPages).toHaveBeenCalledWith(request.url);
+    expect(harness.store.getPageHighWaterMark).toHaveBeenCalledWith(request.url);
     if (blocked) {
       expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
         request.operationId,
-        expect.stringContaining(`Reindex produced ${crawled} pages but ${stored} are already stored`)
+        expect.stringContaining(`Reindex produced ${crawled} pages but this document has held ${stored}`)
       );
       expect(harness.addDocument).not.toHaveBeenCalled();
       expect(harness.statusTracker.completeIndexing).not.toHaveBeenCalled();
@@ -276,7 +276,7 @@ describe('IndexingWorkflow', () => {
   it('gates on pages produced, not chunks produced', async () => {
     const harness = createHarness({
       existingDocument: { url: request.url, title: request.title, lastIndexed: new Date() },
-      existingPageCount: 100,
+      previousPageCount: 100,
       crawl: crawlPages(50),
       // 50 pages but 100 chunks - counting chunks would wave this through
       process: async (crawlResult) => ({
@@ -292,7 +292,7 @@ describe('IndexingWorkflow', () => {
 
     expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
       request.operationId,
-      expect.stringContaining('Reindex produced 50 pages but 100 are already stored')
+      expect.stringContaining('Reindex produced 50 pages but this document has held 100')
     );
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
@@ -300,7 +300,7 @@ describe('IndexingWorkflow', () => {
   it('allows a reindex that deliberately narrows the path prefix', async () => {
     const harness = createHarness({
       existingDocument: { url: request.url, title: request.title, lastIndexed: new Date(), pathPrefix: '/docs' },
-      existingPageCount: 100,
+      previousPageCount: 100,
       crawl: crawlPages(1),
     });
 
@@ -317,7 +317,7 @@ describe('IndexingWorkflow', () => {
   ])('still gates a reindex whose prefix was $label', async ({ pathPrefix }) => {
     const harness = createHarness({
       existingDocument: { url: request.url, title: request.title, lastIndexed: new Date(), pathPrefix: '/docs' },
-      existingPageCount: 100,
+      previousPageCount: 100,
       crawl: crawlPages(1),
     });
 
@@ -325,7 +325,7 @@ describe('IndexingWorkflow', () => {
 
     expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
       request.operationId,
-      expect.stringContaining('Reindex produced 1 pages but 100 are already stored')
+      expect.stringContaining('Reindex produced 1 pages but this document has held 100')
     );
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
@@ -333,10 +333,10 @@ describe('IndexingWorkflow', () => {
   it('keeps indexing when the stored page count cannot be read', async () => {
     const harness = createHarness({
       existingDocument: { url: request.url, title: request.title, lastIndexed: new Date() },
-      existingPageCount: 100,
+      previousPageCount: 100,
       crawl: crawlPages(1),
     });
-    harness.store.countDocumentPages.mockRejectedValue(new Error('lance unavailable'));
+    harness.store.getPageHighWaterMark.mockRejectedValue(new Error('lance unavailable'));
 
     await runWorkflow(harness.workflow, { ...request, reIndex: true });
 
@@ -345,11 +345,11 @@ describe('IndexingWorkflow', () => {
   });
 
   it('does not gate the first index of a document on a stored page count', async () => {
-    const harness = createHarness({ existingPageCount: 100 });
+    const harness = createHarness({ previousPageCount: 100 });
 
     await runWorkflow(harness.workflow, request);
 
-    expect(harness.store.countDocumentPages).not.toHaveBeenCalled();
+    expect(harness.store.getPageHighWaterMark).not.toHaveBeenCalled();
     expect(harness.addDocument).toHaveBeenCalledOnce();
   });
 

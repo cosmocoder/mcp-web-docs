@@ -201,6 +201,40 @@ describe('DocumentStore', () => {
       expect(await store.countDocumentPages('https://example.com/missing')).toBe(0);
     });
 
+    // The mark is what keeps the shrink check from ratcheting: measured against the live count,
+    // each reindex only has to beat half of the one before it, so a run of them walks the index
+    // down to nothing while every single step looks acceptable.
+    it('keeps the largest page count a document has held, not the most recent one', async () => {
+      const url = 'https://example.com/high-water';
+      await store.addDocument(createDocumentWithPages(url, 'Peak', ['/a', '/b', '/c', '/d']));
+      await store.addDocument(createDocumentWithPages(url, 'Smaller', ['/a', '/b', '/c']));
+
+      expect(await store.countDocumentPages(url)).toBe(3);
+      expect(await store.getPageHighWaterMark(url)).toBe(4);
+      expect(await store.getPageHighWaterMark('https://example.com/missing')).toBe(0);
+    });
+
+    // Otherwise a deliberate narrowing leaves a mark from the wider crawl behind, and the next
+    // reindex of the narrowed document is measured against pages it is no longer asked to fetch
+    it('restarts the mark when the crawl scope changes', async () => {
+      const url = 'https://example.com/renarrowed';
+      await store.addDocument(createDocumentWithPages(url, 'Whole site', ['/a', '/b', '/c', '/d']));
+
+      const narrowed = createDocumentWithPages(url, 'Just one section', ['/docs/a']);
+      narrowed.metadata.pathPrefix = '/docs';
+      await store.addDocument(narrowed);
+
+      expect(await store.getPageHighWaterMark(url)).toBe(1);
+    });
+
+    it('falls back to the live count for a document stored before the mark existed', async () => {
+      const url = 'https://example.com/pre-migration';
+      await store.addDocument(createDocumentWithPages(url, 'Legacy', ['/a', '/b']));
+      await replacementInternals().sqliteDb!.run('UPDATE documents SET max_pages = NULL WHERE url = ?', [url]);
+
+      expect(await store.getPageHighWaterMark(url)).toBe(2);
+    });
+
     it('deletes and searches a document whose URL contains a backslash', async () => {
       const url = 'https://example.com/a?q=\\b';
       await store.addDocument(createDocumentWithContent(url, 'Backslash', 'backslash content'));

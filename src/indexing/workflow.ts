@@ -28,7 +28,7 @@ function narrowsCrawlScope(next: string | undefined, previous: string | undefine
   return !previous || isPathAllowed(next, previous);
 }
 
-type WorkflowStore = Pick<DocumentStore, 'addDocument' | 'countDocumentPages' | 'getDocument' | 'optimize'>;
+type WorkflowStore = Pick<DocumentStore, 'addDocument' | 'getDocument' | 'getPageHighWaterMark' | 'optimize'>;
 type WorkflowProcessor = Pick<WebDocumentProcessor, 'process'>;
 type WorkflowStatusTracker = Pick<
   IndexingStatusTracker,
@@ -249,16 +249,16 @@ export class IndexingWorkflow {
       // merges - so refuse to overwrite a document with a much smaller one. Count the pages
       // we are about to store, not the ones we crawled, so the two sides mean the same thing.
       if (existingDoc && !narrowsCrawlScope(pathPrefix, existingDoc.pathPrefix)) {
-        // A failed count must not discard a whole crawl, so treat it as no opinion
-        const existingPages = await store.countDocumentPages(url).catch((error: unknown) => {
-          logger.warn(`[IndexingWorkflow] Could not count stored pages for ${url}, skipping the shrink check:`, error);
+        // A failed read must not discard a whole crawl, so treat it as no opinion
+        const previousPages = await store.getPageHighWaterMark(url).catch((error: unknown) => {
+          logger.warn(`[IndexingWorkflow] Could not read the stored page count for ${url}, skipping the shrink check:`, error);
           return 0;
         });
         const storedPages = new Set(chunks.map((chunk) => chunk.path)).size;
-        if (storedPages * 2 <= existingPages) {
+        if (storedPages * 2 <= previousPages) {
           statusTracker.failIndexing(
             operationId,
-            `Reindex produced ${storedPages} pages but ${existingPages} are already stored, so the existing index was kept. ` +
+            `Reindex produced ${storedPages} pages but this document has held ${previousPages}, so the existing index was kept. ` +
               `Retry if the crawl was incomplete, or delete and re-add the document if the site really is smaller now`
           );
           return;
