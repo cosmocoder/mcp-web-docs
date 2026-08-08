@@ -38,20 +38,15 @@ import {
 } from './util/security.js';
 
 /**
- * Describe a set of indexing statuses for the calling agent, and the only place that turns
- * statuses into prose for a client. An empty list deliberately does not read as success:
- * finished operations are dropped once COMPLETED_STATUS_TTL_MS passes, and a reindex that was
- * refused leaves nothing else behind for a client to notice.
- *
- * Every branch points at list_documentation, because any of them can be reached after an
- * earlier operation has already aged out unseen.
+ * Turn indexing statuses into prose for the calling agent. An empty list deliberately does not
+ * read as success: finished operations are dropped once COMPLETED_STATUS_TTL_MS passes, and a
+ * reindex refused by the shrink guard leaves nothing else behind for a client to notice.
  */
 export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
   const unsuccessful = statuses.filter((status) => status.status === 'failed' || status.status === 'cancelled').length;
 
-  // Report in-flight work first, but not at the cost of hiding a failure: a concurrent operation
-  // on another URL can fail and then age out of the TTL before the slow one finishes, so a caller
-  // told only "still in progress" would never hear about it at all.
+  // Carries the failure count too: a concurrent operation can fail and age out of the TTL before
+  // the slow one finishes, and a caller told only "still in progress" would never hear about it.
   if (statuses.some((status) => status.status === 'indexing' || status.status === 'pending')) {
     const alsoUnsuccessful =
       unsuccessful > 0 ? ` ${unsuccessful} of the tracked operations already did not succeed - check the status entries.` : '';
@@ -64,22 +59,18 @@ export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
     );
   }
   if (unsuccessful > 0) {
-    // Deliberately does not claim nothing was stored: a cancel can land after addDocument has
-    // already committed the document. The per-operation description says what actually happened.
+    // Must not claim nothing was stored: a cancel can land after addDocument has committed.
     return `All operations finished, but ${unsuccessful} did not succeed. Check the status entries for why, and use list_documentation to confirm what is actually indexed.`;
   }
-  // Only true of what is still tracked. A failure the caller was told about on an earlier poll
-  // can have aged out by now, so this cannot be the one branch that skips list_documentation.
+  // Complete is only true of what is still tracked, so this points at list_documentation like
+  // every other terminal branch - an earlier failure may already have aged out unseen.
   return 'All operations complete. No need to poll again. Use list_documentation to confirm what is indexed.';
 }
 
 /**
- * Told to an agent when it kicks off an indexing operation. Deliberately states no fact that
- * describeIndexingStatuses will state better a moment later - it only has to get the agent
- * polling, keep it polling without asking, and hand off to the status response.
- *
- * Point at that function rather than restating it here: a copy goes stale the moment the
- * retention window or a branch changes, which is exactly how this string went wrong before.
+ * Told to an agent when it kicks off an indexing operation. Points at describeIndexingStatuses
+ * rather than restating anything it says - a copy here goes stale the moment the retention
+ * window or a branch changes.
  */
 export const POLLING_INSTRUCTION =
   'IMPORTANT: Poll get_indexing_status every few seconds until it reports that every operation ' +

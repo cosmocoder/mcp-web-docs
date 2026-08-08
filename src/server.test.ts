@@ -13,10 +13,9 @@ vi.mock('@modelcontextprotocol/sdk/server/mcp.js', () => ({
   },
 }));
 
-// Overridden to a value the production message cannot coincidentally match. Asserting against
-// the real 2 minutes proved nothing: the test computed the same expression as the code, so
-// hardcoding "2 minutes" in the message passed. The tracker class is kept intact - it closes
-// over the original constant, so its own expiry behaviour is untouched.
+// Deliberately not the real value: asserting against 2 minutes cannot tell a derived message
+// from one that hardcodes today's number. Spread keeps the real tracker, which closes over the
+// original constant and so still expires on the real TTL.
 vi.mock('./indexing/status.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./indexing/status.js')>()),
   COMPLETED_STATUS_TTL_MS: 7 * 60 * 1000,
@@ -47,8 +46,7 @@ describe('WebDocsServer MCP dispatch', () => {
       content: Array<{ type: string; text: string }>;
     };
 
-    // Compared against the function rather than a literal, so the handler cannot stop routing
-    // through it and still pass by hardcoding the same wording
+    // Against the function, not a literal: a handler that stopped calling it would still pass
     expect(JSON.parse(response.content[0].text)).toEqual({
       statuses: [],
       instruction: describeIndexingStatuses([]),
@@ -58,10 +56,8 @@ describe('WebDocsServer MCP dispatch', () => {
 
 describe('describeIndexingStatuses', () => {
   it('does not report an empty list as success', () => {
-    // A refused reindex changes nothing else a client can see, and its status is dropped once
-    // the TTL passes - so "nothing tracked" must not read as "it worked". Asserted in full:
-    // fragment matching let a message keep the expected phrases and still bolt on a success
-    // claim, and the retention window has to track the constant rather than be narrated.
+    // Asserted in full: fragment matching passes a message that keeps the expected phrases and
+    // bolts a success claim on the end
     expect(describeIndexingStatuses([])).toBe(
       `No indexing operations are being tracked. Recently finished operations are dropped after ${COMPLETED_STATUS_TTL_MS / 60_000} minutes, ` +
         'so this does not confirm one succeeded - use list_documentation to check what is actually indexed.'
@@ -77,8 +73,7 @@ describe('describeIndexingStatuses', () => {
   });
 
   it('still surfaces failures while another operation is in flight', () => {
-    // The failed entry ages out of the TTL on its own, so if this message swallows it the
-    // caller never hears about it at all
+    // The failed entry ages out on its own, so a message that swallows it loses it for good
     const instruction = describeIndexingStatuses([statusOf('indexing'), statusOf('failed')]);
 
     expect(instruction).toContain('still in progress');
@@ -90,8 +85,7 @@ describe('describeIndexingStatuses', () => {
 
     expect(instruction).toContain('2 did not succeed');
     expect(instruction).toContain('list_documentation');
-    // A cancel can land after addDocument has already committed the document, so the message
-    // must not claim otherwise
+    // A cancel can land after addDocument has committed
     expect(instruction).not.toContain('nothing was stored');
   });
 
@@ -101,10 +95,8 @@ describe('describeIndexingStatuses', () => {
     );
   });
 
-  // Every message an agent can stop on has to point somewhere it can verify: a failure it was
-  // told about on an earlier poll ages out of the TTL, so any of these can be the last thing it
-  // reads while an earlier failure is already invisible. The in-flight message is excluded on
-  // purpose - there is nothing to confirm yet, and it must not read as a reason to stop.
+  // Any of these can be the last thing an agent reads while an earlier failure has already aged
+  // out, so each has to point somewhere it can verify. The in-flight message is exempt below.
   it.each([
     ['empty', []],
     ['some unsuccessful', [statusOf('complete'), statusOf('failed')]],
@@ -120,9 +112,8 @@ describe('describeIndexingStatuses', () => {
 
 describe('POLLING_INSTRUCTION', () => {
   it('does not narrate the retention window', () => {
-    // Polling cadence is this string's own business. How long a finished status survives is
-    // COMPLETED_STATUS_TTL_MS, and a copy quoted here goes stale and contradicts
-    // describeIndexingStatuses, which the agent reads moments later.
+    // Cadence is this string's own business, hence no ban on "seconds". Retention belongs to
+    // COMPLETED_STATUS_TTL_MS, and a copy quoted here goes stale.
     expect(POLLING_INSTRUCTION).not.toMatch(/\b(minute|hour)s?\b/);
     expect(POLLING_INSTRUCTION).not.toContain('dropped after');
   });
