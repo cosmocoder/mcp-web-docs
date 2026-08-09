@@ -52,6 +52,16 @@ describe('readLoginPageSignals', () => {
     expect(render('<iframe src="/sso/login"></iframe><iframe></iframe>').frameSources).toEqual(['/sso/login']);
   });
 
+  // page.evaluate serializes the compiled function and runs it in a browser, where nothing this
+  // module imports exists. Rebuilding it from its own source is the only way a reference to
+  // anything outside it shows up here rather than in a crawl.
+  it('reads nothing from outside itself, as page.evaluate requires', () => {
+    document.body.innerHTML = LOGIN_FORM;
+    const detached = new Function(`return (${readLoginPageSignals.toString()})()`) as () => ReturnType<typeof readLoginPageSignals>;
+
+    expect(detached()).toEqual(readLoginPageSignals());
+  });
+
   it('collapses whitespace and caps the headings it reports', () => {
     const signals = render(`<h1>  Sign\n  in  </h1>${[1, 2, 3, 4, 5, 6].map((n) => `<h2>Section ${n}</h2>`).join('')}`);
 
@@ -97,5 +107,14 @@ describe('pageIdentity', () => {
   // Only the page's own address comes out - a heading that IS an address elsewhere still counts
   it('keeps an address that is not this page', () => {
     expect(pageIdentity(['POST /api/login'], article, url)).not.toEqual(pageIdentity(['POST /api/logout'], article, url));
+  });
+
+  // Accepted: strip a heading that is only the page's own address and nothing is left to tell it
+  // apart by. It takes a password field on each of these pages to matter, which is the caller's
+  // question, asked before this one.
+  it('folds pages whose heading is only their own address', () => {
+    expect(pageIdentity(['POST /api/login'], article, 'https://example.com/api/login')).toEqual(
+      pageIdentity(['POST /api/logout'], article, 'https://example.com/api/logout')
+    );
   });
 });

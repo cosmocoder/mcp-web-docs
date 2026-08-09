@@ -9,7 +9,7 @@ import { QueueManager } from './queue-manager.js';
 import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
-import { pageIdentity, readLoginPageSignals } from './login-page-signals.js';
+import { LOGIN_PAGE_CONFIDENCE, pageIdentity, readLoginPageSignals } from './login-page-signals.js';
 import { detectLoginPage, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
 import {
   BlockedOutboundRequestError,
@@ -54,9 +54,6 @@ const MAX_TOLERATED_FAILED_PAGE_RATIO = 0.02;
  * carries. What documentation does not do is answer several different URLs with the same page.
  */
 const REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED = 3;
-
-/** Three of the detector's six indicators, its own bar for calling something a login page */
-const LOGIN_PAGE_CONFIDENCE = 0.5;
 
 /**
  * How many URLs one login page must have answered before "it was most of the crawl" means anything.
@@ -159,9 +156,10 @@ export class CrawleeCrawler extends BaseCrawler {
     try {
       observed = await page.evaluate(readLoginPageSignals);
       // Serializing the DOM of every page in a crawl is the expensive part, so it is skipped for
-      // pages showing no sign of a login at all. Both signals have to be generous, not decisive: an
-      // SSO page can be one branded button whose only real evidence is in the markup.
-      if (detectLoginPage(observed.text, '').reasons.length === 0 && !observed.hasPasswordInput) {
+      // pages showing no sign of a login at all. Never for the entry page, which is one page.content()
+      // per crawl: an SSO wall can be a branded button, with nothing in its text and its form in a
+      // frame, and the check this replaced always read the markup of the page it was given.
+      if (!isEntryPage && detectLoginPage(observed.text, '').confidence === 0 && !observed.hasPasswordInput) {
         return null;
       }
       detection = detectLoginPage(observed.text + (await page.content()), '');

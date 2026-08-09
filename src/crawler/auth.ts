@@ -4,7 +4,7 @@ import { mkdir, readFile, writeFile, access, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import defaultBrowser from 'default-browser';
 import { logger } from '../util/logger.js';
-import { LOGIN_SHELL_MAX_TEXT, readLoginPageSignals } from './login-page-signals.js';
+import { LOGIN_PAGE_CONFIDENCE, LOGIN_SHELL_MAX_TEXT, readLoginPageSignals } from './login-page-signals.js';
 import {
   encryptData,
   decryptData,
@@ -497,16 +497,17 @@ export class AuthManager {
       // documentation embeds identity providers all the time, in demos, sandboxes and support
       // widgets, and refusing a session here leaves the site uncrawlable.
       const isShellPage = signals.headings.length === 0 && signals.text.length < LOGIN_SHELL_MAX_TEXT;
+      const pageOrigin = new URL(finalUrl).origin;
       const embedsLoginFrame =
         isShellPage &&
         signals.frameSources.some((src) => {
           // Resolved against the page: a relative src is not a URL on its own, and a login served
           // from somewhere else entirely is someone else's login
           const frame = URL.parse(src, finalUrl);
-          return frame !== null && frame.origin === new URL(finalUrl).origin && isLoginPageUrl(frame.href);
+          return frame !== null && frame.origin === pageOrigin && isLoginPageUrl(frame.href);
         });
 
-      if ((loginDetection.isLoginPage && loginDetection.confidence >= 0.5) || embedsLoginFrame) {
+      if ((loginDetection.isLoginPage && loginDetection.confidence >= LOGIN_PAGE_CONFIDENCE) || embedsLoginFrame) {
         logger.warn(`[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`);
         logger.debug(`[AuthManager] Login detection reasons: ${loginDetection.reasons.join(', ')}`);
         await navigationMonitor.throwIfError();
