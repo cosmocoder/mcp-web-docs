@@ -201,6 +201,93 @@ describe('DocumentStore', () => {
       expect(await store.countDocumentPages('https://example.com/missing')).toBe(0);
     });
 
+    it('keeps the largest page count a document has held, not the most recent one', async () => {
+      const url = 'https://example.com/high-water';
+      await store.addDocument(createDocumentWithPages(url, 'Peak', ['/a', '/b', '/c', '/d']));
+      await store.addDocument(createDocumentWithPages(url, 'Smaller', ['/a', '/b', '/c']));
+
+      expect(await store.countDocumentPages(url)).toBe(3);
+      expect(await store.getPageHighWaterMark(url)).toBe(4);
+      expect(await store.getPageHighWaterMark('https://example.com/missing')).toBe(0);
+
+      // Also rises with a site that grows, or the check freezes at whatever the first crawl found
+      await store.addDocument(createDocumentWithPages(url, 'Grown', ['/a', '/b', '/c', '/d', '/e', '/f']));
+
+      expect(await store.getPageHighWaterMark(url)).toBe(6);
+    });
+
+    // Restarting on anything but a narrowing reopens the ratchet: the peak is discarded while the
+    // check still runs, so a crawl losing just under half passes at every step.
+    it.each([
+      { label: 'narrows', from: '/docs', to: '/docs/v2', expected: 3 },
+      { label: 'widens', from: '/docs/v2', to: '/docs', expected: 4 },
+      { label: 'is cleared', from: '/docs', to: undefined, expected: 4 },
+      { label: 'moves sideways', from: '/docs', to: '/guide', expected: 4 },
+      { label: 'is unchanged', from: '/docs', to: '/docs', expected: 4 },
+    ])('restarts the mark only when the crawl scope $label', async ({ from, to, expected }) => {
+      const url = 'https://example.com/rescoped';
+      const crawl = async (paths: string[], pathPrefix: string | undefined) => {
+        const document = createDocumentWithPages(url, 'Rescoped', paths);
+        document.metadata.pathPrefix = pathPrefix;
+        await store.addDocument(document);
+      };
+
+      await crawl(['/a', '/b', '/c', '/d'], from);
+      await crawl(['/a', '/b', '/c'], to);
+      // Smaller again under the new scope, so the mark and the live count differ - otherwise the
+      // narrowing case asserts a number the live count supplies whether the mark was written or not
+      await crawl(['/a'], to);
+
+      expect(await store.countDocumentPages(url)).toBe(1);
+      expect(await store.getPageHighWaterMark(url)).toBe(expected);
+    });
+
+    // Deferred, the mark's read would pin a WAL snapshot and this peer write to an unrelated
+    // document would break the publication - see BEGIN_WRITE_TRANSACTION.
+    it('holds the write lock across its own read, so a peer commit cannot break a publication', async () => {
+      const url = 'https://example.com/write-locked';
+
+      // busy_timeout 0 so a blocked peer fails at once rather than waiting: awaiting a peer that
+      // waits would deadlock against the very lock this asserts we hold
+      const peer = await open({ filename: join(tempDir, 'docs.db'), driver: sqlite3.Database });
+      await peer.exec('PRAGMA busy_timeout = 0;');
+      const sqliteDb = replacementInternals().sqliteDb!;
+      const get = sqliteDb.get.bind(sqliteDb);
+      let peerOutcome = 'not attempted';
+      vi.spyOn(sqliteDb, 'get').mockImplementation(async (sql, ...params) => {
+        const row = await get(sql, ...params);
+        if (peerOutcome === 'not attempted' && String(sql).includes('SELECT path_prefix, max_pages')) {
+          peerOutcome = await peer
+            .run('INSERT OR REPLACE INTO documents (url, title, last_indexed) VALUES (?, ?, ?)', [
+              'https://example.com/unrelated-peer',
+              'Peer',
+              new Date().toISOString(),
+            ])
+            .then(() => 'landed')
+            .catch((error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`);
+        }
+        return row;
+      });
+
+      try {
+        await store.addDocument(createDocumentWithPages(url, 'Published', ['/a', '/b']));
+      }
+      finally {
+        await peer.close();
+      }
+
+      expect(peerOutcome).toMatch(/^rejected: SQLITE_BUSY/);
+      expect(await store.countDocumentPages(url)).toBe(2);
+    });
+
+    it('falls back to the live count for a document stored before the mark existed', async () => {
+      const url = 'https://example.com/pre-migration';
+      await store.addDocument(createDocumentWithPages(url, 'Legacy', ['/a', '/b']));
+      await replacementInternals().sqliteDb!.run('UPDATE documents SET max_pages = NULL WHERE url = ?', [url]);
+
+      expect(await store.getPageHighWaterMark(url)).toBe(2);
+    });
+
     it('deletes and searches a document whose URL contains a backslash', async () => {
       const url = 'https://example.com/a?q=\\b';
       await store.addDocument(createDocumentWithContent(url, 'Backslash', 'backslash content'));
@@ -384,7 +471,7 @@ describe('DocumentStore', () => {
       let begins = 0;
 
       vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
-        if (String(sql) === 'BEGIN TRANSACTION') {
+        if (String(sql).startsWith('BEGIN')) {
           events.push(`begin:${++begins}`);
         }
         if (String(sql) === 'COMMIT') {
@@ -1161,7 +1248,7 @@ describe('DocumentStore', () => {
       const deleteReady = deferred();
       const deleteReleased = deferred();
       vi.spyOn(sqliteDb, 'run').mockImplementation(async (sql, ...params) => {
-        if (String(sql) === 'BEGIN TRANSACTION') {
+        if (String(sql).startsWith('BEGIN')) {
           deleteReady.resolve();
           await deleteReleased.promise;
         }

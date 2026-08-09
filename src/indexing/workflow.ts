@@ -12,23 +12,11 @@ import {
   StorageStateSchema,
   type ValidatedStorageState,
 } from '../util/security.js';
-import { isPathAllowed } from '../util/docs.js';
+import { narrowsCrawlScope } from '../util/docs.js';
 import { logger } from '../util/logger.js';
 import type { IndexingStatusTracker } from './status.js';
 
-/**
- * Whether a reindex deliberately restricted the crawl to a subset of what is already stored.
- * Only a narrower prefix explains a smaller result - widening or clearing one should return
- * more pages, which is exactly when the shrink check needs to stay on.
- */
-function narrowsCrawlScope(next: string | undefined, previous: string | undefined): boolean {
-  if (!next || next === previous) {
-    return false;
-  }
-  return !previous || isPathAllowed(next, previous);
-}
-
-type WorkflowStore = Pick<DocumentStore, 'addDocument' | 'countDocumentPages' | 'getDocument' | 'optimize'>;
+type WorkflowStore = Pick<DocumentStore, 'addDocument' | 'getDocument' | 'getPageHighWaterMark' | 'optimize'>;
 type WorkflowProcessor = Pick<WebDocumentProcessor, 'process'>;
 type WorkflowStatusTracker = Pick<
   IndexingStatusTracker,
@@ -249,16 +237,16 @@ export class IndexingWorkflow {
       // merges - so refuse to overwrite a document with a much smaller one. Count the pages
       // we are about to store, not the ones we crawled, so the two sides mean the same thing.
       if (existingDoc && !narrowsCrawlScope(pathPrefix, existingDoc.pathPrefix)) {
-        // A failed count must not discard a whole crawl, so treat it as no opinion
-        const existingPages = await store.countDocumentPages(url).catch((error: unknown) => {
-          logger.warn(`[IndexingWorkflow] Could not count stored pages for ${url}, skipping the shrink check:`, error);
+        // A failed read must not discard a whole crawl, so treat it as no opinion
+        const previousPages = await store.getPageHighWaterMark(url).catch((error: unknown) => {
+          logger.warn(`[IndexingWorkflow] Could not read the stored page count for ${url}, skipping the shrink check:`, error);
           return 0;
         });
         const storedPages = new Set(chunks.map((chunk) => chunk.path)).size;
-        if (storedPages * 2 <= existingPages) {
+        if (storedPages * 2 <= previousPages) {
           statusTracker.failIndexing(
             operationId,
-            `Reindex produced ${storedPages} pages but ${existingPages} are already stored, so the existing index was kept. ` +
+            `Reindex produced ${storedPages} pages but this document has held ${previousPages}, so the existing index was kept. ` +
               `Retry if the crawl was incomplete, or delete and re-add the document if the site really is smaller now`
           );
           return;
@@ -347,8 +335,13 @@ export class IndexingWorkflow {
         return;
       }
       catch (error) {
+        // SQLITE_BUSY means another process held the write lock past our timeout. Without it here a
+        // finished crawl is thrown away over a write that had nothing to do with this document.
         const isRetryable =
-          error instanceof Error && (error.message.includes('Commit conflict') || error.message.startsWith('Replacement lease lost for '));
+          error instanceof Error &&
+          (error.message.includes('Commit conflict') ||
+            error.message.startsWith('Replacement lease lost for ') ||
+            error.message.includes('SQLITE_BUSY'));
         if (isRetryable && attempt < maxRetries) {
           logger.warn(`[IndexingWorkflow] Storage conflict, retrying (${attempt}/${maxRetries})...`);
           await delay(1000 * attempt, undefined, { signal });

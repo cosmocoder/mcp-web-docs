@@ -52,3 +52,15 @@ export function isPathAllowed(pathname: string, prefix: string): boolean {
   const normalizedPrefix = prefix.replace(/\/$/, '');
   return pathname === normalizedPrefix || pathname.startsWith(normalizedPrefix + '/');
 }
+
+/**
+ * Whether a crawl deliberately restricted itself to a subset of a previous crawl's scope.
+ * Only a narrower prefix explains a smaller result - widening or clearing one should return more
+ * pages, and an unchanged one explains nothing at all.
+ */
+export function narrowsCrawlScope(next: string | undefined, previous: string | undefined): boolean {
+  if (!next || next === previous) {
+    return false;
+  }
+  return !previous || isPathAllowed(next, previous);
+}

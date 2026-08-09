@@ -18,11 +18,20 @@ import {
   SearchOptions,
 } from '../types.js';
 import { EmbeddingsProvider } from '../embeddings/types.js';
+import { narrowsCrawlScope } from '../util/docs.js';
 import { logger } from '../util/logger.js';
 import { escapeFilterValue, escapeLikeLiteral } from '../util/security.js';
 
 type LanceDBConnection = Awaited<ReturnType<typeof lancedb.connect>>;
 type LanceDBTable = Awaited<ReturnType<LanceDBConnection['openTable']>>;
+
+/**
+ * Deferred is the trap: a transaction that opens with a read pins a WAL snapshot, and its upgrade to
+ * a write then fails with SQLITE_BUSY at once, without waiting out busy_timeout - discarding work a
+ * wait would have saved. Every transaction here uses this, including those that write first and
+ * cannot hit that, because a mode chosen per site has to be re-derived at every new one.
+ */
+const BEGIN_WRITE_TRANSACTION = 'BEGIN IMMEDIATE TRANSACTION';
 
 type LanceDbRow = {
   generation: string;
@@ -458,6 +467,13 @@ export class DocumentStore {
         ALTER TABLE documents ADD COLUMN path_prefix TEXT;
       `,
     },
+    {
+      version: 7,
+      description: 'Persist the largest page count each document has held',
+      sql: `
+        ALTER TABLE documents ADD COLUMN max_pages INTEGER;
+      `,
+    },
   ];
 
   /**
@@ -584,10 +600,10 @@ export class DocumentStore {
       await stopHeartbeat();
       await this.renewReplacementLease(preparedJournal);
 
-      await sqliteDb.run('BEGIN TRANSACTION');
+      await sqliteDb.run(BEGIN_WRITE_TRANSACTION);
       transactionStarted = true;
       signal?.throwIfAborted();
-      await this.upsertMetadata(doc.metadata);
+      await this.upsertMetadata(doc.metadata, new Set(doc.chunks.map((chunk) => chunk.path)).size);
       if (tags !== undefined) {
         await this.replaceDocumentTags(url, tags);
       }
@@ -790,14 +806,29 @@ export class DocumentStore {
     }));
   }
 
-  private async upsertMetadata(metadata: ProcessedDocument['metadata']): Promise<void> {
+  /**
+   * Also records the largest page count this document has held, which only a narrower crawl scope
+   * restarts: a wider one covers everything the mark was measured over and more.
+   */
+  private async upsertMetadata(metadata: ProcessedDocument['metadata'], pageCount: number): Promise<void> {
     if (!this.sqliteDb) {
       throw new Error('Storage not initialized');
     }
 
+    const pathPrefix = metadata.pathPrefix ?? null;
+    // Read on the write connection, inside the publication transaction, so no concurrent
+    // publication can land between the read and the write
+    const previous = await this.sqliteDb.get<{ path_prefix: string | null; max_pages: number | null }>(
+      'SELECT path_prefix, max_pages FROM documents WHERE url = ?',
+      [metadata.url]
+    );
+    const maxPages = narrowsCrawlScope(pathPrefix ?? undefined, previous?.path_prefix ?? undefined)
+      ? pageCount
+      : Math.max(previous?.max_pages ?? 0, pageCount);
+
     await this.sqliteDb.run(
-      `INSERT INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO documents (url, title, favicon, last_indexed, requires_auth, auth_domain, version, path_prefix, max_pages)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(url) DO UPDATE SET
          title = excluded.title,
          favicon = excluded.favicon,
@@ -805,7 +836,8 @@ export class DocumentStore {
          requires_auth = excluded.requires_auth,
          auth_domain = excluded.auth_domain,
          version = excluded.version,
-         path_prefix = excluded.path_prefix`,
+         path_prefix = excluded.path_prefix,
+         max_pages = excluded.max_pages`,
       [
         metadata.url,
         metadata.title,
@@ -814,7 +846,8 @@ export class DocumentStore {
         metadata.requiresAuth ? 1 : 0,
         metadata.authDomain ?? null,
         metadata.version ?? null,
-        metadata.pathPrefix ?? null,
+        pathPrefix,
+        maxPages,
       ]
     );
   }
@@ -1466,7 +1499,7 @@ export class DocumentStore {
     try {
       const preparedJournal = await this.captureCleanupGenerations(lease);
       await this.renewReplacementLease(preparedJournal);
-      await sqliteDb.run('BEGIN TRANSACTION');
+      await sqliteDb.run(BEGIN_WRITE_TRANSACTION);
       transactionStarted = true;
 
       // Delete tags first (in case foreign key cascade isn't enabled)
@@ -1536,6 +1569,22 @@ export class DocumentStore {
       .select(['path'])
       .toArray();
     return new Set(rows.map((row) => String(row.path))).size;
+  }
+
+  /**
+   * The largest page count this document has held under its current crawl scope. The shrink check
+   * compares against this rather than the live count, because against the live count a run of
+   * reindexes that each lose just under half walks the index down with every step passing.
+   * The live count is the floor, so a document last written before the mark existed, or one whose
+   * SQLite mark is behind the pages LanceDB is serving, is still checked against something real.
+   */
+  async getPageHighWaterMark(url: string): Promise<number> {
+    if (!this.sqliteReadDb) {
+      throw new Error('Storage not initialized');
+    }
+
+    const row = await this.sqliteReadDb.get<{ max_pages: number | null }>('SELECT max_pages FROM documents WHERE url = ?', [url]);
+    return Math.max(await this.countDocumentPages(url), row?.max_pages ?? 0);
   }
 
   async getDocument(url: string): Promise<DocumentMetadata | null> {
@@ -1636,7 +1685,7 @@ export class DocumentStore {
     logger.debug(`[DocumentStore] Setting tags for ${url}:`, tags);
 
     try {
-      await this.sqliteDb.run('BEGIN TRANSACTION');
+      await this.sqliteDb.run(BEGIN_WRITE_TRANSACTION);
 
       // Verify the document exists inside the transaction to prevent race conditions
       const row = await this.sqliteDb.get<{ url: string }>('SELECT url FROM documents WHERE url = ?', [url]);
@@ -1844,7 +1893,7 @@ export class DocumentStore {
           throw new Error(`Collection "${newNormalizedName}" already exists`);
         }
 
-        await this.sqliteDb.run('BEGIN TRANSACTION');
+        await this.sqliteDb.run(BEGIN_WRITE_TRANSACTION);
 
         // Create collection with new name
         const newDescription = updates.description ?? existing.description;
@@ -2048,7 +2097,7 @@ export class DocumentStore {
     const notFound: string[] = [];
     const alreadyInCollection: string[] = [];
 
-    await this.sqliteDb.run('BEGIN TRANSACTION');
+    await this.sqliteDb.run(BEGIN_WRITE_TRANSACTION);
 
     try {
       for (const url of urls) {
@@ -2131,7 +2180,7 @@ export class DocumentStore {
     const removed: string[] = [];
     const notInCollection: string[] = [];
 
-    await this.sqliteDb.run('BEGIN TRANSACTION');
+    await this.sqliteDb.run(BEGIN_WRITE_TRANSACTION);
 
     try {
       for (const url of urls) {
