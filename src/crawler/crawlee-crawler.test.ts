@@ -1,5 +1,5 @@
 import type { CrawlResult } from '../types.js';
-import type { ValidatedStorageState } from '../util/security.js';
+import { SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
 
 const mockQueueManager = {
   initialize: vi.fn().mockResolvedValue(undefined),
@@ -69,6 +69,7 @@ vi.mock('crawlee', () => ({
 // Import after mocking
 import { logger } from '../util/logger.js';
 import { CrawleeCrawler } from './crawlee-crawler.js';
+import { readLoginPageSignals } from './login-page-signals.js';
 
 type RequestHandler = (context: Record<string, unknown>) => Promise<void>;
 type ErrorHandler = (context: Record<string, unknown>, error: Error) => Promise<void>;
@@ -510,6 +511,228 @@ describe('CrawleeCrawler', () => {
       await collect(crawler, 'https://example.com/docs');
 
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    });
+  });
+
+  describe('session expiry', () => {
+    // Four indicators of the detector's six, so it clears the confidence bar on content alone
+    const LOGIN_BODY = 'Sign in with your username and password. Forgot password?';
+
+    // The other evaluate calls in the navigation path ask yes/no questions and must keep getting a
+    // boolean. Shape is stated rather than derived from the prose, as the browser would report it.
+    type PageSpec = { url: string; bodyText: string; html?: string; headings?: string[]; asksForPassword?: boolean };
+
+    function authenticatedPage({ url, bodyText, html = '', headings = [], asksForPassword = false }: PageSpec) {
+      const { page } = navigationPage(
+        url,
+        () => {},
+        vi.fn(async (fn: unknown) =>
+          fn === readLoginPageSignals
+            ? ({
+                text: bodyText,
+                hasPasswordInput: asksForPassword || html.includes('type="password"'),
+                headings,
+                frameSources: [],
+              } satisfies ReturnType<typeof readLoginPageSignals>)
+            : false
+        )
+      );
+      return Object.assign(page, { content: vi.fn().mockResolvedValue(`<html><body>${bodyText}${html}</body></html>`) });
+    }
+
+    // The check only runs on a crawl that authenticated, so every case here starts from one
+    beforeEach(() => {
+      crawler.setStorageState({ cookies: [{ name: 'auth', value: 'token', domain: 'example.com', path: '/' }] });
+    });
+
+    async function crawlPages(pages: PageSpec[], entry = 'https://example.com/docs'): Promise<void> {
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        for (const spec of pages) {
+          await runRequestHandler(authenticatedPage(spec), spec.url);
+        }
+        return successfulRunStats;
+      });
+      await collect(crawler, entry);
+    }
+
+    const docsPage = (n: number): PageSpec => ({
+      url: `https://example.com/docs/${n}`,
+      bodyText: `Ordinary content about topic ${n}`,
+      headings: [`Topic ${n}`],
+    });
+    // One login page, whatever URL it was asked for
+    const loginPage = (n: number): PageSpec => ({
+      url: `https://example.com/docs/${n}`,
+      bodyText: LOGIN_BODY,
+      headings: ['Sign in'],
+      asksForPassword: true,
+    });
+
+    it('fails the crawl when the first page is a login page', async () => {
+      await expect(crawlPages([{ url: 'https://example.com/docs', bodyText: LOGIN_BODY }])).rejects.toThrow(SessionExpiredError);
+    });
+
+    // A URL match is worth three of the detector's six indicators, so scoring the URL would make
+    // every page of this host a login page and no authenticated crawl of it possible. The wording
+    // has to reach the scored line - one indicator, which is past the cost gate and short of the
+    // confidence bar - and one page has to be the entry page, where a login page fails at once.
+    it('crawls a documentation site hosted on an auth subdomain', async () => {
+      const pages = ['', '/install', '/usage'].map((slug) => ({
+        url: `https://auth.example.com/docs${slug}`,
+        bodyText: `Signing in is covered elsewhere. This page is about ${slug || 'the basics'}.`,
+      }));
+
+      await expect(crawlPages(pages, 'https://auth.example.com/docs')).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(3);
+    });
+
+    // Same outcome whichever order they finish in, which "in a row" could never give
+    it.each([
+      ['one login page answers several URLs', [docsPage(1), loginPage(2), loginPage(3), loginPage(4)]],
+      ['real pages are interleaved with it', [docsPage(1), loginPage(2), docsPage(3), loginPage(4), docsPage(5), loginPage(6)]],
+    ])('fails the crawl when %s', async (_label, pages) => {
+      await expect(crawlPages(pages)).rejects.toThrow(/one login page answered 3 different URLs/i);
+    });
+
+    // Too short for any one login page to come back three times, but they were still most of it
+    it('fails a short crawl that was mostly one login page', async () => {
+      await expect(crawlPages([docsPage(1), loginPage(2), loginPage(3)])).rejects.toThrow(/answered 2 of 3 URLs/i);
+    });
+
+    // Two indicators is the detector's bar but half of ours, or any page mentioning a username counts
+    it('ignores pages that only just trip the detector', async () => {
+      const pages = [1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: 'Log in with your username.' }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).resolves.toBeUndefined();
+    });
+
+    // Too small a share of the crawl for the after-the-fact rule; only the repeat count catches it
+    it('fails a long crawl where the session died near the end', async () => {
+      const tail = [1, 2, 3].map((n) => ({ ...loginPage(n), url: `https://example.com/docs/late-${n}` }));
+
+      await expect(crawlPages([...[1, 2, 3, 4, 5, 6, 7, 8].map(docsPage), ...tail])).rejects.toThrow(
+        /one login page answered 3 different URLs/i
+      );
+    });
+
+    // One branded button, with the only real evidence in the markup
+    it.each([
+      ['a branded SSO button', 'Continue with SSO', '<form action="/login"><input type="password" name="p"></form>'],
+      ['an almost wordless login shell', 'Continue', '<iframe src="/idp"></iframe><input type="password">'],
+    ])('detects %s', async (_label, bodyText, html) => {
+      const pages = [1, 2, 3].map((n) => ({ url: `https://example.com/docs/${n}`, bodyText, html }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).rejects.toThrow(SessionExpiredError);
+    });
+
+    // One page is documentation about signing in; the rule needs a page that came back
+    it('keeps crawling a two-page site whose second page is about signing in', async () => {
+      await expect(crawlPages([docsPage(1), { ...loginPage(2), url: 'https://example.com/docs/auth' }])).resolves.toBeUndefined();
+    });
+
+    // Exactly half, which "most of the crawl" has to include - otherwise a session dying at the
+    // midpoint of a short crawl passes
+    it('fails a crawl that was exactly half one login page', async () => {
+      await expect(crawlPages([docsPage(1), loginPage(2), docsPage(3), loginPage(4)])).rejects.toThrow(/answered 2 of 4 URLs/i);
+    });
+
+    // By arrival order, one ordinary page reading as a login page would fail the crawl on its own,
+    // with none of the repetition the rule is built on
+    it('does not treat whichever page finishes first as the entry page', async () => {
+      await expect(
+        crawlPages([
+          { url: 'https://example.com/docs/signing-in', bodyText: LOGIN_BODY },
+          { url: 'https://example.com/docs', bodyText: 'Ordinary content on the page the crawl asked for' },
+        ])
+      ).resolves.toBeUndefined();
+    });
+
+    // A login page's wording varies per request - a return parameter, a csrf token, an attempt
+    // counter - so the identity cannot rest on it. The form it puts in front of you does not vary.
+    it('fails the crawl when the login page varies by the text it carries', async () => {
+      const pages = [1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: `${LOGIN_BODY} next=%2Fdocs%2F${n} token=a${n}f9c${n}` }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).rejects.toThrow(/one login page answered 3 different URLs/i);
+    });
+
+    it('does not serialize the markup of a page with no sign of a login', async () => {
+      const ordinary = authenticatedPage(docsPage(1));
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(ordinary, docsPage(1).url);
+        return successfulRunStats;
+      });
+
+      await collect(crawler, 'https://example.com/docs');
+
+      expect(ordinary.content).not.toHaveBeenCalled();
+    });
+
+    // Shape alone cannot tell pages apart, so it never counts on its own
+    it.each([
+      ['a theme that renders no headings', [1, 2, 3].map((n) => ({ ...docsPage(n), headings: [] }))],
+      [
+        'a reference template with fixed headings',
+        [1, 2, 3].map((n) => ({ ...docsPage(n), headings: ['Authentication', 'Request', 'Response'] })),
+      ],
+    ])('keeps crawling documentation pages that share %s', async (_label, pages) => {
+      const aboutSigningIn = pages.map((page) => ({ ...page, bodyText: LOGIN_BODY }));
+
+      await expect(crawlPages([docsPage(0), ...aboutSigningIn])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
+    });
+
+    // A sign-in box in the page furniture. What still differs is what each page is about.
+    it('keeps crawling a site whose every page carries a sign-in box', async () => {
+      const pages = [1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: `${LOGIN_BODY} Topic ${n}`, headings: [`Topic ${n}`] }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
+    });
+
+    // A sign-in box and no headings: neither half is enough to call these one page
+    it('keeps crawling a heading-less site whose every page carries a sign-in box', async () => {
+      const pages = [1, 2, 3].map((n) => ({
+        ...loginPage(n),
+        bodyText: `${LOGIN_BODY} ${'Ordinary content about topic '.repeat(8)}${n}`,
+        headings: [],
+      }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
+    });
+
+    // The heading of a login page names where it is sending you back to
+    it('fails the crawl when the login page heading names the URL it turned away', async () => {
+      const pages = [1, 2, 3].map((n) => ({
+        ...loginPage(n),
+        headings: [`Sign in to continue to /docs/${n}`],
+      }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).rejects.toThrow(/one login page answered 3 different URLs/i);
+    });
+
+    // At two, a site with two pages about signing in fails a crawl that is otherwise fine
+    it('keeps crawling when one login page has only answered twice', async () => {
+      await expect(crawlPages([...[1, 2, 3, 4, 5, 6].map(docsPage), loginPage(7), loginPage(8)])).resolves.toBeUndefined();
+    });
+
+    // Nothing in its text and no password field in the page, so the markup is the only evidence -
+    // and reading the markup is what the crawl skips for a page showing no sign of a login
+    it('fails the crawl when the entry page is a wordless login wall', async () => {
+      const wall = {
+        url: 'https://example.com/docs',
+        bodyText: 'Redirecting',
+        html: '<form action="/login"><input name="username"><img alt="Continue with Okta"></form>',
+      };
+
+      await expect(crawlPages([wall])).rejects.toThrow(SessionExpiredError);
+    });
+
+    // The beforeEach above authenticated, and this crawl must not have
+    it('does not check for login pages when the crawl never authenticated', async () => {
+      crawler = new CrawleeCrawler();
+
+      await expect(crawlPages([loginPage(1), loginPage(2), loginPage(3)])).resolves.toBeUndefined();
     });
   });
 

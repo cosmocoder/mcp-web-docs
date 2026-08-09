@@ -1,4 +1,5 @@
 import { lookup } from 'node:dns/promises';
+import { readLoginPageSignals } from './login-page-signals.js';
 
 import { encryptData } from '../util/security.js';
 import { detectDefaultBrowser, AuthManager } from './auth.js';
@@ -73,13 +74,25 @@ function mockStoredSession(cookies: Cookie[], domain = 'example.com') {
   );
 }
 
-function setupBrowserMock(options: { status?: number; blocked?: boolean; url?: string; content?: string; bodyText?: string } = {}) {
+function setupBrowserMock(
+  options: {
+    status?: number;
+    blocked?: boolean;
+    url?: string;
+    content?: string;
+    bodyText?: string;
+    iframes?: string[];
+    headings?: string[];
+  } = {}
+) {
   const {
     status = 200,
     blocked = false,
     url = 'https://example.com',
     content = '<html><body>Welcome!</body></html>',
     bodyText = 'Welcome to the site',
+    iframes = [],
+    headings = [],
   } = options;
   const mainFrame = {};
   const responseListeners = new Set<(response: Record<string, unknown>) => void>();
@@ -95,7 +108,16 @@ function setupBrowserMock(options: { status?: number; blocked?: boolean; url?: s
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
     waitForURL: vi.fn().mockResolvedValue(undefined),
     content: vi.fn().mockResolvedValue(content),
-    evaluate: vi.fn().mockResolvedValue(bodyText),
+    evaluate: vi.fn(async (fn: unknown) =>
+      fn === readLoginPageSignals
+        ? ({
+            text: bodyText,
+            hasPasswordInput: content.includes('type="password"'),
+            headings,
+            frameSources: iframes,
+          } satisfies ReturnType<typeof readLoginPageSignals>)
+        : bodyText
+    ),
     close: vi.fn().mockResolvedValue(undefined),
     mainFrame: vi.fn().mockReturnValue(mainFrame),
     on: vi.fn((event: string, listener: (response: Record<string, unknown>) => void) => {
@@ -580,6 +602,100 @@ describe('Auth Module', () => {
       beforeEach(() => {
         // All browser validation tests need a session with non-expiring cookies
         mockStoredSession([createCookie()]);
+      });
+
+      // Withholding the URL costs us the login page that keeps its evidence out of reach: the outer
+      // page is a shell and the form lives in a frame. A relative src is the common form and is not
+      // a URL on its own, so it has to be resolved against the page.
+      it.each([
+        ['an absolute src', 'https://example.com/sso/login'],
+        ['a relative src', '/sso/login'],
+      ])('detects a login hosted in an iframe with %s', async (_label, src) => {
+        setupBrowserMock({
+          url: 'https://example.com/portal',
+          content: `<html><body><iframe src="${src}"></iframe></body></html>`,
+          bodyText: 'Continue',
+          iframes: [src],
+        });
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain('Login page detected');
+      });
+
+      // A frame with no src resolves to the page's own URL, which would score the very URL this
+      // check deliberately withholds
+      it('ignores a frame with no source', async () => {
+        setupBrowserMock({
+          url: 'https://example.com/docs/oauth/getting-started',
+          content: '<html><body><iframe></iframe></body></html>',
+          bodyText: 'Continue',
+          iframes: [],
+        });
+
+        await expect(authManager.validateSession('https://example.com')).resolves.toMatchObject({ isValid: true });
+      });
+
+      // A login served from somewhere else entirely is someone else's login
+      it('ignores a login frame from another origin', async () => {
+        setupBrowserMock({
+          url: 'https://example.com/portal',
+          content: '<html><body><iframe src="https://idp.vendor.example/login"></iframe></body></html>',
+          bodyText: 'Continue',
+          iframes: ['https://idp.vendor.example/login'],
+        });
+
+        await expect(authManager.validateSession('https://example.com')).resolves.toMatchObject({ isValid: true });
+      });
+
+      // A page with a heading is a page, not a shell, however little text it carries
+      it('keeps a session valid for a short page that embeds a sandbox', async () => {
+        setupBrowserMock({
+          url: 'https://example.com/docs/try-it',
+          content: '<html><body><h1>Try it</h1><iframe src="/sandbox/oauth-playground"></iframe></body></html>',
+          bodyText: 'Try it',
+          headings: ['Try it'],
+          iframes: ['/sandbox/oauth-playground'],
+        });
+
+        await expect(authManager.validateSession('https://example.com')).resolves.toMatchObject({ isValid: true });
+      });
+
+      // This gates the crawl, so one embedded demo would make a site uncrawlable - and identity
+      // providers document themselves
+      it.each([
+        ['a vendor widget demo', 'https://cdn.auth0.com/blog/embedded-demo.html'],
+        ['an OAuth playground', 'https://example.com/sandbox/oauth-playground'],
+      ])('keeps a session valid for documentation embedding %s', async (_label, src) => {
+        setupBrowserMock({
+          url: 'https://example.com/docs/embedding',
+          content: `<html><body><iframe src="${src}"></iframe></body></html>`,
+          bodyText:
+            'Embedding the widget. This guide walks through adding it to your own application, configuring the ' +
+            'redirect, and handling the callback once the user returns to your site. It assumes you have already ' +
+            'created a tenant and know which domain you will serve the application from.',
+          iframes: [src],
+        });
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(true);
+      });
+
+      // A URL match is worth three of the detector's six indicators, on its own enough to call a
+      // page a login page. Scoring the URL here would refuse every session for a site whose
+      // documentation lives under /auth, /oauth or /sso, or on a host like auth.example.com.
+      it.each([
+        ['a path that reads as authentication', 'https://example.com/docs/oauth/getting-started'],
+        ['a host that reads as authentication', 'https://auth.example.com/docs/getting-started'],
+      ])('keeps a session valid for documentation served from %s', async (_label, url) => {
+        const bodyText = 'How to configure your integration. See the guide for details.';
+        setupBrowserMock({ url, content: `<html><body>${bodyText}</body></html>`, bodyText });
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(true);
       });
 
       it.each([

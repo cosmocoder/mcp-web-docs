@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile, access, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import defaultBrowser from 'default-browser';
 import { logger } from '../util/logger.js';
+import { LOGIN_PAGE_CONFIDENCE, LOGIN_SHELL_MAX_TEXT, readLoginPageSignals } from './login-page-signals.js';
 import {
   encryptData,
   decryptData,
@@ -487,10 +488,25 @@ export class AuthManager {
 
       // Check 3: Does the page content look like a login page?
       const pageContent = await page.content();
-      const bodyText = await page.evaluate(() => document.body?.textContent || '');
-      const loginDetection = detectLoginPage(bodyText + pageContent, finalUrl);
+      const signals = await page.evaluate(readLoginPageSignals);
+      // Content alone, for the reason checkForLoginPage gives: passing finalUrl would refuse every
+      // /oauth or /sso documentation URL
+      const loginDetection = detectLoginPage(signals.text + pageContent, '');
+      // A login hosted in a frame leaves almost nothing to score on the page around it. Only counted
+      // for a page that is nothing else: documentation embeds identity providers all the time, in
+      // demos and support widgets, and refusing a session here leaves the site uncrawlable.
+      const isShellPage = signals.headings.length === 0 && signals.text.length < LOGIN_SHELL_MAX_TEXT;
+      const pageOrigin = new URL(finalUrl).origin;
+      const embedsLoginFrame =
+        isShellPage &&
+        signals.frameSources.some((src) => {
+          // Resolved against the page: a relative src is not a URL on its own, and a login served
+          // from somewhere else entirely is someone else's login
+          const frame = URL.parse(src, finalUrl);
+          return frame !== null && frame.origin === pageOrigin && isLoginPageUrl(frame.href);
+        });
 
-      if (loginDetection.isLoginPage && loginDetection.confidence >= 0.5) {
+      if (loginDetection.confidence >= LOGIN_PAGE_CONFIDENCE || embedsLoginFrame) {
         logger.warn(`[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`);
         logger.debug(`[AuthManager] Login detection reasons: ${loginDetection.reasons.join(', ')}`);
         await navigationMonitor.throwIfError();
