@@ -73,13 +73,16 @@ function mockStoredSession(cookies: Cookie[], domain = 'example.com') {
   );
 }
 
-function setupBrowserMock(options: { status?: number; blocked?: boolean; url?: string; content?: string; bodyText?: string } = {}) {
+function setupBrowserMock(
+  options: { status?: number; blocked?: boolean; url?: string; content?: string; bodyText?: string; iframes?: string[] } = {}
+) {
   const {
     status = 200,
     blocked = false,
     url = 'https://example.com',
     content = '<html><body>Welcome!</body></html>',
     bodyText = 'Welcome to the site',
+    iframes = [],
   } = options;
   const mainFrame = {};
   const responseListeners = new Set<(response: Record<string, unknown>) => void>();
@@ -95,7 +98,7 @@ function setupBrowserMock(options: { status?: number; blocked?: boolean; url?: s
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
     waitForURL: vi.fn().mockResolvedValue(undefined),
     content: vi.fn().mockResolvedValue(content),
-    evaluate: vi.fn().mockResolvedValue(bodyText),
+    evaluate: vi.fn(async (fn: unknown) => (String(fn).includes('iframe') ? iframes : bodyText)),
     close: vi.fn().mockResolvedValue(undefined),
     mainFrame: vi.fn().mockReturnValue(mainFrame),
     on: vi.fn((event: string, listener: (response: Record<string, unknown>) => void) => {
@@ -585,6 +588,22 @@ describe('Auth Module', () => {
       // A URL match is worth three of the detector's six indicators, on its own enough to call a
       // page a login page. Scoring the URL here would refuse every session for a site whose
       // documentation lives under /auth, /oauth or /sso, or on a host like auth.example.com.
+      // Withholding the URL costs us the login page that keeps its evidence out of reach: the outer
+      // page is a shell, and the sign-in form lives in a frame we cannot read
+      it('detects a login hosted in an iframe', async () => {
+        setupBrowserMock({
+          url: 'https://example.com/portal',
+          content: '<html><body><iframe src="https://example.com/sso/login"></iframe></body></html>',
+          bodyText: 'Continue',
+          iframes: ['https://example.com/sso/login'],
+        });
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(false);
+        expect(result.reason).toContain('Login page detected');
+      });
+
       it.each([
         ['a path that reads as authentication', 'https://example.com/docs/oauth/getting-started'],
         ['a host that reads as authentication', 'https://auth.example.com/docs/getting-started'],

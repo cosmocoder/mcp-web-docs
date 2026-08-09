@@ -491,8 +491,14 @@ export class AuthManager {
       // Scored on content alone: a URL match is worth three of the detector's six indicators, so
       // passing finalUrl would call every /oauth, /sso or /auth documentation URL an expired session
       const loginDetection = detectLoginPage(bodyText + pageContent, '');
+      // A login hosted in an iframe leaves almost nothing to score on the page around it, which is
+      // what withholding the URL above costs us. The frame's own address is evidence the outer
+      // page's wording is not: documentation does not embed a sign-in page.
+      const embedsLoginFrame = await page.evaluate(() =>
+        [...document.querySelectorAll('iframe')].map((frame) => frame.getAttribute('src') || '')
+      );
 
-      if (loginDetection.isLoginPage && loginDetection.confidence >= 0.5) {
+      if ((loginDetection.isLoginPage && loginDetection.confidence >= 0.5) || embedsLoginFrame.some(isLoginPageUrl)) {
         logger.warn(`[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`);
         logger.debug(`[AuthManager] Login detection reasons: ${loginDetection.reasons.join(', ')}`);
         await navigationMonitor.throwIfError();

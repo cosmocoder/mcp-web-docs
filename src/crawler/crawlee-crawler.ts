@@ -64,6 +64,31 @@ const LOGIN_PAGE_CONFIDENCE = 0.5;
  */
 const MIN_REPEATS_FOR_MOSTLY_LOGIN_PAGES = 2;
 
+/**
+ * Read in the page, so it must not reference anything outside itself. Reports what the page is
+ * rather than only what it says: a login page keeps its shape across requests even when its wording
+ * carries a token, a counter or the address it turned away, and two documentation pages differ in
+ * shape even when both are about signing in.
+ */
+export function readLoginPageSignals(): {
+  text: string;
+  hasPasswordInput: boolean;
+  headings: string[];
+  forms: string[];
+  fields: string[];
+} {
+  const collapse = (value: string) => value.replace(/\s+/g, ' ').trim();
+  return {
+    text: collapse(document.body?.textContent || ''),
+    hasPasswordInput: document.querySelector('input[type="password"]') !== null,
+    headings: [...document.querySelectorAll('h1, h2')].slice(0, 5).map((heading) => collapse(heading.textContent || '')),
+    forms: [...document.querySelectorAll('form')].map((form) => (form.getAttribute('action') || '').split('?')[0]),
+    fields: [...document.querySelectorAll('input, select, textarea')].map(
+      (field) => `${field.getAttribute('name') || ''}:${field.getAttribute('type') || ''}`
+    ),
+  };
+}
+
 interface NavigationAttempt {
   failedUrl?: string;
   outboundFailure?: BlockedOutboundRequestError | OutboundRequestFailedError;
@@ -153,20 +178,18 @@ export class CrawleeCrawler extends BaseCrawler {
    * would score as a login page, as would every page on a host like auth.example.com.
    */
   private async checkForLoginPage(page: Page, isEntryPage: boolean): Promise<SessionExpiredError | null> {
-    let bodyText;
+    this.pagesChecked++;
+    let observed;
     let detection;
     try {
-      bodyText = await page.evaluate(() => document.body?.textContent || '');
+      observed = await page.evaluate(readLoginPageSignals);
       // Serializing the DOM of every page in a crawl is the expensive part, so it is skipped for
-      // pages showing no sign of a login at all. The two cheap signals have to be generous, not
-      // decisive: an SSO page can be one branded button whose only real evidence is in the markup.
-      const worthReading =
-        detectLoginPage(bodyText, '').reasons.length > 0 ||
-        (await page.evaluate(() => document.querySelector('input[type="password"]') !== null));
-      if (!worthReading) {
+      // pages showing no sign of a login at all. Both signals have to be generous, not decisive: an
+      // SSO page can be one branded button whose only real evidence is in the markup.
+      if (detectLoginPage(observed.text, '').reasons.length === 0 && !observed.hasPasswordInput) {
         return null;
       }
-      detection = detectLoginPage(bodyText + (await page.content()), '');
+      detection = detectLoginPage(observed.text + (await page.content()), '');
     }
     catch (error) {
       logger.debug(`[CrawleeCrawler] Error checking for login page:`, error);
@@ -190,7 +213,9 @@ export class CrawleeCrawler extends BaseCrawler {
 
     // Counted per distinct page rather than in a row: handlers run concurrently, so "in a row"
     // would mean "in the order five lanes happened to finish"
-    const fingerprint = this.loginPageFingerprint(bodyText, page.url());
+    const fingerprint = createHash('sha1')
+      .update(JSON.stringify([observed.headings, observed.forms, observed.fields]))
+      .digest('hex');
     const timesServed = (this.loginPageCounts.get(fingerprint) ?? 0) + 1;
     this.loginPageCounts.set(fingerprint, timesServed);
     if (timesServed < REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED) {
@@ -204,21 +229,6 @@ export class CrawleeCrawler extends BaseCrawler {
       page.url(),
       detection
     );
-  }
-
-  /**
-   * Identifies the page behind the text, so the same login page answering different URLs is counted
-   * as one. Only this page's own address is removed - a login page often names the URL it turned
-   * away ("sign in to continue to /docs/42"). Stripping every path and number instead would fold
-   * genuinely different documentation together: one API reference template describing three
-   * endpoints, or the same page across three versions, would all become one page.
-   */
-  private loginPageFingerprint(bodyText: string, currentUrl: string): string {
-    let withoutOwnUrl = bodyText.replace(/\s+/g, ' ');
-    for (const address of new Set([currentUrl, new URL(currentUrl).pathname, this.expectedUrl])) {
-      withoutOwnUrl = withoutOwnUrl.split(address).join('');
-    }
-    return createHash('sha1').update(withoutOwnUrl.trim()).digest('hex');
   }
 
   /**
@@ -620,7 +630,7 @@ export class CrawleeCrawler extends BaseCrawler {
           const actualUrl = page.url();
           // The request the crawl was asked for, not whichever handler happens to run first: five
           // run at once, so a mutable "have we done one yet" flag is true for several of them
-          const isEntryPage = normalizeQueuedUrl(request.url) === normalizeQueuedUrl(this.expectedUrl);
+          const isEntryPage = normalizeQueuedUrl(request.url) === this.expectedUrl;
 
           // Check if the page redirected outside the allowed domain
           if (!this.isWithinAllowedDomain(actualUrl)) {
@@ -661,12 +671,9 @@ export class CrawleeCrawler extends BaseCrawler {
           }
 
           if (this.storageState) {
-            this.pagesChecked++;
-            // Kept if already set: later handlers are still in flight after abort(), so the message
-            // would otherwise report whichever count finished last
             const expired = await this.checkForLoginPage(page, isEntryPage);
             if (expired) {
-              this.sessionExpiredError ??= expired;
+              this.sessionExpiredError = expired;
               log.error('Session appears expired - the crawl is being served login pages. Aborting crawl.');
               this.abort();
               return;

@@ -517,21 +517,26 @@ describe('CrawleeCrawler', () => {
     // Four indicators of the detector's six, so it clears the confidence bar on content alone
     const LOGIN_BODY = 'Sign in with your username and password. Forgot password?';
 
-    // The body-text read is how checkForLoginPage sees the page; the other evaluate calls in the
-    // navigation path ask yes/no questions and must keep getting a boolean
-    function authenticatedPage(url: string, bodyText: string, html = '') {
+    // One evaluate now returns the text, the password probe and the page's shape; the other
+    // evaluate calls in the navigation path ask yes/no questions and must keep getting a boolean.
+    // Shape is what the browser would report, so tests state it rather than deriving it from prose.
+    type PageSpec = { url: string; bodyText: string; html?: string; headings?: string[]; forms?: string[]; fields?: string[] };
+
+    function authenticatedPage({ url, bodyText, html = '', headings = [], forms = [], fields = [] }: PageSpec) {
       const { page } = navigationPage(
         url,
         () => {},
-        vi.fn(async (fn: unknown) => {
-          const source = String(fn);
-          if (source.includes('textContent')) {
-            return bodyText;
-          }
-          // the password-input probe, which decides whether the markup is worth reading. Matched on
-          // querySelector, not on the selector itself: the transpiler rewrites its quotes.
-          return source.includes('querySelector') ? html.includes('type="password"') : false;
-        })
+        vi.fn(async (fn: unknown) =>
+          String(fn).includes('hasPasswordInput')
+            ? {
+                text: bodyText,
+                hasPasswordInput: html.includes('type="password"') || fields.some((field) => field.endsWith(':password')),
+                headings,
+                forms,
+                fields,
+              }
+            : false
+        )
       );
       return Object.assign(page, { content: vi.fn().mockResolvedValue(`<html><body>${bodyText}${html}</body></html>`) });
     }
@@ -540,21 +545,29 @@ describe('CrawleeCrawler', () => {
       crawler.setStorageState({ cookies: [{ name: 'auth', value: 'token', domain: 'example.com', path: '/' }] });
     }
 
-    async function crawlPages(
-      pages: Array<{ url: string; bodyText: string; html?: string }>,
-      entry = 'https://example.com/docs'
-    ): Promise<void> {
+    async function crawlPages(pages: PageSpec[], entry = 'https://example.com/docs'): Promise<void> {
       mockCrawlerRun.mockImplementationOnce(async () => {
-        for (const { url, bodyText, html } of pages) {
-          await runRequestHandler(authenticatedPage(url, bodyText, html), url);
+        for (const spec of pages) {
+          await runRequestHandler(authenticatedPage(spec), spec.url);
         }
         return successfulRunStats;
       });
       await collect(crawler, entry);
     }
 
-    const docsPage = (n: number) => ({ url: `https://example.com/docs/${n}`, bodyText: `Ordinary content about topic ${n}` });
-    const loginPage = (n: number) => ({ url: `https://example.com/docs/${n}`, bodyText: LOGIN_BODY });
+    const docsPage = (n: number): PageSpec => ({
+      url: `https://example.com/docs/${n}`,
+      bodyText: `Ordinary content about topic ${n}`,
+      headings: [`Topic ${n}`],
+    });
+    // One login page, whatever URL it was asked for
+    const loginPage = (n: number): PageSpec => ({
+      url: `https://example.com/docs/${n}`,
+      bodyText: LOGIN_BODY,
+      headings: ['Sign in'],
+      forms: ['/login'],
+      fields: ['username:text', 'password:password'],
+    });
 
     it('fails the crawl when the first page is a login page', async () => {
       authenticate();
@@ -607,6 +620,7 @@ describe('CrawleeCrawler', () => {
       const pages = ['OAuth', 'API tokens', 'SSO'].map((topic) => ({
         url: `https://example.com/docs/${topic}`,
         bodyText: `${topic}: sign in with your username, then exchange the password for a token.`,
+        headings: [topic],
       }));
 
       await expect(crawlPages([docsPage(1), ...pages])).resolves.toBeUndefined();
@@ -642,6 +656,7 @@ describe('CrawleeCrawler', () => {
         ['token', 'refresh', 'introspect'].map((endpoint, index) => ({
           url: `https://example.com/docs/${endpoint}`,
           bodyText: `POST /v1/auth/${endpoint}. Sign in with your username and password, or send a bearer token. Returns 20${index} on success, 401 on invalid credentials.`,
+          headings: [`POST /v1/auth/${endpoint}`],
         })),
       ],
       [
@@ -649,6 +664,7 @@ describe('CrawleeCrawler', () => {
         ['1.0', '2.0', '3.0'].map((version) => ({
           url: `https://example.com/docs/${version}/auth`,
           bodyText: `Authentication in v${version}. Sign in with your username and password. Forgot password?`,
+          headings: [`Authentication in v${version}`],
         })),
       ],
     ])('keeps crawling %s', async (_label, pages) => {
@@ -697,6 +713,32 @@ describe('CrawleeCrawler', () => {
           { url: 'https://example.com/docs', bodyText: 'Ordinary content on the page the crawl asked for' },
         ])
       ).resolves.toBeUndefined();
+    });
+
+    // The wording of a login page varies per request far more often than not. Hashing it missed
+    // every one of these; what does not vary is the form it puts in front of you.
+    it.each([
+      ['an encoded return parameter', (n: number) => `${LOGIN_BODY} next=%2Fdocs%2F${n}`],
+      ['a csrf token', (n: number) => `${LOGIN_BODY} token=a${n}f9c${n}`],
+      ['an attempt counter', (n: number) => `${LOGIN_BODY} Attempt ${n} of 5`],
+    ])('fails the crawl when the login page varies by %s', async (_label, body) => {
+      authenticate();
+      const pages = [1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: body(n) }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).rejects.toThrow(/one login page answered 3 different URLs/i);
+    });
+
+    it('does not serialize the markup of a page with no sign of a login', async () => {
+      authenticate();
+      const ordinary = authenticatedPage(docsPage(1));
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(ordinary, docsPage(1).url);
+        return successfulRunStats;
+      });
+
+      await collect(crawler, 'https://example.com/docs');
+
+      expect(ordinary.content).not.toHaveBeenCalled();
     });
 
     it('does not check for login pages when the crawl never authenticated', async () => {
