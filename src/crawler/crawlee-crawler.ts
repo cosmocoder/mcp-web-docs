@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { PlaywrightCrawler } from 'crawlee';
 import { ContentFormat, CrawlResult } from '../types.js';
 import { BaseCrawler } from './base.js';
@@ -10,6 +9,7 @@ import { QueueManager } from './queue-manager.js';
 import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
+import { pageIdentity, readLoginPageSignals } from './login-page-signals.js';
 import { detectLoginPage, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
 import {
   BlockedOutboundRequestError,
@@ -63,22 +63,6 @@ const LOGIN_PAGE_CONFIDENCE = 0.5;
  * At one, a two-page site whose second page documents signing in would fail.
  */
 const MIN_REPEATS_FOR_MOSTLY_LOGIN_PAGES = 2;
-
-/**
- * Read in the page, so it must not reference anything outside itself.
- */
-export function readLoginPageSignals(): {
-  text: string;
-  hasPasswordInput: boolean;
-  headings: string[];
-} {
-  const collapse = (value: string) => value.replace(/\s+/g, ' ').trim();
-  return {
-    text: collapse(document.body?.textContent || ''),
-    hasPasswordInput: document.querySelector('input[type="password"]') !== null,
-    headings: [...document.querySelectorAll('h1, h2')].slice(0, 5).map((heading) => collapse(heading.textContent || '')),
-  };
-}
 
 interface NavigationAttempt {
   failedUrl?: string;
@@ -210,14 +194,14 @@ export class CrawleeCrawler extends BaseCrawler {
       return null;
     }
 
-    // Identified by its headings, which say what a page is about: a login page keeps them across
-    // requests while its wording carries a token, a counter or the address it turned away, and
-    // documentation pages differ in them even when every page carries a sign-in box.
     // Counted per distinct page rather than in a row: handlers run concurrently, so "in a row"
     // would mean "in the order five lanes happened to finish"
-    const fingerprint = createHash('sha1').update(JSON.stringify(observed.headings)).digest('hex');
-    const timesServed = (this.loginPageCounts.get(fingerprint) ?? 0) + 1;
-    this.loginPageCounts.set(fingerprint, timesServed);
+    const identity = pageIdentity(observed.headings, observed.text, page.url());
+    if (identity === null) {
+      return null;
+    }
+    const timesServed = (this.loginPageCounts.get(identity) ?? 0) + 1;
+    this.loginPageCounts.set(identity, timesServed);
     if (timesServed < REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED) {
       return null;
     }

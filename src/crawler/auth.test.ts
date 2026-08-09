@@ -1,4 +1,5 @@
 import { lookup } from 'node:dns/promises';
+import type { readLoginPageSignals } from './login-page-signals.js';
 
 import { encryptData } from '../util/security.js';
 import { detectDefaultBrowser, AuthManager } from './auth.js';
@@ -74,7 +75,15 @@ function mockStoredSession(cookies: Cookie[], domain = 'example.com') {
 }
 
 function setupBrowserMock(
-  options: { status?: number; blocked?: boolean; url?: string; content?: string; bodyText?: string; iframes?: string[] } = {}
+  options: {
+    status?: number;
+    blocked?: boolean;
+    url?: string;
+    content?: string;
+    bodyText?: string;
+    iframes?: string[];
+    headings?: string[];
+  } = {}
 ) {
   const {
     status = 200,
@@ -83,6 +92,7 @@ function setupBrowserMock(
     content = '<html><body>Welcome!</body></html>',
     bodyText = 'Welcome to the site',
     iframes = [],
+    headings = [],
   } = options;
   const mainFrame = {};
   const responseListeners = new Set<(response: Record<string, unknown>) => void>();
@@ -98,7 +108,16 @@ function setupBrowserMock(
     waitForTimeout: vi.fn().mockResolvedValue(undefined),
     waitForURL: vi.fn().mockResolvedValue(undefined),
     content: vi.fn().mockResolvedValue(content),
-    evaluate: vi.fn(async (fn: unknown) => (String(fn).includes('iframe') ? iframes : bodyText)),
+    evaluate: vi.fn(async (fn: unknown) =>
+      String(fn).includes('hasPasswordInput')
+        ? ({
+            text: bodyText,
+            hasPasswordInput: content.includes('type="password"'),
+            headings,
+            frameSources: iframes,
+          } satisfies ReturnType<typeof readLoginPageSignals>)
+        : bodyText
+    ),
     close: vi.fn().mockResolvedValue(undefined),
     mainFrame: vi.fn().mockReturnValue(mainFrame),
     on: vi.fn((event: string, listener: (response: Record<string, unknown>) => void) => {
@@ -603,6 +622,44 @@ describe('Auth Module', () => {
 
         expect(result.isValid).toBe(false);
         expect(result.reason).toContain('Login page detected');
+      });
+
+      // A frame with no src resolves to the page's own URL, which would score the very URL this
+      // check deliberately withholds
+      it('ignores a frame with no source', async () => {
+        setupBrowserMock({
+          url: 'https://example.com/docs/oauth/getting-started',
+          content: '<html><body><iframe></iframe></body></html>',
+          bodyText: 'Continue',
+          iframes: [],
+        });
+
+        await expect(authManager.validateSession('https://example.com')).resolves.toMatchObject({ isValid: true });
+      });
+
+      // A login served from somewhere else entirely is someone else's login
+      it('ignores a login frame from another origin', async () => {
+        setupBrowserMock({
+          url: 'https://example.com/portal',
+          content: '<html><body><iframe src="https://idp.vendor.example/login"></iframe></body></html>',
+          bodyText: 'Continue',
+          iframes: ['https://idp.vendor.example/login'],
+        });
+
+        await expect(authManager.validateSession('https://example.com')).resolves.toMatchObject({ isValid: true });
+      });
+
+      // A page with a heading is a page, not a shell, however little text it carries
+      it('keeps a session valid for a short page that embeds a sandbox', async () => {
+        setupBrowserMock({
+          url: 'https://example.com/docs/try-it',
+          content: '<html><body><h1>Try it</h1><iframe src="/sandbox/oauth-playground"></iframe></body></html>',
+          bodyText: 'Try it',
+          headings: ['Try it'],
+          iframes: ['/sandbox/oauth-playground'],
+        });
+
+        await expect(authManager.validateSession('https://example.com')).resolves.toMatchObject({ isValid: true });
       });
 
       // This gates the crawl, so one embedded demo would make a site uncrawlable - and identity

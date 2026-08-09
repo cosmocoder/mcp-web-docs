@@ -68,7 +68,8 @@ vi.mock('crawlee', () => ({
 
 // Import after mocking
 import { logger } from '../util/logger.js';
-import { CrawleeCrawler, type readLoginPageSignals } from './crawlee-crawler.js';
+import { CrawleeCrawler } from './crawlee-crawler.js';
+import type { readLoginPageSignals } from './login-page-signals.js';
 
 type RequestHandler = (context: Record<string, unknown>) => Promise<void>;
 type ErrorHandler = (context: Record<string, unknown>, error: Error) => Promise<void>;
@@ -532,6 +533,7 @@ describe('CrawleeCrawler', () => {
                 text: bodyText,
                 hasPasswordInput: asksForPassword || html.includes('type="password"'),
                 headings,
+                frameSources: [],
               } satisfies ReturnType<typeof readLoginPageSignals>)
             : false
         )
@@ -759,6 +761,31 @@ describe('CrawleeCrawler', () => {
 
       await expect(crawlPages([docsPage(0), ...pages])).resolves.toBeUndefined();
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
+    });
+
+    // A sign-in box plus a theme that renders headings as styled divs leaves nothing to tell the
+    // pages apart. Neither half is enough to call them one page.
+    it('keeps crawling a heading-less site whose every page carries a sign-in box', async () => {
+      authenticate();
+      const pages = [1, 2, 3].map((n) => ({
+        ...loginPage(n),
+        bodyText: `${LOGIN_BODY} ${'Ordinary content about topic '.repeat(8)}${n}`,
+        headings: [],
+      }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
+    });
+
+    // The heading of a login page names where it is sending you back to
+    it('fails the crawl when the login page heading names the URL it turned away', async () => {
+      authenticate();
+      const pages = [1, 2, 3].map((n) => ({
+        ...loginPage(n),
+        headings: [`Sign in to continue to /docs/${n}`],
+      }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).rejects.toThrow(/one login page answered 3 different URLs/i);
     });
 
     it('does not check for login pages when the crawl never authenticated', async () => {

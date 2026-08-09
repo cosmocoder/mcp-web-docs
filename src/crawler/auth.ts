@@ -4,6 +4,7 @@ import { mkdir, readFile, writeFile, access, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import defaultBrowser from 'default-browser';
 import { logger } from '../util/logger.js';
+import { LOGIN_SHELL_MAX_TEXT, readLoginPageSignals } from './login-page-signals.js';
 import {
   encryptData,
   decryptData,
@@ -26,12 +27,6 @@ import {
   isNavigationCancellationError,
   OutboundRequestFailedError,
 } from '../util/outbound-request.js';
-
-/**
- * A page that is only a frame is a login shell; a documentation page that embeds an identity
- * provider - a demo, a sandbox, a support widget - has an article around it.
- */
-const LOGIN_SHELL_MAX_TEXT = 200;
 
 function monitorMainFrameNavigations(page: Page): { throwIfError: () => Promise<void>; stop: () => void } {
   let navigationError: Error | undefined;
@@ -493,28 +488,22 @@ export class AuthManager {
 
       // Check 3: Does the page content look like a login page?
       const pageContent = await page.content();
-      const bodyText = await page.evaluate(() => document.body?.textContent || '');
+      const signals = await page.evaluate(readLoginPageSignals);
       // Scored on content alone: a URL match is worth three of the detector's six indicators, so
       // passing finalUrl would call every /oauth, /sso or /auth documentation URL an expired session
-      const loginDetection = detectLoginPage(bodyText + pageContent, '');
-      // A login hosted in an iframe leaves almost nothing to score on the page around it, which is
-      // what withholding the URL above costs us. The frame's address is evidence its host page's
-      // wording is not - but only for a page that is little else: documentation embeds identity
-      // providers all the time, in demos, sandboxes and support widgets.
-      const frameSources = await page.evaluate(() =>
-        [...document.querySelectorAll('iframe')].map((frame) => frame.getAttribute('src') || '').filter(Boolean)
-      );
+      const loginDetection = detectLoginPage(signals.text + pageContent, '');
+      // A login hosted in a frame leaves almost nothing to score on the page around it, which is
+      // what withholding the URL above costs us. Only for a page that is nothing else, though:
+      // documentation embeds identity providers all the time, in demos, sandboxes and support
+      // widgets, and refusing a session here leaves the site uncrawlable.
+      const isShellPage = signals.headings.length === 0 && signals.text.length < LOGIN_SHELL_MAX_TEXT;
       const embedsLoginFrame =
-        bodyText.trim().length < LOGIN_SHELL_MAX_TEXT &&
-        frameSources.some((src) => {
-          try {
-            // Resolved against the page: a login frame is usually same-origin, and a relative src
-            // is not a URL on its own
-            return isLoginPageUrl(new URL(src, finalUrl).href);
-          }
-          catch {
-            return false;
-          }
+        isShellPage &&
+        signals.frameSources.some((src) => {
+          // Resolved against the page: a relative src is not a URL on its own, and a login served
+          // from somewhere else entirely is someone else's login
+          const frame = URL.parse(src, finalUrl);
+          return frame !== null && frame.origin === new URL(finalUrl).origin && isLoginPageUrl(frame.href);
         });
 
       if ((loginDetection.isLoginPage && loginDetection.confidence >= 0.5) || embedsLoginFrame) {
