@@ -24,7 +24,10 @@ export function readLoginPageSignals(): {
  */
 export const LOGIN_SHELL_MAX_TEXT = 200;
 
-/** Three of the detector's six indicators, its own bar for calling something a login page */
+/**
+ * Three of the detector's six indicators. Stricter than the detector's own two, because what is
+ * decided here is whether to abandon a crawl, and the detector never reads this.
+ */
 export const LOGIN_PAGE_CONFIDENCE = 0.5;
 
 /**
@@ -35,8 +38,9 @@ export const LOGIN_PAGE_CONFIDENCE = 0.5;
  * The page's own address comes out first, because a login page often names where it is sending you
  * back to. Only its own: removing anything else would fold pages that differ by exactly that. Pages
  * whose headings are their own address and nothing else - `POST /api/login` at /api/login and
- * `POST /api/logout` at /api/logout - do fold into one. What keeps them apart is the caller, which
- * only reaches here for a page putting a password field in front of you.
+ * `POST /api/logout` at /api/logout - do fold into one, and are accepted as folded. Most of them
+ * never reach here, because the caller only asks about a page putting a password field in front of
+ * you; interactive API documentation with a live sign-in form on each endpoint does reach here.
  */
 export function pageIdentity(headings: string[], text: string, currentUrl: string): string | null {
   const { pathname } = new URL(currentUrl);

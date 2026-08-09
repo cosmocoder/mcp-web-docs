@@ -507,7 +507,7 @@ export class AuthManager {
           return frame !== null && frame.origin === pageOrigin && isLoginPageUrl(frame.href);
         });
 
-      if ((loginDetection.isLoginPage && loginDetection.confidence >= LOGIN_PAGE_CONFIDENCE) || embedsLoginFrame) {
+      if (loginDetection.confidence >= LOGIN_PAGE_CONFIDENCE || embedsLoginFrame) {
         logger.warn(`[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`);
         logger.debug(`[AuthManager] Login detection reasons: ${loginDetection.reasons.join(', ')}`);
         await navigationMonitor.throwIfError();
