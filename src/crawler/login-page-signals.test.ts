@@ -52,9 +52,8 @@ describe('readLoginPageSignals', () => {
     expect(render('<iframe src="/sso/login"></iframe><iframe></iframe>').frameSources).toEqual(['/sso/login']);
   });
 
-  // page.evaluate serializes the compiled function and runs it in a browser, where nothing this
-  // module imports exists. Rebuilding it from its own source is the only way a reference to
-  // anything outside it shows up here rather than in a crawl.
+  // Rebuilding it from its own source is the only way a reference to anything outside it shows up
+  // here rather than in the browser page.evaluate sends it to
   it('reads nothing from outside itself, as page.evaluate requires', () => {
     document.body.innerHTML = LOGIN_FORM;
     const detached = new Function(`return (${readLoginPageSignals.toString()})()`) as () => ReturnType<typeof readLoginPageSignals>;
@@ -73,8 +72,7 @@ describe('pageIdentity', () => {
   const url = 'https://example.com/docs/42';
   const article = 'x'.repeat(LOGIN_SHELL_MAX_TEXT);
 
-  // A theme that renders its headings as styled divs leaves nothing to go on, and a page the crawl
-  // cannot tell apart must not be counted as the same page coming back
+  // A theme rendering its headings as styled divs leaves nothing to go on
   it('has no answer for a page with an article on it and no headings', () => {
     expect(pageIdentity([], article, url)).toBeNull();
     expect(pageIdentity(['   '], article, url)).toBeNull();
@@ -109,9 +107,8 @@ describe('pageIdentity', () => {
     expect(pageIdentity(['POST /api/login'], article, url)).not.toEqual(pageIdentity(['POST /api/logout'], article, url));
   });
 
-  // Accepted: strip a heading that is only the page's own address and nothing is left to tell it
-  // apart by. It takes a password field on each of these pages to matter, which is the caller's
-  // question, asked before this one.
+  // Accepted: strip a heading that is only the page's own address and nothing is left. It takes a
+  // password field on each of these pages to matter, which the caller asks before this.
   it('folds pages whose heading is only their own address', () => {
     expect(pageIdentity(['POST /api/login'], article, 'https://example.com/api/login')).toEqual(
       pageIdentity(['POST /api/logout'], article, 'https://example.com/api/logout')

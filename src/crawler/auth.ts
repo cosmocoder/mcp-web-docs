@@ -489,13 +489,12 @@ export class AuthManager {
       // Check 3: Does the page content look like a login page?
       const pageContent = await page.content();
       const signals = await page.evaluate(readLoginPageSignals);
-      // Scored on content alone: a URL match is worth three of the detector's six indicators, so
-      // passing finalUrl would call every /oauth, /sso or /auth documentation URL an expired session
+      // Content alone, for the reason checkForLoginPage gives: passing finalUrl would refuse every
+      // /oauth or /sso documentation URL
       const loginDetection = detectLoginPage(signals.text + pageContent, '');
-      // A login hosted in a frame leaves almost nothing to score on the page around it, which is
-      // what withholding the URL above costs us. Only for a page that is nothing else, though:
-      // documentation embeds identity providers all the time, in demos, sandboxes and support
-      // widgets, and refusing a session here leaves the site uncrawlable.
+      // A login hosted in a frame leaves almost nothing to score on the page around it. Only counted
+      // for a page that is nothing else: documentation embeds identity providers all the time, in
+      // demos and support widgets, and refusing a session here leaves the site uncrawlable.
       const isShellPage = signals.headings.length === 0 && signals.text.length < LOGIN_SHELL_MAX_TEXT;
       const pageOrigin = new URL(finalUrl).origin;
       const embedsLoginFrame =

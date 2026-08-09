@@ -518,9 +518,8 @@ describe('CrawleeCrawler', () => {
     // Four indicators of the detector's six, so it clears the confidence bar on content alone
     const LOGIN_BODY = 'Sign in with your username and password. Forgot password?';
 
-    // One evaluate now returns the text, the password probe and the page's shape; the other
-    // evaluate calls in the navigation path ask yes/no questions and must keep getting a boolean.
-    // Shape is what the browser would report, so tests state it rather than deriving it from prose.
+    // The other evaluate calls in the navigation path ask yes/no questions and must keep getting a
+    // boolean. Shape is stated rather than derived from the prose, as the browser would report it.
     type PageSpec = { url: string; bodyText: string; html?: string; headings?: string[]; asksForPassword?: boolean };
 
     function authenticatedPage({ url, bodyText, html = '', headings = [], asksForPassword = false }: PageSpec) {
@@ -585,8 +584,7 @@ describe('CrawleeCrawler', () => {
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(3);
     });
 
-    // Same pages, same outcome whichever order they finish in: handlers run concurrently, so a rule
-    // counting login pages "in a row" would be counting the order five lanes happened to return in
+    // Same outcome whichever order they finish in, which "in a row" could never give
     it.each([
       ['one login page answers several URLs', [docsPage(1), loginPage(2), loginPage(3), loginPage(4)]],
       ['real pages are interleaved with it', [docsPage(1), loginPage(2), docsPage(3), loginPage(4), docsPage(5), loginPage(6)]],
@@ -603,8 +601,7 @@ describe('CrawleeCrawler', () => {
       await expect(crawlPages([docsPage(1), loginPage(2), loginPage(3)])).rejects.toThrow(/answered 2 of 3 URLs/i);
     });
 
-    // Documentation about signing in carries the same wording, so wording alone cannot decide it.
-    // These pages differ from each other, which is what a served login page never does.
+    // These pages differ from each other, which is what one served login page never does
     it('keeps crawling an authentication section whose pages differ', async () => {
       const pages = ['OAuth', 'API tokens', 'SSO'].map((topic) => ({
         url: `https://example.com/docs/${topic}`,
@@ -616,16 +613,14 @@ describe('CrawleeCrawler', () => {
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
     });
 
-    // Two indicators is the detector's own bar for "login page" but half its bar for confidence,
-    // and it is confidence this gates on - otherwise any page mentioning a username counts
+    // Two indicators is the detector's bar but half of ours, or any page mentioning a username counts
     it('ignores pages that only just trip the detector', async () => {
       const pages = [1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: 'Log in with your username.' }));
 
       await expect(crawlPages([docsPage(0), ...pages])).resolves.toBeUndefined();
     });
 
-    // Only the repeat count can catch this: the login pages are a small share of the crawl, so the
-    // after-the-fact rule never fires. A session dying late in a large crawl looks like this.
+    // Too small a share of the crawl for the after-the-fact rule; only the repeat count catches it
     it('fails a long crawl where the session died near the end', async () => {
       const tail = [1, 2, 3].map((n) => ({ ...loginPage(n), url: `https://example.com/docs/late-${n}` }));
 
@@ -634,9 +629,8 @@ describe('CrawleeCrawler', () => {
       );
     });
 
-    // Documentation pages built from one template differ only in the endpoint they describe, and
-    // three of them clear the confidence bar on wording alone. Folding paths and numbers out of the
-    // fingerprint would make them one page and fail the crawl.
+    // Pages from one template differ only in the endpoint, and clear the confidence bar on wording
+    // alone. Folding paths and numbers out of the identity would make them one page.
     it.each([
       [
         'a generated API reference',
@@ -659,8 +653,7 @@ describe('CrawleeCrawler', () => {
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
     });
 
-    // An SSO page can be one branded button, with the only real evidence in the markup. Skipping the
-    // markup for pages whose visible text looks harmless would miss exactly these.
+    // One branded button, with the only real evidence in the markup
     it.each([
       ['a branded SSO button', 'Continue with SSO', '<form action="/login"><input type="password" name="p"></form>'],
       ['an almost wordless login shell', 'Continue', '<iframe src="/idp"></iframe><input type="password">'],
@@ -681,9 +674,8 @@ describe('CrawleeCrawler', () => {
       await expect(crawlPages([docsPage(1), loginPage(2), docsPage(3), loginPage(4)])).rejects.toThrow(/answered 2 of 4 URLs/i);
     });
 
-    // Five handlers run at once, so the entry page is not reliably the first to finish. Deciding
-    // "is this the entry page" by arrival order lets one ordinary page that reads as a login page
-    // fail the crawl on its own, with none of the repetition the rule is built on.
+    // By arrival order, one ordinary page reading as a login page would fail the crawl on its own,
+    // with none of the repetition the rule is built on
     it('does not treat whichever page finishes first as the entry page', async () => {
       await expect(
         crawlPages([
@@ -693,8 +685,7 @@ describe('CrawleeCrawler', () => {
       ).resolves.toBeUndefined();
     });
 
-    // The wording of a login page varies per request far more often than not. Hashing it missed
-    // every one of these; what does not vary is the form it puts in front of you.
+    // A login page's wording varies per request; the form it puts in front of you does not
     it.each([
       ['an encoded return parameter', (n: number) => `${LOGIN_BODY} next=%2Fdocs%2F${n}`],
       ['a csrf token', (n: number) => `${LOGIN_BODY} token=a${n}f9c${n}`],
@@ -717,8 +708,7 @@ describe('CrawleeCrawler', () => {
       expect(ordinary.content).not.toHaveBeenCalled();
     });
 
-    // Shape alone cannot tell pages apart: a theme rendering headings as styled divs, or a reference
-    // template whose h1 and h2 are fixed, gives three genuinely different pages one shape
+    // Shape alone cannot tell pages apart, so it never counts on its own
     it.each([
       ['a theme that renders no headings', [1, 2, 3].map((n) => ({ ...docsPage(n), headings: [] }))],
       [
@@ -732,8 +722,7 @@ describe('CrawleeCrawler', () => {
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
     });
 
-    // A sign-in box in the page furniture puts a password field on every page of the site. What
-    // still differs is what each page is about.
+    // A sign-in box in the page furniture. What still differs is what each page is about.
     it('keeps crawling a site whose every page carries a sign-in box', async () => {
       const pages = [1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: `${LOGIN_BODY} Topic ${n}`, headings: [`Topic ${n}`] }));
 
@@ -741,8 +730,7 @@ describe('CrawleeCrawler', () => {
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
     });
 
-    // A sign-in box plus a theme that renders headings as styled divs leaves nothing to tell the
-    // pages apart. Neither half is enough to call them one page.
+    // A sign-in box and no headings: neither half is enough to call these one page
     it('keeps crawling a heading-less site whose every page carries a sign-in box', async () => {
       const pages = [1, 2, 3].map((n) => ({
         ...loginPage(n),
@@ -764,15 +752,13 @@ describe('CrawleeCrawler', () => {
       await expect(crawlPages([docsPage(0), ...pages])).rejects.toThrow(/one login page answered 3 different URLs/i);
     });
 
-    // Three is what the message says, and only the message said it: at two, a documentation site
-    // with two pages about signing in fails a crawl that is otherwise entirely fine
+    // At two, a site with two pages about signing in fails a crawl that is otherwise fine
     it('keeps crawling when one login page has only answered twice', async () => {
       await expect(crawlPages([...[1, 2, 3, 4, 5, 6].map(docsPage), loginPage(7), loginPage(8)])).resolves.toBeUndefined();
     });
 
-    // Whatever shape the entry page takes. This wall says nothing in its text and puts no password
-    // field in the page, so the markup is the only evidence there is - and reading the markup is
-    // what the crawl skips for a page showing no sign of a login.
+    // Nothing in its text and no password field in the page, so the markup is the only evidence -
+    // and reading the markup is what the crawl skips for a page showing no sign of a login
     it('fails the crawl when the entry page is a wordless login wall', async () => {
       const wall = {
         url: 'https://example.com/docs',

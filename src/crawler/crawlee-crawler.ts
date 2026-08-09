@@ -49,16 +49,12 @@ const MIN_TOLERATED_FAILED_PAGES = 5;
 const MAX_TOLERATED_FAILED_PAGE_RATIO = 0.02;
 
 /**
- * How many times one login page must come back before the session is called dead. One is not
- * enough: the detector scores authentication wording, which documentation about signing in also
- * carries. What documentation does not do is answer several different URLs with the same page.
+ * How many times one login page must come back before the session is called dead. One is not enough:
+ * documentation about signing in scores the same. What it does not do is answer several URLs alike.
  */
 const REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED = 3;
 
-/**
- * How many URLs one login page must have answered before "it was most of the crawl" means anything.
- * At one, a two-page site whose second page documents signing in would fail.
- */
+/** At one, a two-page site whose second page documents signing in would be "mostly login pages" */
 const MIN_REPEATS_FOR_MOSTLY_LOGIN_PAGES = 2;
 
 interface NavigationAttempt {
@@ -142,12 +138,11 @@ export class CrawleeCrawler extends BaseCrawler {
 
   /**
    * The error to fail the crawl with if this page shows the session has expired, else null. Only
-   * consulted when we authenticated, so a login page here means the session died rather than the
-   * site being public.
+   * consulted when we authenticated, so a login page here means the session died.
    *
-   * Scored on content alone. Passing the URL would settle it by itself - a URL match is worth three
-   * of the detector's six indicators, so every /oauth, /sso or /auth page of ordinary documentation
-   * would score as a login page, as would every page on a host like auth.example.com.
+   * Scored on content alone: a URL match is worth three of the detector's six indicators, enough on
+   * its own, so every /oauth or /sso documentation page would score as a login page, as would every
+   * page on a host like auth.example.com.
    */
   private async checkForLoginPage(page: Page, isEntryPage: boolean): Promise<SessionExpiredError | null> {
     this.pagesChecked++;
@@ -155,10 +150,9 @@ export class CrawleeCrawler extends BaseCrawler {
     let detection;
     try {
       observed = await page.evaluate(readLoginPageSignals);
-      // Serializing the DOM of every page in a crawl is the expensive part, so it is skipped for
-      // pages showing no sign of a login at all. Never for the entry page, which is one page.content()
-      // per crawl: an SSO wall can be a branded button, with nothing in its text and its form in a
-      // frame, and the check this replaced always read the markup of the page it was given.
+      // Serializing the DOM of every page is the expensive part, so it is skipped for pages showing
+      // no sign of a login. Never for the entry page - one page.content() per crawl - because an SSO
+      // wall can be a branded button, with nothing in its text and its form in a frame.
       if (!isEntryPage && detectLoginPage(observed.text, '').confidence === 0 && !observed.hasPasswordInput) {
         return null;
       }
@@ -184,10 +178,8 @@ export class CrawleeCrawler extends BaseCrawler {
       );
     }
 
-    // Only a page actually asking for credentials is counted as one login page coming back. Shape
-    // alone is not enough to tell pages apart: a documentation theme that renders its headings as
-    // styled divs, or a reference template whose h1 and h2 are fixed and whose endpoint sits in an
-    // h3, gives three genuinely different pages one shape. None of them ask for a password.
+    // Only a page actually asking for credentials counts as a login page coming back. Shape alone
+    // gives genuinely different documentation pages one identity; none of them ask for a password.
     if (!observed.hasPasswordInput) {
       return null;
     }
@@ -214,10 +206,8 @@ export class CrawleeCrawler extends BaseCrawler {
   }
 
   /**
-   * A crawl can end before any login page repeats often enough to be caught above - a short site,
-   * or a session that died near the end. Login pages being most of what the crawl saw says the same
-   * thing after the fact, and unlike the count above it does not depend on how the crawl was
-   * ordered.
+   * A crawl can end before any login page repeats often enough to be caught above - a short site, or
+   * a session that died near the end. One login page being most of what the crawl saw says the same.
    */
   private sessionExpiredAcrossCrawl(): SessionExpiredError | null {
     const timesServed = Math.max(0, ...this.loginPageCounts.values());

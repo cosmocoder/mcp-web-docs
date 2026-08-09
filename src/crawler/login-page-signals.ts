@@ -1,8 +1,6 @@
 import { createHash } from 'node:crypto';
 
-/**
- * Read in the page, so it must not reference anything outside itself.
- */
+/** Read in the page, so it must not reference anything outside itself. */
 export function readLoginPageSignals(): {
   text: string;
   hasPasswordInput: boolean;
@@ -18,29 +16,19 @@ export function readLoginPageSignals(): {
   };
 }
 
-/**
- * A page that is nothing but a frame or a button is a login shell; a documentation page carrying a
- * sign-in box has an article around it.
- */
+/** A login shell is nothing but a frame or a button; a docs page carrying a sign-in box has an article */
 export const LOGIN_SHELL_MAX_TEXT = 200;
 
-/**
- * Three of the detector's six indicators. Stricter than the detector's own two, because what is
- * decided here is whether to abandon a crawl, and the detector never reads this.
- */
+/** Three of the detector's six indicators. Stricter than its own two, which it never applies here. */
 export const LOGIN_PAGE_CONFIDENCE = 0.5;
 
 /**
- * What tells this page apart from the next one, or null when nothing does. A page the crawl cannot
- * tell apart must not be counted as the same page coming back: a documentation theme that renders
- * its headings as styled divs would otherwise make every page of the site one login page.
+ * What tells this page apart from the next one, or null when nothing does. A theme rendering its
+ * headings as styled divs would otherwise make every page of the site one page.
  *
- * The page's own address comes out first, because a login page often names where it is sending you
- * back to. Only its own: removing anything else would fold pages that differ by exactly that. Pages
- * whose headings are their own address and nothing else - `POST /api/login` at /api/login and
- * `POST /api/logout` at /api/logout - do fold into one, and are accepted as folded. Most of them
- * never reach here, because the caller only asks about a page putting a password field in front of
- * you; interactive API documentation with a live sign-in form on each endpoint does reach here.
+ * The page's own address comes out first, because a login page names where it is sending you back
+ * to. Only its own: removing anything else would fold pages differing by exactly that. Accepted
+ * cost: `POST /api/login` at /api/login and `POST /api/logout` at /api/logout fold into one.
  */
 export function pageIdentity(headings: string[], text: string, currentUrl: string): string | null {
   const { pathname } = new URL(currentUrl);
@@ -48,7 +36,7 @@ export function pageIdentity(headings: string[], text: string, currentUrl: strin
   if (identifying.length > 0) {
     return createHash('sha1').update(JSON.stringify(identifying)).digest('hex');
   }
-  // Nothing to go on. A page that is barely anything is still recognisable as that - a login shell
-  // is a login shell - but a page with an article on it and no headings could be any page.
+  // A page that is barely anything is still recognisable as that; one with an article and no
+  // headings could be any page.
   return text.length < LOGIN_SHELL_MAX_TEXT ? 'shell' : null;
 }
