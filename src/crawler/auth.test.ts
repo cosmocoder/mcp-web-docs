@@ -582,6 +582,21 @@ describe('Auth Module', () => {
         mockStoredSession([createCookie()]);
       });
 
+      // A URL match is worth three of the detector's six indicators, on its own enough to call a
+      // page a login page. Scoring the URL here would refuse every session for a site whose
+      // documentation lives under /auth, /oauth or /sso, or on a host like auth.example.com.
+      it.each([
+        ['a path that reads as authentication', 'https://example.com/docs/oauth/getting-started'],
+        ['a host that reads as authentication', 'https://auth.example.com/docs/getting-started'],
+      ])('keeps a session valid for documentation served from %s', async (_label, url) => {
+        const bodyText = 'How to configure your integration. See the guide for details.';
+        setupBrowserMock({ url, content: `<html><body>${bodyText}</body></html>`, bodyText });
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(true);
+      });
+
       it.each([
         [401, 'Unauthorized'],
         [403, 'Forbidden'],

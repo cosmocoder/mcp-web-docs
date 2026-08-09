@@ -488,7 +488,9 @@ export class AuthManager {
       // Check 3: Does the page content look like a login page?
       const pageContent = await page.content();
       const bodyText = await page.evaluate(() => document.body?.textContent || '');
-      const loginDetection = detectLoginPage(bodyText + pageContent, finalUrl);
+      // Scored on content alone: a URL match is worth three of the detector's six indicators, so
+      // passing finalUrl would call every /oauth, /sso or /auth documentation URL an expired session
+      const loginDetection = detectLoginPage(bodyText + pageContent, '');
 
       if (loginDetection.isLoginPage && loginDetection.confidence >= 0.5) {
         logger.warn(`[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`);
