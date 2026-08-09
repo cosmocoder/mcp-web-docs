@@ -1,5 +1,5 @@
 import { lookup } from 'node:dns/promises';
-import type { readLoginPageSignals } from './login-page-signals.js';
+import { readLoginPageSignals } from './login-page-signals.js';
 
 import { encryptData } from '../util/security.js';
 import { detectDefaultBrowser, AuthManager } from './auth.js';
@@ -109,7 +109,7 @@ function setupBrowserMock(
     waitForURL: vi.fn().mockResolvedValue(undefined),
     content: vi.fn().mockResolvedValue(content),
     evaluate: vi.fn(async (fn: unknown) =>
-      String(fn).includes('hasPasswordInput')
+      fn === readLoginPageSignals
         ? ({
             text: bodyText,
             hasPasswordInput: content.includes('type="password"'),
