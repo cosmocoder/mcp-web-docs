@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { PlaywrightCrawler } from 'crawlee';
 import { ContentFormat, CrawlResult } from '../types.js';
 import { BaseCrawler } from './base.js';
@@ -9,7 +10,7 @@ import { QueueManager } from './queue-manager.js';
 import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
-import { detectLoginPage, isLoginPageUrl, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
+import { detectLoginPage, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
 import {
   BlockedOutboundRequestError,
   classifyOutboundFailure,
@@ -48,11 +49,14 @@ const MIN_TOLERATED_FAILED_PAGES = 5;
 const MAX_TOLERATED_FAILED_PAGE_RATIO = 0.02;
 
 /**
- * How many pages in a row must look like the same login page before the session is called dead.
- * One is not enough: the detector counts authentication keywords, and a page documenting how to
- * sign in trips it. An expired session does not stop, and it serves the same page every time.
+ * How many times one login page must come back before the session is called dead. One is not
+ * enough: the detector scores authentication wording, which documentation about signing in also
+ * carries. What documentation does not do is answer several different URLs with the same page.
  */
 const REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED = 3;
+
+/** Three of the detector's six indicators, its own bar for calling something a login page */
+const LOGIN_PAGE_CONFIDENCE = 0.5;
 
 interface NavigationAttempt {
   failedUrl?: string;
@@ -66,9 +70,9 @@ export class CrawleeCrawler extends BaseCrawler {
   private storageState?: ValidatedStorageState;
   private isFirstPage: boolean = true;
   private sessionExpiredError: SessionExpiredError | null = null;
-  /** Pages in a row that looked like a login page, and the title they shared */
-  private repeatedLoginPages: number = 0;
-  private lastLoginPageTitle: string | null = null;
+  /** How many pages each distinct login page has answered, and how many pages were checked at all */
+  private loginPageCounts: Map<string, number> = new Map();
+  private pagesChecked: number = 0;
   private expectedUrl: string = '';
   /** The allowed hostname for crawling - pages outside this domain are skipped */
   private allowedHostname: string = '';
@@ -135,76 +139,96 @@ export class CrawleeCrawler extends BaseCrawler {
   }
 
   /**
-   * Whether the crawl has run into an expired session. Only consulted when we authenticated, so a
-   * login page here means the session died rather than the site being public.
+   * The error to fail the crawl with if this page shows the session has expired, else null. Only
+   * consulted when we authenticated, so a login page here means the session died rather than the
+   * site being public.
    *
-   * The entry point is decisive on its own - we authenticated moments ago, so a login page is the
-   * session already gone. Later pages are not, because the detector counts authentication keywords
-   * and a page documenting how to sign in trips it. What separates an expiry from documentation is
-   * that it does not stop and does not vary: the same login page comes back for every URL asked
-   * for. So a run of them under one title is the signal, and any real page in between clears it.
+   * Scored on content alone. Passing the URL would settle it by itself - a URL match is worth three
+   * of the detector's six indicators, so every /oauth, /sso or /auth page of ordinary documentation
+   * would score as a login page, as would every page on a host like auth.example.com.
+   *
+   * The entry point is decisive: we authenticated moments ago, so a login page is the session
+   * already gone. Later pages are not, because documentation about signing in carries the same
+   * wording. What documentation does not do is answer several different URLs with one identical
+   * page, so it is the repeat that gives an expiry away.
    */
-  private async checkForLoginPage(page: Page, currentUrl: string): Promise<boolean> {
-    // URL pattern first, it costs nothing
-    if (this.isFirstPage && isLoginPageUrl(currentUrl)) {
-      logger.warn(`[CrawleeCrawler] First page URL matches login pattern: ${currentUrl}`);
-      this.sessionExpiredError = new SessionExpiredError(
-        `Authentication session has expired - the first page is a login URL`,
-        this.expectedUrl,
-        currentUrl,
-        { isLoginPage: true, confidence: 1, reasons: [`URL matches login pattern: ${currentUrl}`] }
-      );
-      return true;
-    }
-
+  private async checkForLoginPage(page: Page): Promise<SessionExpiredError | null> {
+    let bodyText;
     let detection;
-    let title;
     try {
-      const bodyText = await page.evaluate(() => document.body?.textContent || '');
-      const pageHtml = await page.content();
-      detection = detectLoginPage(bodyText + pageHtml, currentUrl);
-      title = await page.title();
+      bodyText = await page.evaluate(() => document.body?.textContent || '');
+      // The visible text decides whether the HTML is worth serializing at all: fetching it for
+      // every page of a large crawl costs far more than the two HTML-only indicators are worth
+      if (!detectLoginPage(bodyText, '').isLoginPage) {
+        this.pagesChecked++;
+        return null;
+      }
+      detection = detectLoginPage(bodyText + (await page.content()), '');
     }
     catch (error) {
       logger.debug(`[CrawleeCrawler] Error checking for login page:`, error);
-      return false;
+      return null;
     }
 
-    if (!detection.isLoginPage || detection.confidence < 0.5) {
-      this.repeatedLoginPages = 0;
-      return false;
+    this.pagesChecked++;
+    if (detection.confidence < LOGIN_PAGE_CONFIDENCE) {
+      return null;
     }
 
     if (this.isFirstPage) {
       logger.warn(`[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`);
       logger.debug(`[CrawleeCrawler] Detection reasons: ${detection.reasons.join(', ')}`);
-      // Stored rather than thrown: a request handler cannot fail the crawl
-      this.sessionExpiredError = new SessionExpiredError(
+      return new SessionExpiredError(
         `Authentication session has expired - crawled page is a login page`,
         this.expectedUrl,
-        currentUrl,
+        page.url(),
         detection
       );
-      return true;
     }
 
-    this.repeatedLoginPages = title === this.lastLoginPageTitle ? this.repeatedLoginPages + 1 : 1;
-    this.lastLoginPageTitle = title;
-    if (this.repeatedLoginPages < REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED) {
-      logger.debug(
-        `[CrawleeCrawler] ${currentUrl} looks like a login page (${this.repeatedLoginPages} in a row, confidence ${detection.confidence.toFixed(2)})`
-      );
-      return false;
+    // Counted per distinct page rather than in a row: handlers run concurrently, so "in a row"
+    // would mean "in the order five lanes happened to finish"
+    // Paths and numbers are stripped before hashing: a login page that names the URL it turned
+    // away ("sign in to continue to /docs/42") is one page answering many URLs, not many pages
+    const stableText = bodyText
+      .replace(/\s+/g, ' ')
+      .replace(/\/\S+|\d+/g, '')
+      .trim();
+    const fingerprint = createHash('sha1').update(stableText).digest('hex');
+    const timesServed = (this.loginPageCounts.get(fingerprint) ?? 0) + 1;
+    this.loginPageCounts.set(fingerprint, timesServed);
+    if (timesServed < REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED) {
+      return null;
     }
 
-    logger.warn(`[CrawleeCrawler] ${this.repeatedLoginPages} pages in a row served "${title}", a login page - session expired mid-crawl`);
-    this.sessionExpiredError = new SessionExpiredError(
-      `Authentication session expired during the crawl - ${this.repeatedLoginPages} pages in a row were the same login page`,
+    logger.warn(`[CrawleeCrawler] One login page has answered ${timesServed} URLs - the session expired mid-crawl`);
+    return new SessionExpiredError(
+      `Authentication session expired during the crawl - one login page answered ${timesServed} different URLs`,
       this.expectedUrl,
-      currentUrl,
+      page.url(),
       detection
     );
-    return true;
+  }
+
+  /**
+   * A crawl can end before any login page repeats often enough to be caught above - a short site,
+   * or a session that died near the end. Login pages being most of what the crawl saw says the same
+   * thing after the fact, and unlike the count above it does not depend on how the crawl was
+   * ordered. Under two pages is left alone: one page is a documentation page about signing in.
+   */
+  private sessionExpiredAcrossCrawl(): SessionExpiredError | null {
+    const timesServed = Math.max(0, ...this.loginPageCounts.values());
+    if (timesServed < 2 || timesServed * 2 < this.pagesChecked) {
+      return null;
+    }
+
+    logger.warn(`[CrawleeCrawler] One login page answered ${timesServed} of ${this.pagesChecked} crawled URLs`);
+    return new SessionExpiredError(
+      `Authentication session expired during the crawl - one login page answered ${timesServed} of ${this.pagesChecked} URLs`,
+      this.expectedUrl,
+      this.expectedUrl,
+      { isLoginPage: true, confidence: 1, reasons: [`${timesServed} of ${this.pagesChecked} crawled pages were one login page`] }
+    );
   }
 
   /**
@@ -392,8 +416,8 @@ export class CrawleeCrawler extends BaseCrawler {
     // Reset state for this crawl
     this.isFirstPage = true;
     this.sessionExpiredError = null;
-    this.repeatedLoginPages = 0;
-    this.lastLoginPageTitle = null;
+    this.loginPageCounts.clear();
+    this.pagesChecked = 0;
     this.terminalRootFailure = undefined;
     this.rootPageFailed = false;
     this.failedPages = 0;
@@ -623,11 +647,16 @@ export class CrawleeCrawler extends BaseCrawler {
             }
           }
 
-          // A session can die at any point in the crawl, not only before it starts
-          if (this.storageState && (await this.checkForLoginPage(page, actualUrl))) {
-            log.error('Session appears expired - the crawl is being served login pages. Aborting crawl.');
-            this.abort();
-            return;
+          if (this.storageState) {
+            // Kept if already set: later handlers are still in flight after abort(), and their
+            // counts would overwrite the one that actually crossed the line
+            const expired = await this.checkForLoginPage(page);
+            if (expired) {
+              this.sessionExpiredError ??= expired;
+              log.error('Session appears expired - the crawl is being served login pages. Aborting crawl.');
+              this.abort();
+              return;
+            }
           }
           this.isFirstPage = false;
 
@@ -696,6 +725,7 @@ export class CrawleeCrawler extends BaseCrawler {
       }
 
       // Check if we detected an expired session during crawling
+      this.sessionExpiredError ??= this.sessionExpiredAcrossCrawl();
       if (this.sessionExpiredError) {
         throw this.sessionExpiredError;
       }
