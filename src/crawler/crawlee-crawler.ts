@@ -65,27 +65,18 @@ const LOGIN_PAGE_CONFIDENCE = 0.5;
 const MIN_REPEATS_FOR_MOSTLY_LOGIN_PAGES = 2;
 
 /**
- * Read in the page, so it must not reference anything outside itself. Reports what the page is
- * rather than only what it says: a login page keeps its shape across requests even when its wording
- * carries a token, a counter or the address it turned away, and two documentation pages differ in
- * shape even when both are about signing in.
+ * Read in the page, so it must not reference anything outside itself.
  */
 export function readLoginPageSignals(): {
   text: string;
   hasPasswordInput: boolean;
   headings: string[];
-  forms: string[];
-  fields: string[];
 } {
   const collapse = (value: string) => value.replace(/\s+/g, ' ').trim();
   return {
     text: collapse(document.body?.textContent || ''),
     hasPasswordInput: document.querySelector('input[type="password"]') !== null,
     headings: [...document.querySelectorAll('h1, h2')].slice(0, 5).map((heading) => collapse(heading.textContent || '')),
-    forms: [...document.querySelectorAll('form')].map((form) => (form.getAttribute('action') || '').split('?')[0]),
-    fields: [...document.querySelectorAll('input, select, textarea')].map(
-      (field) => `${field.getAttribute('name') || ''}:${field.getAttribute('type') || ''}`
-    ),
   };
 }
 
@@ -211,11 +202,20 @@ export class CrawleeCrawler extends BaseCrawler {
       );
     }
 
+    // Only a page actually asking for credentials is counted as one login page coming back. Shape
+    // alone is not enough to tell pages apart: a documentation theme that renders its headings as
+    // styled divs, or a reference template whose h1 and h2 are fixed and whose endpoint sits in an
+    // h3, gives three genuinely different pages one shape. None of them ask for a password.
+    if (!observed.hasPasswordInput) {
+      return null;
+    }
+
+    // Identified by its headings, which say what a page is about: a login page keeps them across
+    // requests while its wording carries a token, a counter or the address it turned away, and
+    // documentation pages differ in them even when every page carries a sign-in box.
     // Counted per distinct page rather than in a row: handlers run concurrently, so "in a row"
     // would mean "in the order five lanes happened to finish"
-    const fingerprint = createHash('sha1')
-      .update(JSON.stringify([observed.headings, observed.forms, observed.fields]))
-      .digest('hex');
+    const fingerprint = createHash('sha1').update(JSON.stringify(observed.headings)).digest('hex');
     const timesServed = (this.loginPageCounts.get(fingerprint) ?? 0) + 1;
     this.loginPageCounts.set(fingerprint, timesServed);
     if (timesServed < REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED) {

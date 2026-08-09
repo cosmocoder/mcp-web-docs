@@ -585,17 +585,18 @@ describe('Auth Module', () => {
         mockStoredSession([createCookie()]);
       });
 
-      // A URL match is worth three of the detector's six indicators, on its own enough to call a
-      // page a login page. Scoring the URL here would refuse every session for a site whose
-      // documentation lives under /auth, /oauth or /sso, or on a host like auth.example.com.
       // Withholding the URL costs us the login page that keeps its evidence out of reach: the outer
-      // page is a shell, and the sign-in form lives in a frame we cannot read
-      it('detects a login hosted in an iframe', async () => {
+      // page is a shell and the form lives in a frame. A relative src is the common form and is not
+      // a URL on its own, so it has to be resolved against the page.
+      it.each([
+        ['an absolute src', 'https://example.com/sso/login'],
+        ['a relative src', '/sso/login'],
+      ])('detects a login hosted in an iframe with %s', async (_label, src) => {
         setupBrowserMock({
           url: 'https://example.com/portal',
-          content: '<html><body><iframe src="https://example.com/sso/login"></iframe></body></html>',
+          content: `<html><body><iframe src="${src}"></iframe></body></html>`,
           bodyText: 'Continue',
-          iframes: ['https://example.com/sso/login'],
+          iframes: [src],
         });
 
         const result = await authManager.validateSession('https://example.com');
@@ -604,6 +605,30 @@ describe('Auth Module', () => {
         expect(result.reason).toContain('Login page detected');
       });
 
+      // This gates the crawl, so one embedded demo would make a site uncrawlable - and identity
+      // providers document themselves
+      it.each([
+        ['a vendor widget demo', 'https://cdn.auth0.com/blog/embedded-demo.html'],
+        ['an OAuth playground', 'https://example.com/sandbox/oauth-playground'],
+      ])('keeps a session valid for documentation embedding %s', async (_label, src) => {
+        setupBrowserMock({
+          url: 'https://example.com/docs/embedding',
+          content: `<html><body><iframe src="${src}"></iframe></body></html>`,
+          bodyText:
+            'Embedding the widget. This guide walks through adding it to your own application, configuring the ' +
+            'redirect, and handling the callback once the user returns to your site. It assumes you have already ' +
+            'created a tenant and know which domain you will serve the application from.',
+          iframes: [src],
+        });
+
+        const result = await authManager.validateSession('https://example.com');
+
+        expect(result.isValid).toBe(true);
+      });
+
+      // A URL match is worth three of the detector's six indicators, on its own enough to call a
+      // page a login page. Scoring the URL here would refuse every session for a site whose
+      // documentation lives under /auth, /oauth or /sso, or on a host like auth.example.com.
       it.each([
         ['a path that reads as authentication', 'https://example.com/docs/oauth/getting-started'],
         ['a host that reads as authentication', 'https://auth.example.com/docs/getting-started'],

@@ -27,6 +27,12 @@ import {
   OutboundRequestFailedError,
 } from '../util/outbound-request.js';
 
+/**
+ * A page that is only a frame is a login shell; a documentation page that embeds an identity
+ * provider - a demo, a sandbox, a support widget - has an article around it.
+ */
+const LOGIN_SHELL_MAX_TEXT = 200;
+
 function monitorMainFrameNavigations(page: Page): { throwIfError: () => Promise<void>; stop: () => void } {
   let navigationError: Error | undefined;
   const pendingChecks = new Set<Promise<void>>();
@@ -492,13 +498,26 @@ export class AuthManager {
       // passing finalUrl would call every /oauth, /sso or /auth documentation URL an expired session
       const loginDetection = detectLoginPage(bodyText + pageContent, '');
       // A login hosted in an iframe leaves almost nothing to score on the page around it, which is
-      // what withholding the URL above costs us. The frame's own address is evidence the outer
-      // page's wording is not: documentation does not embed a sign-in page.
-      const embedsLoginFrame = await page.evaluate(() =>
-        [...document.querySelectorAll('iframe')].map((frame) => frame.getAttribute('src') || '')
+      // what withholding the URL above costs us. The frame's address is evidence its host page's
+      // wording is not - but only for a page that is little else: documentation embeds identity
+      // providers all the time, in demos, sandboxes and support widgets.
+      const frameSources = await page.evaluate(() =>
+        [...document.querySelectorAll('iframe')].map((frame) => frame.getAttribute('src') || '').filter(Boolean)
       );
+      const embedsLoginFrame =
+        bodyText.trim().length < LOGIN_SHELL_MAX_TEXT &&
+        frameSources.some((src) => {
+          try {
+            // Resolved against the page: a login frame is usually same-origin, and a relative src
+            // is not a URL on its own
+            return isLoginPageUrl(new URL(src, finalUrl).href);
+          }
+          catch {
+            return false;
+          }
+        });
 
-      if ((loginDetection.isLoginPage && loginDetection.confidence >= 0.5) || embedsLoginFrame.some(isLoginPageUrl)) {
+      if ((loginDetection.isLoginPage && loginDetection.confidence >= 0.5) || embedsLoginFrame) {
         logger.warn(`[AuthManager] Session appears expired - login page detected (confidence: ${loginDetection.confidence.toFixed(2)})`);
         logger.debug(`[AuthManager] Login detection reasons: ${loginDetection.reasons.join(', ')}`);
         await navigationMonitor.throwIfError();

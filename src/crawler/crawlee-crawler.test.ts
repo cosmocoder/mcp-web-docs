@@ -68,7 +68,7 @@ vi.mock('crawlee', () => ({
 
 // Import after mocking
 import { logger } from '../util/logger.js';
-import { CrawleeCrawler } from './crawlee-crawler.js';
+import { CrawleeCrawler, type readLoginPageSignals } from './crawlee-crawler.js';
 
 type RequestHandler = (context: Record<string, unknown>) => Promise<void>;
 type ErrorHandler = (context: Record<string, unknown>, error: Error) => Promise<void>;
@@ -520,21 +520,19 @@ describe('CrawleeCrawler', () => {
     // One evaluate now returns the text, the password probe and the page's shape; the other
     // evaluate calls in the navigation path ask yes/no questions and must keep getting a boolean.
     // Shape is what the browser would report, so tests state it rather than deriving it from prose.
-    type PageSpec = { url: string; bodyText: string; html?: string; headings?: string[]; forms?: string[]; fields?: string[] };
+    type PageSpec = { url: string; bodyText: string; html?: string; headings?: string[]; asksForPassword?: boolean };
 
-    function authenticatedPage({ url, bodyText, html = '', headings = [], forms = [], fields = [] }: PageSpec) {
+    function authenticatedPage({ url, bodyText, html = '', headings = [], asksForPassword = false }: PageSpec) {
       const { page } = navigationPage(
         url,
         () => {},
         vi.fn(async (fn: unknown) =>
           String(fn).includes('hasPasswordInput')
-            ? {
+            ? ({
                 text: bodyText,
-                hasPasswordInput: html.includes('type="password"') || fields.some((field) => field.endsWith(':password')),
+                hasPasswordInput: asksForPassword || html.includes('type="password"'),
                 headings,
-                forms,
-                fields,
-              }
+              } satisfies ReturnType<typeof readLoginPageSignals>)
             : false
         )
       );
@@ -565,8 +563,7 @@ describe('CrawleeCrawler', () => {
       url: `https://example.com/docs/${n}`,
       bodyText: LOGIN_BODY,
       headings: ['Sign in'],
-      forms: ['/login'],
-      fields: ['username:text', 'password:password'],
+      asksForPassword: true,
     });
 
     it('fails the crawl when the first page is a login page', async () => {
@@ -595,10 +592,7 @@ describe('CrawleeCrawler', () => {
       ['real pages are interleaved with it', [docsPage(1), loginPage(2), docsPage(3), loginPage(4), docsPage(5), loginPage(6)]],
       [
         'the login page names the URL it turned away',
-        [
-          docsPage(0),
-          ...[1, 2, 3].map((n) => ({ url: `https://example.com/docs/${n}`, bodyText: `${LOGIN_BODY} Continue to /docs/${n}` })),
-        ],
+        [docsPage(0), ...[1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: `${LOGIN_BODY} Continue to /docs/${n}` }))],
       ],
     ])('fails the crawl when %s', async (_label, pages) => {
       authenticate();
@@ -631,7 +625,7 @@ describe('CrawleeCrawler', () => {
     // and it is confidence this gates on - otherwise any page mentioning a username counts
     it('ignores pages that only just trip the detector', async () => {
       authenticate();
-      const pages = [1, 2, 3].map((n) => ({ url: `https://example.com/docs/${n}`, bodyText: 'Log in with your username.' }));
+      const pages = [1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: 'Log in with your username.' }));
 
       await expect(crawlPages([docsPage(0), ...pages])).resolves.toBeUndefined();
     });
@@ -640,7 +634,7 @@ describe('CrawleeCrawler', () => {
     // after-the-fact rule never fires. A session dying late in a large crawl looks like this.
     it('fails a long crawl where the session died near the end', async () => {
       authenticate();
-      const tail = [1, 2, 3].map((n) => ({ url: `https://example.com/docs/late-${n}`, bodyText: LOGIN_BODY }));
+      const tail = [1, 2, 3].map((n) => ({ ...loginPage(n), url: `https://example.com/docs/late-${n}` }));
 
       await expect(crawlPages([...[1, 2, 3, 4, 5, 6, 7, 8].map(docsPage), ...tail])).rejects.toThrow(
         /one login page answered 3 different URLs/i
@@ -690,7 +684,7 @@ describe('CrawleeCrawler', () => {
     it('keeps crawling a two-page site whose second page is about signing in', async () => {
       authenticate();
 
-      await expect(crawlPages([docsPage(1), { url: 'https://example.com/docs/auth', bodyText: LOGIN_BODY }])).resolves.toBeUndefined();
+      await expect(crawlPages([docsPage(1), { ...loginPage(2), url: 'https://example.com/docs/auth' }])).resolves.toBeUndefined();
     });
 
     // Exactly half, which "most of the crawl" has to include - otherwise a session dying at the
@@ -739,6 +733,32 @@ describe('CrawleeCrawler', () => {
       await collect(crawler, 'https://example.com/docs');
 
       expect(ordinary.content).not.toHaveBeenCalled();
+    });
+
+    // Shape alone cannot tell pages apart: a theme rendering headings as styled divs, or a reference
+    // template whose h1 and h2 are fixed, gives three genuinely different pages one shape
+    it.each([
+      ['a theme that renders no headings', [1, 2, 3].map((n) => ({ ...docsPage(n), headings: [] }))],
+      [
+        'a reference template with fixed headings',
+        [1, 2, 3].map((n) => ({ ...docsPage(n), headings: ['Authentication', 'Request', 'Response'] })),
+      ],
+    ])('keeps crawling documentation pages that share %s', async (_label, pages) => {
+      authenticate();
+      const aboutSigningIn = pages.map((page) => ({ ...page, bodyText: LOGIN_BODY }));
+
+      await expect(crawlPages([docsPage(0), ...aboutSigningIn])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
+    });
+
+    // A sign-in box in the page furniture puts a password field on every page of the site. What
+    // still differs is what each page is about.
+    it('keeps crawling a site whose every page carries a sign-in box', async () => {
+      authenticate();
+      const pages = [1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: `${LOGIN_BODY} Topic ${n}`, headings: [`Topic ${n}`] }));
+
+      await expect(crawlPages([docsPage(0), ...pages])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(4);
     });
 
     it('does not check for login pages when the crawl never authenticated', async () => {

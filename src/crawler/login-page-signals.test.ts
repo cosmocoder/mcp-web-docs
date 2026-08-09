@@ -19,15 +19,9 @@ describe('readLoginPageSignals', () => {
       text: 'Sign in',
       hasPasswordInput: true,
       headings: ['Sign in'],
-      // the query is dropped: it is where a login page puts the address it turned away
-      forms: ['/login'],
-      fields: ['username:text', 'password:password'],
     });
   });
 
-  // The point of the shape: what a login page keeps across requests, and what documentation pages
-  // differ in. Hashing the prose instead failed both ways - it folded one API reference template
-  // describing three endpoints into a single page, and let a login page naming its return URL escape.
   it('is the same for one login page answering different URLs', () => {
     const first = render(`${LOGIN_FORM}<p>Continue to /docs/1. Attempt 1 of 5.</p>`);
     const second = render(`${LOGIN_FORM.replace('%2Fdocs%2F42', '%2Fdocs%2F7')}<p>Continue to /docs/7. Attempt 2 of 5.</p>`);
@@ -49,8 +43,6 @@ describe('readLoginPageSignals', () => {
       text: 'Ordinary content',
       hasPasswordInput: false,
       headings: [],
-      forms: [],
-      fields: [],
     });
   });
 
