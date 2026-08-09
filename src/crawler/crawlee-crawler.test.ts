@@ -1,5 +1,5 @@
 import type { CrawlResult } from '../types.js';
-import type { ValidatedStorageState } from '../util/security.js';
+import { SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
 
 const mockQueueManager = {
   initialize: vi.fn().mockResolvedValue(undefined),
@@ -510,6 +510,83 @@ describe('CrawleeCrawler', () => {
       await collect(crawler, 'https://example.com/docs');
 
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    });
+  });
+
+  describe('session expiry', () => {
+    const LOGIN_TEXT = 'Sign in Password Forgot password?';
+
+    // The body-text read is how checkForLoginPage sees the page; the other evaluate calls in the
+    // navigation path ask yes/no questions and must keep getting a boolean
+    function authenticatedPage(url: string, title: string, bodyText: string) {
+      const { page } = navigationPage(
+        url,
+        () => {},
+        vi.fn(async (fn: unknown) => (String(fn).includes('textContent') ? bodyText : false))
+      );
+      page.title = vi.fn().mockResolvedValue(title);
+      return Object.assign(page, { content: vi.fn().mockResolvedValue(`<html><body>${bodyText}</body></html>`) });
+    }
+
+    function authenticate() {
+      crawler.setStorageState({ cookies: [{ name: 'auth', value: 'token', domain: 'example.com', path: '/' }] });
+    }
+
+    async function crawlPages(pages: Array<{ url: string; title: string; bodyText: string }>): Promise<void> {
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        for (const { url, title, bodyText } of pages) {
+          await runRequestHandler(authenticatedPage(url, title, bodyText), url);
+        }
+        return successfulRunStats;
+      });
+      await collect(crawler, 'https://example.com/docs');
+    }
+
+    const docsPage = (n: number) => ({ url: `https://example.com/docs/${n}`, title: `Page ${n}`, bodyText: 'Ordinary content' });
+    const loginPage = (n: number) => ({ url: `https://example.com/docs/${n}`, title: 'Sign in', bodyText: LOGIN_TEXT });
+
+    it.each([
+      ['a login URL', 'https://example.com/login', 'Docs', 'Ordinary content'],
+      ['login content', 'https://example.com/docs', 'Sign in', LOGIN_TEXT],
+    ])('fails the crawl when the first page is %s', async (_label, url, title, bodyText) => {
+      authenticate();
+
+      await expect(crawlPages([{ url, title, bodyText }])).rejects.toThrow(SessionExpiredError);
+    });
+
+    // Three pages that all came back as the same login page: the session died partway, and every
+    // page after it would be that login page stored as documentation
+    it('fails the crawl when the same login page is served repeatedly', async () => {
+      authenticate();
+
+      await expect(crawlPages([docsPage(1), loginPage(2), loginPage(3), loginPage(4)])).rejects.toThrow(
+        /session expired during the crawl - 3 pages in a row/i
+      );
+    });
+
+    // The detector counts authentication keywords, so a page about signing in looks like a login
+    // page. Only a page that keeps coming back is an expiry.
+    it.each([
+      ['a single page trips the detector', [docsPage(1), loginPage(2), docsPage(3)]],
+      ['real pages break the run', [docsPage(1), loginPage(2), loginPage(3), docsPage(4), loginPage(5), loginPage(6)]],
+      [
+        'an authentication section has a page per topic',
+        [
+          docsPage(1),
+          { url: 'https://example.com/docs/oauth', title: 'OAuth', bodyText: LOGIN_TEXT },
+          { url: 'https://example.com/docs/tokens', title: 'API tokens', bodyText: LOGIN_TEXT },
+          { url: 'https://example.com/docs/sso', title: 'SSO', bodyText: LOGIN_TEXT },
+        ],
+      ],
+    ])('keeps crawling when %s', async (_label, pages) => {
+      authenticate();
+
+      await expect(crawlPages(pages)).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(pages.length);
+    });
+
+    it('does not check for login pages when the crawl never authenticated', async () => {
+      await expect(crawlPages([loginPage(1), loginPage(2), loginPage(3)])).resolves.toBeUndefined();
     });
   });
 

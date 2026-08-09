@@ -47,6 +47,13 @@ function normalizeQueuedUrl(url: string): string {
 const MIN_TOLERATED_FAILED_PAGES = 5;
 const MAX_TOLERATED_FAILED_PAGE_RATIO = 0.02;
 
+/**
+ * How many pages in a row must look like the same login page before the session is called dead.
+ * One is not enough: the detector counts authentication keywords, and a page documenting how to
+ * sign in trips it. An expired session does not stop, and it serves the same page every time.
+ */
+const REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED = 3;
+
 interface NavigationAttempt {
   failedUrl?: string;
   outboundFailure?: BlockedOutboundRequestError | OutboundRequestFailedError;
@@ -59,6 +66,9 @@ export class CrawleeCrawler extends BaseCrawler {
   private storageState?: ValidatedStorageState;
   private isFirstPage: boolean = true;
   private sessionExpiredError: SessionExpiredError | null = null;
+  /** Pages in a row that looked like a login page, and the title they shared */
+  private repeatedLoginPages: number = 0;
+  private lastLoginPageTitle: string | null = null;
   private expectedUrl: string = '';
   /** The allowed hostname for crawling - pages outside this domain are skipped */
   private allowedHostname: string = '';
@@ -125,47 +135,76 @@ export class CrawleeCrawler extends BaseCrawler {
   }
 
   /**
-   * Check if a page appears to be a login/authentication page.
-   * This is used to detect expired sessions during crawling.
+   * Whether the crawl has run into an expired session. Only consulted when we authenticated, so a
+   * login page here means the session died rather than the site being public.
+   *
+   * The entry point is decisive on its own - we authenticated moments ago, so a login page is the
+   * session already gone. Later pages are not, because the detector counts authentication keywords
+   * and a page documenting how to sign in trips it. What separates an expiry from documentation is
+   * that it does not stop and does not vary: the same login page comes back for every URL asked
+   * for. So a run of them under one title is the signal, and any real page in between clears it.
    */
   private async checkForLoginPage(page: Page, currentUrl: string): Promise<boolean> {
-    // Only check the first page with high scrutiny
-    // (subsequent pages being login pages might be intentional navigation)
-    if (!this.isFirstPage) {
-      return false;
-    }
-
-    // Check URL pattern first (fast)
-    if (isLoginPageUrl(currentUrl)) {
+    // URL pattern first, it costs nothing
+    if (this.isFirstPage && isLoginPageUrl(currentUrl)) {
       logger.warn(`[CrawleeCrawler] First page URL matches login pattern: ${currentUrl}`);
+      this.sessionExpiredError = new SessionExpiredError(
+        `Authentication session has expired - the first page is a login URL`,
+        this.expectedUrl,
+        currentUrl,
+        { isLoginPage: true, confidence: 1, reasons: [`URL matches login pattern: ${currentUrl}`] }
+      );
       return true;
     }
 
-    // Check page content
+    let detection;
+    let title;
     try {
       const bodyText = await page.evaluate(() => document.body?.textContent || '');
       const pageHtml = await page.content();
-      const detection = detectLoginPage(bodyText + pageHtml, currentUrl);
-
-      if (detection.isLoginPage && detection.confidence >= 0.5) {
-        logger.warn(`[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`);
-        logger.debug(`[CrawleeCrawler] Detection reasons: ${detection.reasons.join(', ')}`);
-
-        // Store the error for throwing later (can't throw from request handler)
-        this.sessionExpiredError = new SessionExpiredError(
-          `Authentication session has expired - crawled page is a login page`,
-          this.expectedUrl,
-          currentUrl,
-          detection
-        );
-        return true;
-      }
+      detection = detectLoginPage(bodyText + pageHtml, currentUrl);
+      title = await page.title();
     }
     catch (error) {
       logger.debug(`[CrawleeCrawler] Error checking for login page:`, error);
+      return false;
     }
 
-    return false;
+    if (!detection.isLoginPage || detection.confidence < 0.5) {
+      this.repeatedLoginPages = 0;
+      return false;
+    }
+
+    if (this.isFirstPage) {
+      logger.warn(`[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`);
+      logger.debug(`[CrawleeCrawler] Detection reasons: ${detection.reasons.join(', ')}`);
+      // Stored rather than thrown: a request handler cannot fail the crawl
+      this.sessionExpiredError = new SessionExpiredError(
+        `Authentication session has expired - crawled page is a login page`,
+        this.expectedUrl,
+        currentUrl,
+        detection
+      );
+      return true;
+    }
+
+    this.repeatedLoginPages = title === this.lastLoginPageTitle ? this.repeatedLoginPages + 1 : 1;
+    this.lastLoginPageTitle = title;
+    if (this.repeatedLoginPages < REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED) {
+      logger.debug(
+        `[CrawleeCrawler] ${currentUrl} looks like a login page (${this.repeatedLoginPages} in a row, confidence ${detection.confidence.toFixed(2)})`
+      );
+      return false;
+    }
+
+    logger.warn(`[CrawleeCrawler] ${this.repeatedLoginPages} pages in a row served "${title}", a login page - session expired mid-crawl`);
+    this.sessionExpiredError = new SessionExpiredError(
+      `Authentication session expired during the crawl - ${this.repeatedLoginPages} pages in a row were the same login page`,
+      this.expectedUrl,
+      currentUrl,
+      detection
+    );
+    return true;
   }
 
   /**
@@ -353,6 +392,8 @@ export class CrawleeCrawler extends BaseCrawler {
     // Reset state for this crawl
     this.isFirstPage = true;
     this.sessionExpiredError = null;
+    this.repeatedLoginPages = 0;
+    this.lastLoginPageTitle = null;
     this.terminalRootFailure = undefined;
     this.rootPageFailed = false;
     this.failedPages = 0;
@@ -582,19 +623,13 @@ export class CrawleeCrawler extends BaseCrawler {
             }
           }
 
-          // Check for login page on first page (detects expired sessions)
-          if (this.isFirstPage && this.storageState) {
-            const isLoginPage = await this.checkForLoginPage(page, actualUrl);
-            if (isLoginPage) {
-              log.error('Session appears expired - first page is a login page. Aborting crawl.');
-              this.abort();
-              return;
-            }
-            this.isFirstPage = false;
+          // A session can die at any point in the crawl, not only before it starts
+          if (this.storageState && (await this.checkForLoginPage(page, actualUrl))) {
+            log.error('Session appears expired - the crawl is being served login pages. Aborting crawl.');
+            this.abort();
+            return;
           }
-          else if (this.isFirstPage) {
-            this.isFirstPage = false;
-          }
+          this.isFirstPage = false;
 
           // Detect site type and get extractor
           for (const rule of siteRules) {
