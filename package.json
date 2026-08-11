@@ -58,7 +58,7 @@
     "create-release": "semantic-release"
   },
   "dependencies": {
-    "@andersmyrmel/vard": "1.2.0",
+    "@andersmyrmel/vard": "1.2.1",
     "@lancedb/lancedb": "0.33.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "cheerio": "1.2.0",
