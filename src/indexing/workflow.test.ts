@@ -164,6 +164,32 @@ describe('IndexingWorkflow', () => {
     );
   });
 
+  // A crawl of a site that needs signing in ends here: every page it reached was a wall, so the walls
+  // were left out and nothing is left to index. The stats are never reached on this path, so the count
+  // and both remedies have to be in the failure itself, or the operator is told only that it found
+  // nothing.
+  it.each([
+    ['names the login pages that left it with nothing to index', ['https://docs.example.com/login'], /1 of the pages/],
+    ['reports finding nothing when no page was a login page', [], /^No pages found to index$/],
+  ])('%s', async (_label, skippedLoginPageUrls, expected) => {
+    const harness = createHarness({ skippedLoginPageUrls, crawl: async function* () {} });
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(request.operationId, expect.stringMatching(expected));
+  });
+
+  it('offers both remedies for a crawl that reached nothing but login pages', async () => {
+    const harness = createHarness({ skippedLoginPageUrls: ['https://docs.example.com/login'], crawl: async function* () {} });
+
+    await runWorkflow(harness.workflow, request);
+
+    const [, message] = harness.statusTracker.failIndexing.mock.calls[0];
+    expect(message).toContain('https://docs.example.com/login');
+    expect(message).toContain("'authenticate' tool");
+    expect(message).toContain('pathPrefix');
+  });
+
   it('skips pages with no indexable content and still stores the rest', async () => {
     const harness = createHarness({
       crawl: async function* () {

@@ -160,7 +160,14 @@ export class IndexingWorkflow {
 
       if (pages.length === 0) {
         logger.warn('[IndexingWorkflow] No pages found during crawl');
-        throw new Error('No pages found to index');
+        // Login walls are the likeliest reason a crawl of a real site comes back with nothing, and this
+        // path never reaches the stats below, so the diagnosis and the remedies travel in the error
+        const walls = crawler.skippedLoginPageUrls;
+        throw new Error(
+          walls.length === 0
+            ? 'No pages found to index'
+            : `No pages found to index. ${walls.length} of the pages the crawl reached ask for a password, starting at ${walls[0]}. Use the 'authenticate' tool to log in, or set pathPrefix to keep the crawl out of that part of the site.`
+        );
       }
 
       logger.info(`[IndexingWorkflow] Found ${pages.length} pages to process`);

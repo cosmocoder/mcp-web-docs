@@ -155,22 +155,6 @@ export class CrawleeCrawler extends BaseCrawler {
   }
 
   /**
-   * Both rules below end the crawl on walls being a lot of it, and neither may do that to a public
-   * site. A crawl with no session has nothing that can have expired, and a public site has login pages
-   * in it by design - a /login, a /signup, one per gated area. A site that has to be authenticated
-   * before it can be indexed answers every page with a wall, so both rules still fire on it; a public
-   * site that gave up anything else keeps what it gave up, and its walls are reported as skipped.
-   *
-   * Read from the pages the crawl has looked at rather than from the ones it has indexed. A page is
-   * recorded above the moment it is checked, but indexed only after its links are enqueued and its
-   * content extracted, and the window rule below runs mid-crawl: with five pages in flight at once, a
-   * run of walls can clear its checks while every documentation page is still being extracted.
-   */
-  private get failingWouldDiscardDocumentation(): boolean {
-    return !this.storageState && [...this.wallByRequestedUrl.values()].includes(false);
-  }
-
-  /**
    * What to do with this page: nothing, keep it out of the index, or stop the crawl. Runs whether or
    * not the crawl authenticated: with a session a login page means the session died, without one it
    * means the site needs authenticating before it can be indexed at all. Either way the answer is the
@@ -236,9 +220,16 @@ export class CrawleeCrawler extends BaseCrawler {
 
     // Never indexed - it is not documentation - but one wall is not a dead session. A public site's
     // own /login is a wall, and a crawl without a pathPrefix reaches it from the nav.
+    //
+    // This rule and the proportion rule below both end the crawl over walls being a lot of it, and both
+    // are for a crawl that authenticated. Without a session nothing can have expired, and a public site
+    // has login pages in it by design - a /login, a /signup, one per gated area, all hanging off the
+    // same nav and so arriving together. Such a crawl is failed only where the page it was asked for is
+    // itself a wall, which the rule above catches; every other wall is kept out of the index and
+    // reported, and a site that gave up nothing else ends with no pages, which the caller is told.
     const recent = [...this.wallByRequestedUrl.values()].slice(-LOGIN_WALL_WINDOW);
     const walls = recent.filter(Boolean).length;
-    if (walls < LOGIN_WALLS_IN_WINDOW_BEFORE_SESSION_EXPIRED || this.failingWouldDiscardDocumentation) {
+    if (walls < LOGIN_WALLS_IN_WINDOW_BEFORE_SESSION_EXPIRED || !this.storageState) {
       return 'skip';
     }
 
@@ -258,7 +249,8 @@ export class CrawleeCrawler extends BaseCrawler {
   private sessionExpiredAcrossCrawl(): SessionExpiredError | null {
     const checked = this.wallByRequestedUrl.size;
     const walls = [...this.wallByRequestedUrl.values()].filter(Boolean).length;
-    if (walls < MIN_WALLS_FOR_MOSTLY_WALLS || walls * 2 < checked || this.failingWouldDiscardDocumentation) {
+    // A crawl that authenticated, for the reason given at the window rule
+    if (!this.storageState || walls < MIN_WALLS_FOR_MOSTLY_WALLS || walls * 2 < checked) {
       return null;
     }
 

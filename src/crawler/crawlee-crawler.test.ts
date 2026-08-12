@@ -884,12 +884,15 @@ describe('CrawleeCrawler', () => {
       expect(mockQueueManager.handleQueueAndLinks).toHaveBeenCalledTimes(3);
     });
 
-    // A site that answers with a login wall cannot be indexed whether or not a session was tried, and
-    // the message has to say which of the two it was - there is no session to blame here
-    it('stops an unauthenticated crawl that got nothing but login walls', async () => {
+    // A public crawl is not failed over walls it found: they are left out and reported, and a site that
+    // gave up nothing else ends with nothing to index. The workflow fails the operation over that, and
+    // names these URLs in doing so, rather than the crawl deciding on its own what the walls meant.
+    it('leaves a public site of nothing but login walls with no pages and every wall reported', async () => {
       crawler = new CrawleeCrawler();
 
-      await expect(crawlPages([loginWall(1), loginWall(2)])).rejects.toThrow(/This site requires authentication/i);
+      await expect(crawlPages([loginWall(1), loginWall(2)])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).not.toHaveBeenCalled();
+      expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/docs/1', 'https://example.com/docs/2']);
     });
 
     // Without a session nothing can have expired, so walls being half a small site is not a dead
@@ -917,28 +920,26 @@ describe('CrawleeCrawler', () => {
 
     // Five pages are in flight at once, and a page is extracted after its links are enqueued. A run of
     // walls can finish while the documentation the crawl already accepted is still being extracted, so
-    // what the crawl has looked at has to answer this, not what it has managed to index so far.
+    // nothing the crawl has managed to index yet can be what decides this.
     it('keeps a public crawl whose documentation is still being extracted when a run of walls arrives', async () => {
       crawler = new CrawleeCrawler();
-      let extract = () => {};
-      let reachedExtraction = () => {};
-      const extracted = new Promise<void>((resolve) => (extract = resolve));
-      const atExtraction = new Promise<void>((resolve) => (reachedExtraction = resolve));
+      const extraction = Promise.withResolvers<void>();
+      const reachedExtraction = Promise.withResolvers<void>();
       const entry = Object.assign(authenticatedPage({ url: 'https://example.com/docs', bodyText: 'Ordinary content' }), {
         title: vi.fn(async () => {
-          reachedExtraction();
-          await extracted;
+          reachedExtraction.resolve();
+          await extraction.promise;
           return 'Docs';
         }),
       });
 
       mockCrawlerRun.mockImplementationOnce(async () => {
         const inFlight = runRequestHandler(entry, 'https://example.com/docs');
-        await atExtraction;
+        await reachedExtraction.promise;
         for (const path of ['login', 'signup', 'admin/login', 'portal/login', 'legacy/login']) {
           await runRequestHandler(authenticatedPage(wallAt(path)), `https://example.com/${path}`);
         }
-        extract();
+        extraction.resolve();
         await inFlight;
         return successfulRunStats;
       });
