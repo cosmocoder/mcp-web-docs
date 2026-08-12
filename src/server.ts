@@ -62,6 +62,16 @@ export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
     // Must not claim nothing was stored: a cancel can land after addDocument has committed.
     return `All operations finished, but ${unsuccessful} did not succeed. Check the status entries for why, and use list_documentation to confirm what is actually indexed.`;
   }
+  // An operation can succeed and still be missing pages - ones that could not be fetched, or ones
+  // that asked for a password. "No need to poll again" must not be the last thing an agent reads
+  // then, because the remedy is in the status entry it would stop looking at.
+  const incomplete = statuses.filter((status) => status.pagesFailed || status.loginPagesSkipped).length;
+  if (incomplete > 0) {
+    return (
+      `All operations finished, but ${incomplete} did not index everything. Check the status entries: they say which pages are ` +
+      'missing and what to do about them. Use list_documentation to confirm what is indexed.'
+    );
+  }
   // Complete is only true of what is still tracked, so this points at list_documentation like
   // every other terminal branch - an earlier failure may already have aged out unseen.
   return 'All operations complete. No need to poll again. Use list_documentation to confirm what is indexed.';

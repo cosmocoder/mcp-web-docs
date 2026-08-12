@@ -21,7 +21,7 @@ function describeCompletion(status: IndexingStatus): string {
   }
   if (status.loginPagesSkipped) {
     const pages = status.loginPagesSkipped === 1 ? 'page' : 'pages';
-    const named = (status.skippedLoginUrls ?? []).slice(0, MAX_NAMED_LOGIN_PAGES);
+    const named = status.skippedLoginUrls ?? [];
     const rest = status.loginPagesSkipped - named.length;
     const list = named.length > 0 ? ` (${named.join(', ')}${rest > 0 ? `, and ${rest} more` : ''})` : '';
     missing.push(
@@ -91,15 +91,12 @@ export class IndexingStatusTracker {
 
   updateStats(
     operationId: string,
-    stats: {
-      pagesFound?: number;
-      pagesProcessed?: number;
-      pagesSkipped?: number;
-      pagesFailed?: number;
-      loginPagesSkipped?: number;
-      skippedLoginUrls?: string[];
-      chunksCreated?: number;
-    }
+    stats: Partial<
+      Pick<
+        IndexingStatus,
+        'pagesFound' | 'pagesProcessed' | 'pagesSkipped' | 'pagesFailed' | 'loginPagesSkipped' | 'skippedLoginUrls' | 'chunksCreated'
+      >
+    >
   ): void {
     const currentStatus = this.statuses.get(operationId);
     if (!currentStatus) {
@@ -113,7 +110,9 @@ export class IndexingStatusTracker {
       pagesSkipped: stats.pagesSkipped ?? currentStatus.pagesSkipped,
       pagesFailed: stats.pagesFailed ?? currentStatus.pagesFailed,
       loginPagesSkipped: stats.loginPagesSkipped ?? currentStatus.loginPagesSkipped,
-      skippedLoginUrls: stats.skippedLoginUrls ?? currentStatus.skippedLoginUrls,
+      // Capped here rather than at the caller: the whole status is serialized to the client on
+      // every poll, and only the first few are ever named. loginPagesSkipped keeps the true total.
+      skippedLoginUrls: stats.skippedLoginUrls?.slice(0, MAX_NAMED_LOGIN_PAGES) ?? currentStatus.skippedLoginUrls,
       chunksCreated: stats.chunksCreated ?? currentStatus.chunksCreated,
     };
 

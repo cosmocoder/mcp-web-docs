@@ -38,7 +38,7 @@ export class DocsCrawler {
 
   /** Login walls left out of the index. Only meaningful once crawl() has finished. */
   get skippedLoginPageUrls(): string[] {
-    return this.skippedLoginUrls;
+    return [...this.skippedLoginUrls];
   }
 
   setStorageState(state: ValidatedStorageState): void {
@@ -50,6 +50,7 @@ export class DocsCrawler {
     const startUrl = new URL(url);
     logger.debug(`[DocsCrawler] Starting crawl of ${startUrl}`);
     this.failedPages = 0;
+    this.skippedLoginUrls = [];
 
     if (this.isAborting) {
       logger.debug('[DocsCrawler] Crawl aborted');

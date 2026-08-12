@@ -817,6 +817,25 @@ describe('CrawleeCrawler', () => {
       expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/docs/2']);
     });
 
+    // Reported to the client, and the same URL on its way to stderr is redacted, so this one is too.
+    // Normalized as well, matching the key the window counts by.
+    it('reports the skipped URL redacted and normalized', async () => {
+      const wall = { ...loginWall(2), url: 'https://example.com/docs/2?token=abc123&next=%2Fdocs#top' };
+
+      await crawlPages([docsPage(1), wall]);
+
+      expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/docs/2?token=[REDACTED]&next=%2Fdocs']);
+    });
+
+    // The caller must not be able to reach into the crawl's own state through what it reads
+    it('hands out a copy of the skipped URLs', async () => {
+      await crawlPages([docsPage(1), loginWall(2)]);
+
+      crawler.skippedLoginPageUrls.push('https://example.com/injected');
+
+      expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/docs/2']);
+    });
+
     it('starts counting login pages again on the next crawl', async () => {
       await crawlPages([docsPage(1), loginWall(2)]);
       vi.mocked(logger.warn).mockClear();

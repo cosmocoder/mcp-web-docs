@@ -10,7 +10,7 @@ import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
 import { isLoginWall, LOGIN_PAGE_CONFIDENCE, readLoginPageSignals } from './login-page-signals.js';
-import { detectLoginPage, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
+import { detectLoginPage, redactForLogging, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
 import {
   BlockedOutboundRequestError,
   classifyOutboundFailure,
@@ -689,7 +689,10 @@ export class CrawleeCrawler extends BaseCrawler {
               // under it out of the crawl, and the nav of a small section is exactly the sparse page
               // most likely to be mistaken for a wall.
               if (verdict === 'skip') {
-                this.skippedLoginUrls.push(request.url);
+                // Normalized and redacted: this URL is reported to the client, and the same string
+                // on its way to stderr goes through the logger's redaction. A query string carrying
+                // a token should not be scrubbed in one place and echoed in the other.
+                this.skippedLoginUrls.push(redactForLogging(normalizeQueuedUrl(request.url)));
                 logger.warn(`[CrawleeCrawler] Not indexing ${request.url}: it asks for a password and has no content of its own`);
                 return;
               }

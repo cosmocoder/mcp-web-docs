@@ -1,3 +1,4 @@
+import type { DocsCrawler } from './crawler/docs-crawler.js';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProgressToken } from '@modelcontextprotocol/sdk/types.js';
 import { SessionExpiredError } from './util/security.js';
@@ -166,7 +167,8 @@ vi.mock('./crawler/docs-crawler.js', () => ({
       },
       setPathPrefix: mockCrawlerSetPathPrefix,
       setStorageState: vi.fn(),
-    };
+      // Checked against the real class, so a hop the workflow reads cannot vanish from both sides
+    } satisfies Pick<DocsCrawler, 'crawl' | 'abort' | 'failedPageCount' | 'skippedLoginPageUrls' | 'setPathPrefix' | 'setStorageState'>;
   }),
 }));
 

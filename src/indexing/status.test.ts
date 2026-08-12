@@ -163,6 +163,8 @@ describe('IndexingStatusTracker', () => {
       expect(description).toContain('https://docs.example.com/login, https://docs.example.com/admin');
       expect(description).toContain("Use the 'authenticate' tool");
       expect(description).toContain('pathPrefix');
+      // Every URL is named, so there is no remainder to mention
+      expect(description).not.toContain('more');
     });
 
     // A walled crawl can skip hundreds; the point is to name the part of the site, not to paste it
@@ -184,9 +186,35 @@ describe('IndexingStatusTracker', () => {
       tracker.updateStats('test-id', { pagesFailed: 2, loginPagesSkipped: 1, skippedLoginUrls: ['https://docs.example.com/login'] });
       tracker.completeIndexing('test-id');
 
+      // Asserted across the seam: two substrings on their own pass however the sentences are joined
+      expect(tracker.getStatus('test-id')?.description).toContain(
+        'missing from the index; and 1 page asked for a password and was left out'
+      );
+    });
+
+    // Nothing to name is not an empty pair of brackets
+    it('should not name any URL when it has none', () => {
+      tracker.updateStats('test-id', { loginPagesSkipped: 2 });
+      tracker.completeIndexing('test-id');
+
       const description = tracker.getStatus('test-id')?.description;
-      expect(description).toContain('2 pages could not be fetched');
-      expect(description).toContain('1 page asked for a password and was left out');
+      expect(description).toContain('2 pages asked for a password');
+      // No bracket at all, rather than an empty or comma-led one
+      expect(description).not.toContain('(');
+    });
+
+    // The whole status goes to the client on every poll, so the list is capped where it is stored
+    it('should keep only the first few URLs it was given', () => {
+      tracker.updateStats('test-id', {
+        loginPagesSkipped: 9,
+        skippedLoginUrls: [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `https://docs.example.com/p${n}`),
+      });
+
+      expect(tracker.getStatus('test-id')?.skippedLoginUrls).toEqual([
+        'https://docs.example.com/p1',
+        'https://docs.example.com/p2',
+        'https://docs.example.com/p3',
+      ]);
     });
 
     it('should ignore completion for unknown ids', () => {
