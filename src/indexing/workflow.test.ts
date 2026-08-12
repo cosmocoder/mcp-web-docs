@@ -169,7 +169,12 @@ describe('IndexingWorkflow', () => {
   // and both remedies have to be in the failure itself, or the operator is told only that it found
   // nothing.
   it.each([
-    ['names the login pages that left it with nothing to index', ['https://docs.example.com/login'], /1 of the pages/],
+    ['counts the login page that left it with nothing to index', ['https://docs.example.com/login'], /reached 1 page asking/],
+    [
+      'counts several login pages that left it with nothing to index',
+      ['https://docs.example.com/login', 'https://docs.example.com/admin'],
+      /reached 2 pages asking/,
+    ],
     ['reports finding nothing when no page was a login page', [], /^No pages found to index$/],
   ])('%s', async (_label, skippedLoginPageUrls, expected) => {
     const harness = createHarness({ skippedLoginPageUrls, crawl: async function* () {} });

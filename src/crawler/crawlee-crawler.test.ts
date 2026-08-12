@@ -540,7 +540,8 @@ describe('CrawleeCrawler', () => {
       return Object.assign(page, { content: vi.fn().mockResolvedValue(`<html><body>${bodyText}${html}</body></html>`) });
     }
 
-    // The check only runs on a crawl that authenticated, so every case here starts from one
+    // Most of what the check decides turns on a session, so every case here starts from one. The cases
+    // that are about a crawl without one replace the crawler.
     beforeEach(() => {
       crawler.setStorageState({ cookies: [{ name: 'auth', value: 'token', domain: 'example.com', path: '/' }] });
     });
@@ -886,7 +887,7 @@ describe('CrawleeCrawler', () => {
 
     // A public crawl is not failed over walls it found: they are left out and reported, and a site that
     // gave up nothing else ends with nothing to index. The workflow fails the operation over that, and
-    // names these URLs in doing so, rather than the crawl deciding on its own what the walls meant.
+    // counts them in doing so and names the first, rather than the crawl deciding what the walls meant.
     it('leaves a public site of nothing but login walls with no pages and every wall reported', async () => {
       crawler = new CrawleeCrawler();
 
