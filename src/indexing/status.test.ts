@@ -149,6 +149,46 @@ describe('IndexingStatusTracker', () => {
       );
     });
 
+    // The count alone cannot tell a correct skip from a mistaken one, and both remedies need a URL
+    it('should name the login pages it left out of the index', () => {
+      tracker.updateStats('test-id', {
+        pagesFound: 40,
+        loginPagesSkipped: 2,
+        skippedLoginUrls: ['https://docs.example.com/login', 'https://docs.example.com/admin'],
+      });
+      tracker.completeIndexing('test-id');
+
+      const description = tracker.getStatus('test-id')?.description;
+      expect(description).toContain('2 pages asked for a password and were left out');
+      expect(description).toContain('https://docs.example.com/login, https://docs.example.com/admin');
+      expect(description).toContain("Use the 'authenticate' tool");
+      expect(description).toContain('pathPrefix');
+    });
+
+    // A walled crawl can skip hundreds; the point is to name the part of the site, not to paste it
+    it('should name only the first few and count the rest', () => {
+      tracker.updateStats('test-id', {
+        loginPagesSkipped: 9,
+        skippedLoginUrls: [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `https://docs.example.com/p${n}`),
+      });
+      tracker.completeIndexing('test-id');
+
+      const description = tracker.getStatus('test-id')?.description;
+      expect(description).toContain('https://docs.example.com/p3');
+      expect(description).not.toContain('https://docs.example.com/p4');
+      expect(description).toContain('and 6 more');
+    });
+
+    // Both kinds of absence at once: one sentence must not hide the other
+    it('should report failed pages and login pages together', () => {
+      tracker.updateStats('test-id', { pagesFailed: 2, loginPagesSkipped: 1, skippedLoginUrls: ['https://docs.example.com/login'] });
+      tracker.completeIndexing('test-id');
+
+      const description = tracker.getStatus('test-id')?.description;
+      expect(description).toContain('2 pages could not be fetched');
+      expect(description).toContain('1 page asked for a password and was left out');
+    });
+
     it('should ignore completion for unknown ids', () => {
       tracker.completeIndexing('unknown-id');
       // Should not throw

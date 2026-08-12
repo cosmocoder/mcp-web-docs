@@ -37,6 +37,7 @@ function createHarness(
     savedSession?: string;
     previousPageCount?: number;
     failedPageCount?: number;
+    skippedLoginPageUrls?: string[];
   } = {}
 ) {
   const addDocument = vi.fn().mockResolvedValue(undefined);
@@ -61,6 +62,7 @@ function createHarness(
   const crawler = {
     abort: vi.fn(),
     failedPageCount: options.failedPageCount ?? 0,
+    skippedLoginPageUrls: options.skippedLoginPageUrls ?? [],
     crawl:
       options.crawl ??
       async function* () {
@@ -128,7 +130,10 @@ describe('IndexingWorkflow', () => {
 
     await runWorkflow(harness.workflow, request);
 
-    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesFound: 1, pagesFailed: 3 });
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(
+      request.operationId,
+      expect.objectContaining({ pagesFound: 1, pagesFailed: 3 })
+    );
     expect(harness.statusTracker.completeIndexing).toHaveBeenCalledWith(request.operationId);
   });
 
@@ -137,7 +142,26 @@ describe('IndexingWorkflow', () => {
 
     await runWorkflow(harness.workflow, request);
 
-    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesFound: 1, pagesFailed: 0 });
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(
+      request.operationId,
+      expect.objectContaining({ pagesFound: 1, pagesFailed: 0 })
+    );
+  });
+
+  // A login wall the crawl left out is a page the caller asked for and did not get, and the URL is
+  // what either remedy needs
+  it('reports the login pages a crawl left out of the index', async () => {
+    const harness = createHarness({ skippedLoginPageUrls: ['https://docs.example.com/login', 'https://docs.example.com/admin'] });
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(
+      request.operationId,
+      expect.objectContaining({
+        loginPagesSkipped: 2,
+        skippedLoginUrls: ['https://docs.example.com/login', 'https://docs.example.com/admin'],
+      })
+    );
   });
 
   it('skips pages with no indexable content and still stores the rest', async () => {

@@ -82,8 +82,13 @@ export class CrawleeCrawler extends BaseCrawler {
   private allowedHostname: string = '';
   /** Track pages skipped due to domain mismatch */
   private skippedExternalPages: number = 0;
-  /** Login walls left out of the index without stopping the crawl */
-  private skippedLoginPages: number = 0;
+  /** The URLs of login walls left out of the index without stopping the crawl */
+  private skippedLoginUrls: string[] = [];
+
+  /** Login walls this crawl left out of the index. Only meaningful once crawl() has finished. */
+  get skippedLoginPageUrls(): string[] {
+    return [...this.skippedLoginUrls];
+  }
   /** Optional path prefix to restrict crawling */
   private pathPrefix?: string;
   private terminalRootFailure?: OutboundRequestFailedError;
@@ -432,7 +437,7 @@ export class CrawleeCrawler extends BaseCrawler {
     this.navigationAttempts = new WeakMap();
     this.expectedUrl = normalizeQueuedUrl(url);
     this.skippedExternalPages = 0;
-    this.skippedLoginPages = 0;
+    this.skippedLoginUrls = [];
 
     // Extract and store the allowed hostname from the initial URL
     try {
@@ -684,7 +689,7 @@ export class CrawleeCrawler extends BaseCrawler {
               // under it out of the crawl, and the nav of a small section is exactly the sparse page
               // most likely to be mistaken for a wall.
               if (verdict === 'skip') {
-                this.skippedLoginPages++;
+                this.skippedLoginUrls.push(request.url);
                 logger.warn(`[CrawleeCrawler] Not indexing ${request.url}: it asks for a password and has no content of its own`);
                 return;
               }
@@ -743,8 +748,8 @@ export class CrawleeCrawler extends BaseCrawler {
           `[CrawleeCrawler] Skipped ${this.skippedExternalPages} pages that redirected outside the allowed domain (${this.allowedHostname})`
         );
       }
-      if (this.skippedLoginPages > 0) {
-        logger.warn(`[CrawleeCrawler] Left ${this.skippedLoginPages} login pages out of the index; they had no content of their own`);
+      if (this.skippedLoginUrls.length > 0) {
+        logger.warn(`[CrawleeCrawler] Left ${this.skippedLoginUrls.length} login pages out of the index; they had no content of their own`);
       }
 
       // Check if we detected an expired session during crawling

@@ -4,6 +4,34 @@ import { IndexingStatus } from '../types.js';
 /** How long to keep completed/failed statuses before auto-cleanup (2 minutes) */
 export const COMPLETED_STATUS_TTL_MS = 2 * 60 * 1000;
 
+/** Enough to point at the part of the site that needs a remedy, without pasting a crawl into a status */
+const MAX_NAMED_LOGIN_PAGES = 3;
+
+/**
+ * What a finished crawl is missing, if anything. A crawl that asked for a password and got no content
+ * is not a clean success: the pages it left out are named, because the user's remedy - authenticate,
+ * or restrict the crawl with pathPrefix - depends on which part of the site they were.
+ */
+function describeCompletion(status: IndexingStatus): string {
+  const missing: string[] = [];
+  if (status.pagesFailed) {
+    const pages = status.pagesFailed === 1 ? 'page' : 'pages';
+    const verb = status.pagesFailed === 1 ? 'is' : 'are';
+    missing.push(`${status.pagesFailed} ${pages} could not be fetched and ${verb} missing from the index`);
+  }
+  if (status.loginPagesSkipped) {
+    const pages = status.loginPagesSkipped === 1 ? 'page' : 'pages';
+    const named = (status.skippedLoginUrls ?? []).slice(0, MAX_NAMED_LOGIN_PAGES);
+    const rest = status.loginPagesSkipped - named.length;
+    const list = named.length > 0 ? ` (${named.join(', ')}${rest > 0 ? `, and ${rest} more` : ''})` : '';
+    missing.push(
+      `${status.loginPagesSkipped} ${pages} asked for a password and ${status.loginPagesSkipped === 1 ? 'was' : 'were'} left out${list}` +
+        `. Use the 'authenticate' tool if the site needs signing in, or set pathPrefix to keep the crawl out of that part of it`
+    );
+  }
+  return missing.length > 0 ? `Indexing complete, but ${missing.join('; and ')}` : 'Indexing complete';
+}
+
 export class IndexingStatusTracker {
   private multibar: MultiBar;
   private bars: Map<string, SingleBar>;
@@ -63,7 +91,15 @@ export class IndexingStatusTracker {
 
   updateStats(
     operationId: string,
-    stats: { pagesFound?: number; pagesProcessed?: number; pagesSkipped?: number; pagesFailed?: number; chunksCreated?: number }
+    stats: {
+      pagesFound?: number;
+      pagesProcessed?: number;
+      pagesSkipped?: number;
+      pagesFailed?: number;
+      loginPagesSkipped?: number;
+      skippedLoginUrls?: string[];
+      chunksCreated?: number;
+    }
   ): void {
     const currentStatus = this.statuses.get(operationId);
     if (!currentStatus) {
@@ -76,6 +112,8 @@ export class IndexingStatusTracker {
       pagesProcessed: stats.pagesProcessed ?? currentStatus.pagesProcessed,
       pagesSkipped: stats.pagesSkipped ?? currentStatus.pagesSkipped,
       pagesFailed: stats.pagesFailed ?? currentStatus.pagesFailed,
+      loginPagesSkipped: stats.loginPagesSkipped ?? currentStatus.loginPagesSkipped,
+      skippedLoginUrls: stats.skippedLoginUrls ?? currentStatus.skippedLoginUrls,
       chunksCreated: stats.chunksCreated ?? currentStatus.chunksCreated,
     };
 
@@ -149,9 +187,7 @@ export class IndexingStatusTracker {
       status: 'complete',
       progress: 1,
       // Say so when the index is knowingly missing pages, rather than reporting a clean success
-      description: currentStatus.pagesFailed
-        ? `Indexing complete, but ${currentStatus.pagesFailed} ${currentStatus.pagesFailed === 1 ? 'page' : 'pages'} could not be fetched and ${currentStatus.pagesFailed === 1 ? 'is' : 'are'} missing from the index`
-        : 'Indexing complete',
+      description: describeCompletion(currentStatus),
     };
 
     this.statuses.set(operationId, status);

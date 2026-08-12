@@ -34,6 +34,13 @@ export class DocsCrawler {
     return this.failedPages;
   }
 
+  private skippedLoginUrls: string[] = [];
+
+  /** Login walls left out of the index. Only meaningful once crawl() has finished. */
+  get skippedLoginPageUrls(): string[] {
+    return this.skippedLoginUrls;
+  }
+
   setStorageState(state: ValidatedStorageState): void {
     this.storageState = state;
     logger.info(`[DocsCrawler] Set storage state with ${state.cookies?.length || 0} cookies`);
@@ -115,6 +122,7 @@ export class DocsCrawler {
     }
     finally {
       this.failedPages = crawleeCrawler.failedPageCount;
+      this.skippedLoginUrls = crawleeCrawler.skippedLoginPageUrls;
       if (this.activeCrawler === crawleeCrawler) {
         this.activeCrawler = undefined;
       }

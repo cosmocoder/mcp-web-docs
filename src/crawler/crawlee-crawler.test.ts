@@ -810,6 +810,13 @@ describe('CrawleeCrawler', () => {
       await expect(crawlPages([docsPage(1), loginWall(3)])).resolves.toBeUndefined();
     });
 
+    // The workflow reads this to tell the caller which pages it did not get
+    it('reports the URLs of the login pages it left out', async () => {
+      await crawlPages([docsPage(1), loginWall(2)]);
+
+      expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/docs/2']);
+    });
+
     it('starts counting login pages again on the next crawl', async () => {
       await crawlPages([docsPage(1), loginWall(2)]);
       vi.mocked(logger.warn).mockClear();

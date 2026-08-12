@@ -20,6 +20,7 @@ const mockCrawleeConstructor = vi.fn();
 const mockSetStorageState = vi.fn();
 const mockSetPathPrefix = vi.fn();
 const mockFailedPageCount = vi.fn().mockReturnValue(0);
+const mockSkippedLoginPageUrls = vi.fn().mockReturnValue([]);
 vi.mock('./crawlee-crawler.js', () => ({
   CrawleeCrawler: function (...args: unknown[]) {
     mockCrawleeConstructor(...args);
@@ -30,6 +31,9 @@ vi.mock('./crawlee-crawler.js', () => ({
       setPathPrefix: mockSetPathPrefix,
       get failedPageCount() {
         return mockFailedPageCount();
+      },
+      get skippedLoginPageUrls() {
+        return mockSkippedLoginPageUrls();
       },
     };
   },
@@ -42,6 +46,7 @@ describe('DocsCrawler', () => {
     vi.clearAllMocks();
     // clearAllMocks does not reset return values, so a stubbed count would leak into later tests
     mockFailedPageCount.mockReturnValue(0);
+    mockSkippedLoginPageUrls.mockReturnValue([]);
     crawler = new DocsCrawler();
   });
 
@@ -218,6 +223,20 @@ describe('DocsCrawler', () => {
         }
 
         expect(crawler.failedPageCount).toBe(3);
+      });
+
+      // The line that connects the crawler to the workflow in production
+      it('forwards the login pages the inner crawler left out', async () => {
+        mockSkippedLoginPageUrls.mockReturnValue(['https://example.com/login']);
+        mockCrawleeCrawl.mockImplementation(async function* () {
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
+        });
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of crawler.crawl('https://example.com')) {
+          // Just consume results
+        }
+
+        expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/login']);
       });
 
       it('does not carry a failed page count over to a GitHub crawl', async () => {

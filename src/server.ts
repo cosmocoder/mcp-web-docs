@@ -157,7 +157,8 @@ export class WebDocsServer {
     if (status.pagesProcessed !== undefined && status.pagesFound !== undefined) {
       const skipped = status.pagesSkipped ? `, ${status.pagesSkipped} skipped` : '';
       const failed = status.pagesFailed ? `, ${status.pagesFailed} could not be fetched` : '';
-      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages${skipped}${failed})`;
+      const behindLogin = status.loginPagesSkipped ? `, ${status.loginPagesSkipped} asked for a password` : '';
+      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages${skipped}${failed}${behindLogin})`;
     }
 
     try {

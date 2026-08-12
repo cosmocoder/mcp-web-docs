@@ -23,7 +23,10 @@ type WorkflowStatusTracker = Pick<
   'cancelIndexing' | 'completeIndexing' | 'failIndexing' | 'getStatus' | 'updateProgress' | 'updateStats'
 >;
 type WorkflowAuthManager = Pick<AuthManager, 'clearSession' | 'loadSession'>;
-type WorkflowCrawler = Pick<DocsCrawler, 'abort' | 'crawl' | 'failedPageCount' | 'setPathPrefix' | 'setStorageState'>;
+type WorkflowCrawler = Pick<
+  DocsCrawler,
+  'abort' | 'crawl' | 'failedPageCount' | 'skippedLoginPageUrls' | 'setPathPrefix' | 'setStorageState'
+>;
 
 export interface IndexingRequest {
   operationId: string;
@@ -164,7 +167,15 @@ export class IndexingWorkflow {
       // A tolerated partial crawl otherwise looks identical to a complete one. The crawler
       // already warns about it on stderr, so this only needs to reach the client.
       const failedPages = crawler.failedPageCount;
-      statusTracker.updateStats(operationId, { pagesFound: pages.length, pagesFailed: failedPages });
+      // A login wall left out of the index is a page the caller asked for and did not get, so it
+      // belongs here beside the pages that could not be fetched at all
+      const skippedLoginUrls = crawler.skippedLoginPageUrls;
+      statusTracker.updateStats(operationId, {
+        pagesFound: pages.length,
+        pagesFailed: failedPages,
+        loginPagesSkipped: skippedLoginUrls.length,
+        skippedLoginUrls,
+      });
       checkCancelled();
 
       const chunks: DocumentChunk[] = [];
