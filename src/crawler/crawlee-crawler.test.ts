@@ -741,10 +741,44 @@ describe('CrawleeCrawler', () => {
       await expect(crawlPages([wall])).rejects.toThrow(SessionExpiredError);
     });
 
-    // A bare wall and a login page inside the site's shell put the same heading at the top, so they
-    // share an identity. Counted together, the shell page carried the wall over the wall threshold.
+    // Only the bare one is a wall: the other has the site's nav and footer around its form, which is
+    // what documentation about signing in looks like too
     it('keeps crawling a site with both a login wall and a login page in its shell', async () => {
       await expect(crawlPages([...[1, 2, 3, 4, 5, 6].map(docsPage), loginPage(7), loginWall(8)])).resolves.toBeUndefined();
+    });
+
+    // A first attempt that cannot read the page still records it, so a wall found on a later attempt
+    // has to move to where the crawl actually saw it - left where it was, it can sit outside every
+    // window that follows and a run of walls slips both rules.
+    it('moves a wall to where the crawl found it when an earlier attempt could not be read', async () => {
+      const wallAt = (slug: string) => ({ ...loginWall(0), url: `https://example.com/${slug}` });
+      const unreadable = () => {
+        const { page } = navigationPage(
+          wallAt('a').url,
+          () => {},
+          vi.fn(async (fn: unknown) => {
+            if (fn === readLoginPageSignals) {
+              throw new Error('execution context destroyed');
+            }
+            return false;
+          })
+        );
+        return Object.assign(page, { content: vi.fn().mockResolvedValue('') });
+      };
+
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(unreadable(), wallAt('a').url);
+        for (const n of [1, 2, 3, 4, 5, 6, 7]) {
+          await runRequestHandler(authenticatedPage(docsPage(n)), docsPage(n).url);
+        }
+        await runRequestHandler(authenticatedPage(wallAt('a')), wallAt('a').url);
+        for (const slug of ['b', 'c', 'd', 'e']) {
+          await runRequestHandler(authenticatedPage(wallAt(slug)), wallAt(slug).url);
+        }
+        return successfulRunStats;
+      });
+
+      await expect(collect(crawler, 'https://example.com/docs')).rejects.toThrow(/5 of the last 8 pages the crawl saw were login walls/i);
     });
 
     // One URL fetched twice can come back bare once and inside the shell once - a slow theme, a retry.
@@ -781,8 +815,7 @@ describe('CrawleeCrawler', () => {
       await expect(collect(crawler, 'https://example.com/docs')).resolves.toBeDefined();
     });
 
-    // Two unrelated bare pages on a site whose chrome carries a sign-in form are one identity to
-    // pageIdentity, which is why that identity never ends a crawl on its repeat count
+    // Two of them is not a run, and on a crawl this size not a majority either
     it('keeps crawling a site whose chrome puts a sign-in form on two sparse pages', async () => {
       const stub = (n: number) => ({
         url: `https://example.com/docs/${n}`,
@@ -799,7 +832,7 @@ describe('CrawleeCrawler', () => {
       await crawlPages([docsPage(1), loginWall(2)]);
 
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Not indexing https://example.com/docs/2'));
-      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Left 1 login pages out of the index'));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Left 1 login page out of the index'));
     });
 
     // Two crawls on one instance: the wall the first one skipped must not be the first of two for the
@@ -825,6 +858,10 @@ describe('CrawleeCrawler', () => {
       await crawlPages([docsPage(1), wall]);
 
       expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/docs/2?token=[REDACTED]&next=%2Fdocs']);
+      // The stderr line names the same string. The logger's own redaction covers fewer parameter
+      // names than this one, so logging the raw URL would echo what the report withheld.
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Not indexing https://example.com/docs/2?token=[REDACTED]'));
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('abc123'));
     });
 
     // The caller must not be able to reach into the crawl's own state through what it reads
@@ -855,10 +892,31 @@ describe('CrawleeCrawler', () => {
 
     // A site that answers with a login wall cannot be indexed whether or not a session was tried, and
     // the message has to say which of the two it was - there is no session to blame here
-    it('stops an unauthenticated crawl served a login wall and asks for authentication', async () => {
+    it('stops an unauthenticated crawl that got nothing but login walls', async () => {
       crawler = new CrawleeCrawler();
 
-      await expect(crawlPages([docsPage(1), loginWall(2), loginWall(3)])).rejects.toThrow(/This site requires authentication/i);
+      await expect(crawlPages([loginWall(1), loginWall(2)])).rejects.toThrow(/This site requires authentication/i);
+    });
+
+    // Without a session nothing can have expired, so walls being half a small site is not a dead
+    // session - it is a public site with a /login and a /signup in its nav. Failing would throw away
+    // the documentation the crawl did index.
+    it('keeps a public site whose login pages are half of a short crawl', async () => {
+      crawler = new CrawleeCrawler();
+      const wall = (slug: string) => ({ ...loginWall(0), url: `https://example.com/${slug}` });
+
+      await expect(crawlPages([docsPage(1), docsPage(2), wall('login'), wall('signup')])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(2);
+    });
+
+    // A session that died is a different matter: the pages before it are stale, so the crawl fails
+    // even though it indexed some
+    it('stops an authenticated crawl whose login walls are half of it', async () => {
+      const wall = (slug: string) => ({ ...loginWall(0), url: `https://example.com/${slug}` });
+
+      await expect(crawlPages([docsPage(1), docsPage(2), wall('a'), wall('b')])).rejects.toThrow(
+        /Authentication session expired during the crawl/i
+      );
     });
 
     it('crawls an ordinary public site that was never authenticated', async () => {
@@ -870,12 +928,27 @@ describe('CrawleeCrawler', () => {
 
     // Asking to index a site that turns out to need signing in - the likeliest way this is met, and
     // the entry page is caught without a password field of its own
-    it('stops an unauthenticated crawl whose entry page is a login page', async () => {
+    it('stops an unauthenticated crawl whose entry page is a login wall', async () => {
       crawler = new CrawleeCrawler();
 
-      await expect(crawlPages([{ url: 'https://example.com/docs', bodyText: LOGIN_BODY }])).rejects.toThrow(
+      await expect(crawlPages([{ ...loginWall(1), url: 'https://example.com/docs' }])).rejects.toThrow(
         /This site requires authentication - the page the crawl was asked for is a login page/i
       );
+    });
+
+    // A public article about building login forms scores as a login page: a code sample containing
+    // type="password" is worth two of the detector's six indicators. With a session, a login page
+    // where documentation was asked for means the session died; without one it means nothing.
+    it('crawls a public site whose entry page documents authentication', async () => {
+      crawler = new CrawleeCrawler();
+      const article = {
+        url: 'https://example.com/docs',
+        bodyText: `Building a sign in form. ${'Explaining each field of the form at length. '.repeat(8)}`,
+        html: '<pre>&lt;input type="password" name="password"&gt;</pre>',
+      };
+
+      await expect(crawlPages([article, docsPage(2)])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(2);
     });
 
     // A public site's own /login is a wall, and a crawl without a pathPrefix reaches it from the nav.

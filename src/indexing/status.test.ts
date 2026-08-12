@@ -217,6 +217,23 @@ describe('IndexingStatusTracker', () => {
       ]);
     });
 
+    // Three clauses, so the conjunction goes before the last one rather than before each
+    it('should list all three kinds of missing page readably', () => {
+      tracker.updateStats('test-id', {
+        pagesFailed: 2,
+        pagesSkipped: 1,
+        loginPagesSkipped: 1,
+        skippedLoginUrls: ['https://docs.example.com/login'],
+      });
+      tracker.completeIndexing('test-id');
+
+      const description = tracker.getStatus('test-id')?.description;
+      expect(description).toContain(
+        'could not be fetched and are missing from the index; 1 page had no indexable content; and 1 page asked'
+      );
+      expect(description).not.toContain('; and 1 page had no indexable content');
+    });
+
     it('should ignore completion for unknown ids', () => {
       tracker.completeIndexing('unknown-id');
       // Should not throw

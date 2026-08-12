@@ -35,7 +35,12 @@ function describeCompletion(status: IndexingStatus): string {
         `. Use the 'authenticate' tool if the site needs signing in, or set pathPrefix to keep the crawl out of that part of it`
     );
   }
-  return missing.length > 0 ? `Indexing complete, but ${missing.join('; and ')}` : 'Indexing complete';
+  if (missing.length === 0) {
+    return 'Indexing complete';
+  }
+  // "A; and B" for two, "A; B; and C" for three - the clauses carry commas of their own
+  const joined = missing.length > 1 ? `${missing.slice(0, -1).join('; ')}; and ${missing.at(-1)}` : missing[0];
+  return `Indexing complete, but ${joined}`;
 }
 
 export class IndexingStatusTracker {

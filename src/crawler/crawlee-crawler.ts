@@ -84,6 +84,8 @@ export class CrawleeCrawler extends BaseCrawler {
   private skippedExternalPages: number = 0;
   /** The URLs of login walls left out of the index without stopping the crawl */
   private skippedLoginUrls: string[] = [];
+  /** Pages handed to the queue for indexing, which a public site with a login page in it still has */
+  private indexedPages: number = 0;
 
   /** Login walls this crawl left out of the index. Only meaningful once crawl() has finished. */
   get skippedLoginPageUrls(): string[] {
@@ -190,7 +192,12 @@ export class CrawleeCrawler extends BaseCrawler {
       return null;
     }
 
-    if (isEntryPage) {
+    // On a crawl with a session, a login page where the crawl asked for documentation means the
+    // session is dead, whatever shape the page takes - an SSO wall can be a branded button with no
+    // password field. Without a session there is nothing to have expired, and the same rule would
+    // fail a public article about building login forms: a code sample containing type="password" is
+    // worth two of the detector's six indicators. So that case needs the page to be a wall.
+    if (isEntryPage && (this.storageState || isLoginWall(observed))) {
       logger.warn(`[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`);
       logger.debug(`[CrawleeCrawler] Detection reasons: ${detection.reasons.join(', ')}`);
       return new SessionExpiredError(
@@ -207,6 +214,10 @@ export class CrawleeCrawler extends BaseCrawler {
     if (!isLoginWall(observed)) {
       return null;
     }
+    // Deleted first so the wall takes the position the crawl found it in. A page whose first attempt
+    // could not be read was recorded then, and keeping that older position can leave a wall outside
+    // every later window - a run of them would slip both rules.
+    this.wallByRequestedUrl.delete(requestedUrl);
     this.wallByRequestedUrl.set(requestedUrl, true);
 
     // Never indexed - it is not documentation - but one wall is not a dead session. A public site's
@@ -234,6 +245,13 @@ export class CrawleeCrawler extends BaseCrawler {
     const checked = this.wallByRequestedUrl.size;
     const walls = [...this.wallByRequestedUrl.values()].filter(Boolean).length;
     if (walls < MIN_WALLS_FOR_MOSTLY_WALLS || walls * 2 < checked) {
+      return null;
+    }
+    // A crawl with no session has nothing that can have expired. A site whose every page is a wall
+    // needs authenticating, but one that gave up documentation as well as a /login and a /signup is a
+    // public site with login pages in it - and on a small site those two are half of what was seen.
+    // Failing would throw away the pages it did index.
+    if (!this.storageState && this.indexedPages > 0) {
       return null;
     }
 
@@ -438,6 +456,7 @@ export class CrawleeCrawler extends BaseCrawler {
     this.expectedUrl = normalizeQueuedUrl(url);
     this.skippedExternalPages = 0;
     this.skippedLoginUrls = [];
+    this.indexedPages = 0;
 
     // Extract and store the allowed hostname from the initial URL
     try {
@@ -692,8 +711,9 @@ export class CrawleeCrawler extends BaseCrawler {
                 // Normalized, and its parameters redacted: this URL is reported to the client, and
                 // the same string on its way to stderr goes through the logger's redaction. A query
                 // carrying a token should not be scrubbed in one place and echoed in the other.
-                this.skippedLoginUrls.push(redactUrlSecrets(normalizeQueuedUrl(request.url)));
-                logger.warn(`[CrawleeCrawler] Not indexing ${request.url}: it asks for a password and has no content of its own`);
+                const skipped = redactUrlSecrets(normalizeQueuedUrl(request.url));
+                this.skippedLoginUrls.push(skipped);
+                logger.warn(`[CrawleeCrawler] Not indexing ${skipped}: it asks for a password and has no content of its own`);
                 return;
               }
 
@@ -713,6 +733,7 @@ export class CrawleeCrawler extends BaseCrawler {
                 return;
               }
               this.queueManager.addResult(result);
+              this.indexedPages++;
               break;
             }
           }
@@ -752,7 +773,10 @@ export class CrawleeCrawler extends BaseCrawler {
         );
       }
       if (this.skippedLoginUrls.length > 0) {
-        logger.warn(`[CrawleeCrawler] Left ${this.skippedLoginUrls.length} login pages out of the index; they had no content of their own`);
+        logger.warn(
+          `[CrawleeCrawler] Left ${this.skippedLoginUrls.length} login ${this.skippedLoginUrls.length === 1 ? 'page' : 'pages'} out of the index; ` +
+            'they had no content of their own'
+        );
       }
 
       // Check if we detected an expired session during crawling
