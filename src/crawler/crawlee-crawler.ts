@@ -157,6 +157,21 @@ export class CrawleeCrawler extends BaseCrawler {
   }
 
   /**
+   * Both rules below end the crawl on walls being a lot of it, and neither may do that to a public
+   * site. A crawl with no session has nothing that can have expired, and a public site has login pages
+   * in it by design - a /login, a /signup, one per gated area. A site that has to be authenticated
+   * before it can be indexed gives up no documentation at all, so nothing was indexed and both rules
+   * still fire; anything else is a public site whose gated corners the crawl wandered into, and those
+   * walls are reported as skipped rather than costing the crawl the pages it did get.
+   *
+   * A public crawl whose every extraction failed looks the same from here, and is told it needs
+   * authenticating. It is unusable either way; only the diagnosis is wrong.
+   */
+  private get failingWouldDiscardDocumentation(): boolean {
+    return !this.storageState && this.indexedPages > 0;
+  }
+
+  /**
    * What to do with this page: nothing, keep it out of the index, or stop the crawl. Runs whether or
    * not the crawl authenticated: with a session a login page means the session died, without one it
    * means the site needs authenticating before it can be indexed at all. Either way the answer is the
@@ -169,7 +184,7 @@ export class CrawleeCrawler extends BaseCrawler {
   private async checkForLoginPage(page: Page, requestedUrl: string, isEntryPage: boolean): Promise<SessionExpiredError | 'skip' | null> {
     // Recorded before anything can return, because the window below counts walls among the pages the
     // crawl looked at, not among the ones that got this far. Set() keeps a URL in the position it
-    // first took, so a retry does not move it.
+    // first took, so a retry does not move it - except where the wall rule below moves it deliberately.
     this.wallByRequestedUrl.set(requestedUrl, this.wallByRequestedUrl.get(requestedUrl) ?? false);
     let observed;
     let detection;
@@ -224,7 +239,7 @@ export class CrawleeCrawler extends BaseCrawler {
     // own /login is a wall, and a crawl without a pathPrefix reaches it from the nav.
     const recent = [...this.wallByRequestedUrl.values()].slice(-LOGIN_WALL_WINDOW);
     const walls = recent.filter(Boolean).length;
-    if (walls < LOGIN_WALLS_IN_WINDOW_BEFORE_SESSION_EXPIRED) {
+    if (walls < LOGIN_WALLS_IN_WINDOW_BEFORE_SESSION_EXPIRED || this.failingWouldDiscardDocumentation) {
       return 'skip';
     }
 
@@ -244,14 +259,7 @@ export class CrawleeCrawler extends BaseCrawler {
   private sessionExpiredAcrossCrawl(): SessionExpiredError | null {
     const checked = this.wallByRequestedUrl.size;
     const walls = [...this.wallByRequestedUrl.values()].filter(Boolean).length;
-    if (walls < MIN_WALLS_FOR_MOSTLY_WALLS || walls * 2 < checked) {
-      return null;
-    }
-    // A crawl with no session has nothing that can have expired. A site whose every page is a wall
-    // needs authenticating, but one that gave up documentation as well as a /login and a /signup is a
-    // public site with login pages in it - and on a small site those two are half of what was seen.
-    // Failing would throw away the pages it did index.
-    if (!this.storageState && this.indexedPages > 0) {
+    if (walls < MIN_WALLS_FOR_MOSTLY_WALLS || walls * 2 < checked || this.failingWouldDiscardDocumentation) {
       return null;
     }
 

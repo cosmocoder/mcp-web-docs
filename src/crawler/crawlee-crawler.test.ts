@@ -579,6 +579,9 @@ describe('CrawleeCrawler', () => {
       headings: ['Sign in'],
       asksForPassword: true,
     });
+    // The same wall answering a path of its own, where a test needs several walls that are not
+    // documentation URLs - a /login and a /signup rather than a /docs/2
+    const wallAt = (path: string): PageSpec => ({ ...loginWall(0), url: `https://example.com/${path}` });
 
     it('fails the crawl when the first page is a login page', async () => {
       await expect(crawlPages([{ url: 'https://example.com/docs', bodyText: LOGIN_BODY }])).rejects.toThrow(SessionExpiredError);
@@ -654,14 +657,6 @@ describe('CrawleeCrawler', () => {
     // One page is documentation about signing in; the rule needs a page that came back
     it('keeps crawling a two-page site whose second page is about signing in', async () => {
       await expect(crawlPages([docsPage(1), { ...loginPage(2), url: 'https://example.com/docs/auth' }])).resolves.toBeUndefined();
-    });
-
-    // Exactly half, which "most of the crawl" has to include - otherwise a session dying at the
-    // midpoint of a short crawl passes
-    it('fails a crawl that was exactly half login walls', async () => {
-      await expect(crawlPages([docsPage(1), loginWall(2), docsPage(3), loginWall(4)])).rejects.toThrow(
-        /2 of the 4 pages the crawl saw were login walls/i
-      );
     });
 
     // By arrival order, one ordinary page reading as a login page would fail the crawl on its own,
@@ -751,7 +746,6 @@ describe('CrawleeCrawler', () => {
     // has to move to where the crawl actually saw it - left where it was, it can sit outside every
     // window that follows and a run of walls slips both rules.
     it('moves a wall to where the crawl found it when an earlier attempt could not be read', async () => {
-      const wallAt = (slug: string) => ({ ...loginWall(0), url: `https://example.com/${slug}` });
       const unreadable = () => {
         const { page } = navigationPage(
           wallAt('a').url,
@@ -785,17 +779,17 @@ describe('CrawleeCrawler', () => {
     // The wall the crawl already saw at that URL must not be un-learned by the second look. Long
     // enough that walls are a minority of the crawl, so only the window can end it.
     it('keeps a wall recorded when a later look at the same URL is not one', async () => {
-      const wallAt = (n: number) => ({ ...loginWall(n), url: `https://example.com/wall-${n}` });
+      const wall = (n: number) => wallAt(`wall-${n}`);
       mockCrawlerRun.mockImplementationOnce(async () => {
         for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
           await runRequestHandler(authenticatedPage(docsPage(n)), docsPage(n).url);
         }
         for (const n of [1, 2, 3, 4]) {
-          await runRequestHandler(authenticatedPage(wallAt(n)), wallAt(n).url);
+          await runRequestHandler(authenticatedPage(wall(n)), wall(n).url);
         }
         // The same URL again, this time rendered inside the site's shell rather than bare
-        await runRequestHandler(authenticatedPage({ ...loginPage(1), url: wallAt(1).url }), wallAt(1).url);
-        await runRequestHandler(authenticatedPage(wallAt(5)), wallAt(5).url);
+        await runRequestHandler(authenticatedPage({ ...loginPage(1), url: wall(1).url }), wall(1).url);
+        await runRequestHandler(authenticatedPage(wall(5)), wall(5).url);
         return successfulRunStats;
       });
 
@@ -903,19 +897,28 @@ describe('CrawleeCrawler', () => {
     // the documentation the crawl did index.
     it('keeps a public site whose login pages are half of a short crawl', async () => {
       crawler = new CrawleeCrawler();
-      const wall = (slug: string) => ({ ...loginWall(0), url: `https://example.com/${slug}` });
 
-      await expect(crawlPages([docsPage(1), docsPage(2), wall('login'), wall('signup')])).resolves.toBeUndefined();
+      await expect(crawlPages([docsPage(1), docsPage(2), wallAt('login'), wallAt('signup')])).resolves.toBeUndefined();
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(2);
     });
 
-    // A session that died is a different matter: the pages before it are stale, so the crawl fails
-    // even though it indexed some
-    it('stops an authenticated crawl whose login walls are half of it', async () => {
-      const wall = (slug: string) => ({ ...loginWall(0), url: `https://example.com/${slug}` });
+    // The nav enqueues its links together, so a public site's gated areas arrive as a run. Same rule as
+    // above and the same reason: the crawl keeps the documentation and reports the walls it skipped.
+    it('keeps a public site whose gated areas arrive as a run of login walls', async () => {
+      crawler = new CrawleeCrawler();
+      const walls = ['login', 'signup', 'admin/login', 'portal/login', 'legacy/login'].map(wallAt);
 
-      await expect(crawlPages([docsPage(1), docsPage(2), wall('a'), wall('b')])).rejects.toThrow(
-        /Authentication session expired during the crawl/i
+      await expect(crawlPages([...[1, 2, 3].map(docsPage), ...walls])).resolves.toBeUndefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(3);
+      expect(crawler.skippedLoginPageUrls).toHaveLength(5);
+    });
+
+    // A session that died is a different matter: the pages before it are stale, so the crawl fails even
+    // though it indexed some. Exactly half has to count, or a session dying at the midpoint of a short
+    // crawl passes. The run above has its authenticated pair earlier, where the window rule is covered.
+    it('stops an authenticated crawl whose login walls are half of it', async () => {
+      await expect(crawlPages([docsPage(1), docsPage(2), wallAt('a'), wallAt('b')])).rejects.toThrow(
+        /2 of the 4 pages the crawl saw were login walls/i
       );
     });
 
@@ -966,8 +969,7 @@ describe('CrawleeCrawler', () => {
           await runRequestHandler(authenticatedPage(docsPage(n)), docsPage(n).url);
         }
         for (const n of [4, 5, 6, 7, 8]) {
-          const wall = { ...loginWall(0), url: 'https://example.com/login' };
-          await runRequestHandler(authenticatedPage(wall), `https://example.com/docs/${n}`);
+          await runRequestHandler(authenticatedPage(wallAt('login')), `https://example.com/docs/${n}`);
         }
         return successfulRunStats;
       });
