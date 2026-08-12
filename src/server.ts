@@ -270,7 +270,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
                 properties: {
                   requiresAuth: {
                     type: 'boolean',
-                    description: 'Set to true to open a browser for interactive login before crawling',
+                    description:
+                      'Set to true to open a browser for interactive login before crawling. If it is omitted and the site turns out to need signing in, the crawl stops and reports that authentication is required rather than indexing the login page.',
                   },
                   browser: {
                     type: 'string',

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { LOGIN_SHELL_MAX_TEXT, pageIdentity, readLoginPageSignals } from './login-page-signals.js';
+import { isLoginWall, LOGIN_SHELL_MAX_TEXT, readLoginPageSignals } from './login-page-signals.js';
 
 function render(html: string) {
   document.body.innerHTML = html;
@@ -68,50 +68,23 @@ describe('readLoginPageSignals', () => {
   });
 });
 
-describe('pageIdentity', () => {
-  const url = 'https://example.com/docs/42';
+describe('isLoginWall', () => {
   const article = 'x'.repeat(LOGIN_SHELL_MAX_TEXT);
 
-  // A theme rendering its headings as styled divs leaves nothing to go on
-  it('has no answer for a page with an article on it and no headings', () => {
-    expect(pageIdentity([], article, url)).toBeNull();
-    expect(pageIdentity(['   '], article, url)).toBeNull();
+  it('is a wall when a password is asked for and there is nothing else on the page', () => {
+    expect(isLoginWall({ hasPasswordInput: true, text: 'Sign in' })).toBe(true);
   });
 
-  // A page that is barely anything is still recognisable as that
-  it('recognises a bare page with no headings', () => {
-    expect(pageIdentity([], 'Continue with SSO', url)).toEqual(pageIdentity([], 'Continue', 'https://example.com/docs/7'));
-    expect(pageIdentity([], 'Continue', url)).not.toBeNull();
+  // What separates a wall from documentation about signing in, since both carry the form and the
+  // wording. Not the heading: a wall has one of those too.
+  it('is not a wall once there is an article around the form', () => {
+    expect(isLoginWall({ hasPasswordInput: true, text: article })).toBe(false);
+    expect(isLoginWall({ hasPasswordInput: true, text: 'x'.repeat(LOGIN_SHELL_MAX_TEXT - 1) })).toBe(true);
   });
 
-  // A login shell is not always wordless - it explains why you are looking at it
-  it('still recognises a bare page that explains itself', () => {
-    expect(pageIdentity([], 'Your session has expired. Please sign in again to continue.', url)).not.toBeNull();
-    expect(pageIdentity([], 'x'.repeat(LOGIN_SHELL_MAX_TEXT - 1), url)).not.toBeNull();
-    expect(pageIdentity([], 'x'.repeat(LOGIN_SHELL_MAX_TEXT), url)).toBeNull();
-  });
-
-  // A login page names where it is sending you back to, so that part is not what the page is
-  it('is the same for one login page naming different URLs', () => {
-    expect(pageIdentity(['Sign in to continue to /docs/42'], article, url)).toEqual(
-      pageIdentity(['Sign in to continue to /docs/7'], article, 'https://example.com/docs/7')
-    );
-  });
-
-  it('differs between pages that are actually about different things', () => {
-    expect(pageIdentity(['Installing'], article, url)).not.toEqual(pageIdentity(['Configuring'], article, url));
-  });
-
-  // Only the page's own address comes out - a heading that IS an address elsewhere still counts
-  it('keeps an address that is not this page', () => {
-    expect(pageIdentity(['POST /api/login'], article, url)).not.toEqual(pageIdentity(['POST /api/logout'], article, url));
-  });
-
-  // Accepted: strip a heading that is only the page's own address and nothing is left. It takes a
-  // password field on each of these pages to matter, which the caller asks before this.
-  it('folds pages whose heading is only their own address', () => {
-    expect(pageIdentity(['POST /api/login'], article, 'https://example.com/api/login')).toEqual(
-      pageIdentity(['POST /api/logout'], article, 'https://example.com/api/logout')
-    );
+  // A bare page that asks for nothing is some other kind of bare page - an interstitial, a redirect
+  // stub - and the crawl has no authentication to offer it
+  it('is not a wall without a password field, however bare the page', () => {
+    expect(isLoginWall({ hasPasswordInput: false, text: 'Sign in' })).toBe(false);
   });
 });

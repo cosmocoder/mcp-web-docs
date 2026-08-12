@@ -473,11 +473,18 @@ describe('IndexingWorkflow', () => {
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
 
-  it('clears an expired session and reports the friendly authentication failure', async () => {
+  // A crawl that had a session was let in once and is not any more; a crawl that never had one was
+  // never let in. Both need authenticating, but only the first can be described as expired - and the
+  // second is the one that wants telling about pathPrefix.
+  it.each([
+    ['a session that expired', JSON.stringify({ cookies: [] }), /session has expired/i, /before re-indexing/i],
+    ['a site that always needed one', undefined, /This site requires authentication/i, /pathPrefix/],
+  ])('clears the stored session and reports %s', async (_label, savedSession, expected, remedy) => {
     const harness = createHarness({
+      savedSession,
       crawl: async function* () {
         yield* [] as CrawlResult[];
-        throw new SessionExpiredError('redirected', request.url, 'https://docs.example.com/login', {
+        throw new SessionExpiredError('served', request.url, 'https://docs.example.com/login', {
           isLoginPage: true,
           confidence: 1,
           reasons: ['login URL'],
@@ -488,10 +495,12 @@ describe('IndexingWorkflow', () => {
     await runWorkflow(harness.workflow, request);
 
     expect(harness.authManager.clearSession).toHaveBeenCalledWith(request.url);
-    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
-      request.operationId,
-      expect.stringContaining("Please use the 'authenticate' tool")
-    );
+    const [, message] = harness.statusTracker.failIndexing.mock.calls[0];
+    expect(message).toMatch(expected);
+    expect(message).toMatch(remedy);
+    // The page it happened on, or the user cannot tell which part of the site to keep out of
+    expect(message).toContain('https://docs.example.com/login');
+    expect(message).toContain("'authenticate' tool");
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
 

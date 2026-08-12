@@ -65,6 +65,9 @@ export class IndexingWorkflow {
       }
     };
 
+    // Read in the catch below, to tell an expired session apart from a site that always needed one
+    let usedSession = false;
+
     try {
       logger.info(`[IndexingWorkflow] Starting indexing for ${url} (reIndex: ${reIndex})`);
       checkCancelled();
@@ -102,6 +105,7 @@ export class IndexingWorkflow {
         try {
           const validatedState: ValidatedStorageState = safeJsonParse(savedSession, StorageStateSchema);
           crawler.setStorageState(validatedState);
+          usedSession = true;
           logger.info(`[IndexingWorkflow] Using validated authentication session for ${url}`);
         }
         catch (error) {
@@ -304,14 +308,18 @@ export class IndexingWorkflow {
       }
 
       if (error instanceof SessionExpiredError) {
-        logger.warn(`[IndexingWorkflow] Session expired during crawl of ${url}: ${error.message}`);
+        logger.warn(`[IndexingWorkflow] Login page served during crawl of ${url}: ${error.message}`);
         logger.warn(`[IndexingWorkflow] Expected URL: ${error.expectedUrl}, Detected URL: ${error.detectedUrl}`);
+        // Cleared either way: a session that failed to parse above is still a session to be rid of,
+        // and clearing one that was never there costs nothing
         await authManager.clearSession(url);
         checkCancelled();
-        logger.info(`[IndexingWorkflow] Cleared expired session for ${url}`);
+        logger.info(`[IndexingWorkflow] Cleared any stored session for ${url}`);
         statusTracker.failIndexing(
           operationId,
-          `Authentication session has expired. The crawler was redirected to a login page. Please use the 'authenticate' tool to log in again before re-indexing.`
+          usedSession
+            ? `Authentication session has expired. The crawler was served a login page at ${error.detectedUrl}. Please use the 'authenticate' tool to log in again before re-indexing.`
+            : `This site requires authentication. The crawler was served a login page at ${error.detectedUrl}. Use the 'authenticate' tool to log in, or set pathPrefix to keep the crawl out of that part of the site.`
         );
         return;
       }
