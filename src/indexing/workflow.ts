@@ -8,6 +8,7 @@ import {
   detectPromptInjection,
   safeJsonParse,
   sanitizeErrorMessage,
+  redactUrlSecrets,
   SessionExpiredError,
   StorageStateSchema,
   type ValidatedStorageState,
@@ -23,7 +24,7 @@ type WorkflowStatusTracker = Pick<
   'cancelIndexing' | 'completeIndexing' | 'failIndexing' | 'getStatus' | 'updateProgress' | 'updateStats'
 >;
 type WorkflowAuthManager = Pick<AuthManager, 'clearSession' | 'loadSession'>;
-type WorkflowCrawler = Pick<
+export type WorkflowCrawler = Pick<
   DocsCrawler,
   'abort' | 'crawl' | 'failedPageCount' | 'skippedLoginPageUrls' | 'setPathPrefix' | 'setStorageState'
 >;
@@ -169,6 +170,8 @@ export class IndexingWorkflow {
       const failedPages = crawler.failedPageCount;
       // A login wall left out of the index is a page the caller asked for and did not get, so it
       // belongs here beside the pages that could not be fetched at all
+      // Counted here, before updateStats caps the list it stores: the total is what the description's
+      // "and N more" is derived from, so it has to be taken from the uncapped array
       const skippedLoginUrls = crawler.skippedLoginPageUrls;
       statusTracker.updateStats(operationId, {
         pagesFound: pages.length,
@@ -321,6 +324,8 @@ export class IndexingWorkflow {
       if (error instanceof SessionExpiredError) {
         logger.warn(`[IndexingWorkflow] Login page served during crawl of ${url}: ${error.message}`);
         logger.warn(`[IndexingWorkflow] Expected URL: ${error.expectedUrl}, Detected URL: ${error.detectedUrl}`);
+        // The abort path shows a URL too, and it is the one most likely to carry a live token
+        const detectedUrl = redactUrlSecrets(error.detectedUrl);
         // Cleared either way: a session that failed to parse above is still a session to be rid of,
         // and clearing one that was never there costs nothing
         await authManager.clearSession(url);
@@ -329,8 +334,8 @@ export class IndexingWorkflow {
         statusTracker.failIndexing(
           operationId,
           usedSession
-            ? `Authentication session has expired. The crawler was served a login page at ${error.detectedUrl}. Please use the 'authenticate' tool to log in again before re-indexing.`
-            : `This site requires authentication. The crawler was served a login page at ${error.detectedUrl}. Use the 'authenticate' tool to log in, or set pathPrefix to keep the crawl out of that part of the site.`
+            ? `Authentication session has expired. The crawler was served a login page at ${detectedUrl}. Please use the 'authenticate' tool to log in again before re-indexing.`
+            : `This site requires authentication. The crawler was served a login page at ${detectedUrl}. Use the 'authenticate' tool to log in, or set pathPrefix to keep the crawl out of that part of the site.`
         );
         return;
       }

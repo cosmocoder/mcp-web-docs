@@ -1,4 +1,4 @@
-import type { DocsCrawler } from './crawler/docs-crawler.js';
+import type { WorkflowCrawler } from './indexing/workflow.js';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProgressToken } from '@modelcontextprotocol/sdk/types.js';
 import { SessionExpiredError } from './util/security.js';
@@ -167,8 +167,9 @@ vi.mock('./crawler/docs-crawler.js', () => ({
       },
       setPathPrefix: mockCrawlerSetPathPrefix,
       setStorageState: vi.fn(),
-      // Checked against the real class, so a hop the workflow reads cannot vanish from both sides
-    } satisfies Pick<DocsCrawler, 'crawl' | 'abort' | 'failedPageCount' | 'skippedLoginPageUrls' | 'setPathPrefix' | 'setStorageState'>;
+      // Checked against the type the workflow actually consumes, so the two lists cannot drift and a
+      // hop it reads cannot vanish from both sides
+    } satisfies WorkflowCrawler;
   }),
 }));
 
@@ -309,7 +310,9 @@ describe('WebDocsServer', () => {
       await vi.waitFor(() =>
         expect(mockNotification).toHaveBeenCalledWith(
           expect.objectContaining({
-            params: expect.objectContaining({ message: 'Indexing complete (2/3 pages, 1 skipped)' }),
+            params: expect.objectContaining({
+              message: 'Indexing complete, but 1 page had no indexable content (2/3 pages, 1 skipped)',
+            }),
           })
         )
       );

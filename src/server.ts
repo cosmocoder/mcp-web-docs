@@ -65,10 +65,10 @@ export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
   // An operation can succeed and still be missing pages - ones that could not be fetched, or ones
   // that asked for a password. "No need to poll again" must not be the last thing an agent reads
   // then, because the remedy is in the status entry it would stop looking at.
-  const incomplete = statuses.filter((status) => status.pagesFailed || status.loginPagesSkipped).length;
-  if (incomplete > 0) {
+  const missingPages = statuses.filter((status) => status.pagesFailed || status.loginPagesSkipped || status.pagesSkipped).length;
+  if (missingPages > 0) {
     return (
-      `All operations finished, but ${incomplete} did not index everything. Check the status entries: they say which pages are ` +
+      `All operations finished, but ${missingPages} did not index everything. Check the status entries: they say which pages are ` +
       'missing and what to do about them. Use list_documentation to confirm what is indexed.'
     );
   }

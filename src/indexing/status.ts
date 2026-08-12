@@ -19,6 +19,12 @@ function describeCompletion(status: IndexingStatus): string {
     const verb = status.pagesFailed === 1 ? 'is' : 'are';
     missing.push(`${status.pagesFailed} ${pages} could not be fetched and ${verb} missing from the index`);
   }
+  if (status.pagesSkipped) {
+    const pages = status.pagesSkipped === 1 ? 'page' : 'pages';
+    // No remedy to offer for a page that rendered nothing, but the entry the caller was sent to
+    // has to account for it rather than reading as a clean success
+    missing.push(`${status.pagesSkipped} ${pages} had no indexable content`);
+  }
   if (status.loginPagesSkipped) {
     const pages = status.loginPagesSkipped === 1 ? 'page' : 'pages';
     const named = status.skippedLoginUrls ?? [];

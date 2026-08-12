@@ -1,4 +1,5 @@
 import {
+  redactUrlSecrets,
   encryptData,
   decryptData,
   escapeFilterValue,
@@ -718,6 +719,33 @@ Normal text here.`;
       });
       const result = validateToolArgs(undefined, schema);
       expect(result).toEqual({});
+    });
+  });
+  describe('redactUrlSecrets', () => {
+    it('hides the value of a parameter that carries a credential', () => {
+      expect(redactUrlSecrets('https://docs.example.com/login?token=abc123&next=%2Fdocs')).toBe(
+        'https://docs.example.com/login?token=[REDACTED]&next=%2Fdocs'
+      );
+    });
+
+    // The whole point of showing this URL is that the reader can go to it, or pass its path to
+    // pathPrefix. redactForLogging rewrites `token:` anywhere it appears, which breaks both.
+    it.each([
+      'https://docs.example.com/docs/token:refresh',
+      'https://docs.example.com/guides/cookies:usage',
+      'https://docs.example.com/search?q=password:reset',
+      'https://docs.example.com/reference/api_key:rotate',
+      'https://docs.example.com/faq#token:ttl',
+    ])('leaves a documentation URL alone: %s', (url) => {
+      expect(redactUrlSecrets(url)).toBe(url);
+    });
+
+    it('leaves a URL with nothing sensitive in it untouched', () => {
+      expect(redactUrlSecrets('https://docs.example.com/docs?page=2')).toBe('https://docs.example.com/docs?page=2');
+    });
+
+    it('returns anything that is not a URL unchanged', () => {
+      expect(redactUrlSecrets('not a url')).toBe('not a url');
     });
   });
 });

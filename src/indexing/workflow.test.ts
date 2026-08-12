@@ -508,7 +508,7 @@ describe('IndexingWorkflow', () => {
       savedSession,
       crawl: async function* () {
         yield* [] as CrawlResult[];
-        throw new SessionExpiredError('served', request.url, 'https://docs.example.com/login', {
+        throw new SessionExpiredError('served', request.url, 'https://docs.example.com/login?token=abc123&next=%2Fdocs', {
           isLoginPage: true,
           confidence: 1,
           reasons: ['login URL'],
@@ -522,8 +522,10 @@ describe('IndexingWorkflow', () => {
     const [, message] = harness.statusTracker.failIndexing.mock.calls[0];
     expect(message).toMatch(expected);
     expect(message).toMatch(remedy);
-    // The page it happened on, or the user cannot tell which part of the site to keep out of
-    expect(message).toContain('https://docs.example.com/login');
+    // The page it happened on, or the user cannot tell which part of the site to keep out of - with
+    // its parameters redacted, since a login redirect is where a live token is likeliest to be
+    expect(message).toContain('https://docs.example.com/login?token=[REDACTED]&next=%2Fdocs');
+    expect(message).not.toContain('abc123');
     expect(message).toContain("'authenticate' tool");
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
