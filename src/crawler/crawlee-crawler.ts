@@ -84,8 +84,6 @@ export class CrawleeCrawler extends BaseCrawler {
   private skippedExternalPages: number = 0;
   /** The URLs of login walls left out of the index without stopping the crawl */
   private skippedLoginUrls: string[] = [];
-  /** Pages handed to the queue for indexing, which a public site with a login page in it still has */
-  private indexedPages: number = 0;
 
   /** Login walls this crawl left out of the index. Only meaningful once crawl() has finished. */
   get skippedLoginPageUrls(): string[] {
@@ -160,15 +158,16 @@ export class CrawleeCrawler extends BaseCrawler {
    * Both rules below end the crawl on walls being a lot of it, and neither may do that to a public
    * site. A crawl with no session has nothing that can have expired, and a public site has login pages
    * in it by design - a /login, a /signup, one per gated area. A site that has to be authenticated
-   * before it can be indexed gives up no documentation at all, so nothing was indexed and both rules
-   * still fire; anything else is a public site whose gated corners the crawl wandered into, and those
-   * walls are reported as skipped rather than costing the crawl the pages it did get.
+   * before it can be indexed answers every page with a wall, so both rules still fire on it; a public
+   * site that gave up anything else keeps what it gave up, and its walls are reported as skipped.
    *
-   * A public crawl whose every extraction failed looks the same from here, and is told it needs
-   * authenticating. It is unusable either way; only the diagnosis is wrong.
+   * Read from the pages the crawl has looked at rather than from the ones it has indexed. A page is
+   * recorded above the moment it is checked, but indexed only after its links are enqueued and its
+   * content extracted, and the window rule below runs mid-crawl: with five pages in flight at once, a
+   * run of walls can clear its checks while every documentation page is still being extracted.
    */
   private get failingWouldDiscardDocumentation(): boolean {
-    return !this.storageState && this.indexedPages > 0;
+    return !this.storageState && [...this.wallByRequestedUrl.values()].includes(false);
   }
 
   /**
@@ -464,7 +463,6 @@ export class CrawleeCrawler extends BaseCrawler {
     this.expectedUrl = normalizeQueuedUrl(url);
     this.skippedExternalPages = 0;
     this.skippedLoginUrls = [];
-    this.indexedPages = 0;
 
     // Extract and store the allowed hostname from the initial URL
     try {
@@ -741,7 +739,6 @@ export class CrawleeCrawler extends BaseCrawler {
                 return;
               }
               this.queueManager.addResult(result);
-              this.indexedPages++;
               break;
             }
           }

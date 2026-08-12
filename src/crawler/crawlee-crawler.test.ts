@@ -779,17 +779,17 @@ describe('CrawleeCrawler', () => {
     // The wall the crawl already saw at that URL must not be un-learned by the second look. Long
     // enough that walls are a minority of the crawl, so only the window can end it.
     it('keeps a wall recorded when a later look at the same URL is not one', async () => {
-      const wall = (n: number) => wallAt(`wall-${n}`);
+      const wallN = (n: number) => wallAt(`wall-${n}`);
       mockCrawlerRun.mockImplementationOnce(async () => {
         for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
           await runRequestHandler(authenticatedPage(docsPage(n)), docsPage(n).url);
         }
         for (const n of [1, 2, 3, 4]) {
-          await runRequestHandler(authenticatedPage(wall(n)), wall(n).url);
+          await runRequestHandler(authenticatedPage(wallN(n)), wallN(n).url);
         }
         // The same URL again, this time rendered inside the site's shell rather than bare
-        await runRequestHandler(authenticatedPage({ ...loginPage(1), url: wall(1).url }), wall(1).url);
-        await runRequestHandler(authenticatedPage(wall(5)), wall(5).url);
+        await runRequestHandler(authenticatedPage({ ...loginPage(1), url: wallN(1).url }), wallN(1).url);
+        await runRequestHandler(authenticatedPage(wallN(5)), wallN(5).url);
         return successfulRunStats;
       });
 
@@ -904,21 +904,57 @@ describe('CrawleeCrawler', () => {
 
     // The nav enqueues its links together, so a public site's gated areas arrive as a run. Same rule as
     // above and the same reason: the crawl keeps the documentation and reports the walls it skipped.
+    // A run long enough to fill the window on its own, so what the crawl indexed lies outside it - the
+    // whole crawl has to answer for this, not the pages still in the window.
     it('keeps a public site whose gated areas arrive as a run of login walls', async () => {
       crawler = new CrawleeCrawler();
-      const walls = ['login', 'signup', 'admin/login', 'portal/login', 'legacy/login'].map(wallAt);
+      const walls = ['login', 'signup', 'admin/login', 'portal/login', 'legacy/login', 'shop/login', 'crm/login', 'wiki/login'];
 
-      await expect(crawlPages([...[1, 2, 3].map(docsPage), ...walls])).resolves.toBeUndefined();
+      await expect(crawlPages([...[1, 2, 3].map(docsPage), ...walls.map(wallAt)])).resolves.toBeUndefined();
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(3);
+      expect(crawler.skippedLoginPageUrls).toHaveLength(8);
+    });
+
+    // Five pages are in flight at once, and a page is extracted after its links are enqueued. A run of
+    // walls can finish while the documentation the crawl already accepted is still being extracted, so
+    // what the crawl has looked at has to answer this, not what it has managed to index so far.
+    it('keeps a public crawl whose documentation is still being extracted when a run of walls arrives', async () => {
+      crawler = new CrawleeCrawler();
+      let extract = () => {};
+      let reachedExtraction = () => {};
+      const extracted = new Promise<void>((resolve) => (extract = resolve));
+      const atExtraction = new Promise<void>((resolve) => (reachedExtraction = resolve));
+      const entry = Object.assign(authenticatedPage({ url: 'https://example.com/docs', bodyText: 'Ordinary content' }), {
+        title: vi.fn(async () => {
+          reachedExtraction();
+          await extracted;
+          return 'Docs';
+        }),
+      });
+
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        const inFlight = runRequestHandler(entry, 'https://example.com/docs');
+        await atExtraction;
+        for (const path of ['login', 'signup', 'admin/login', 'portal/login', 'legacy/login']) {
+          await runRequestHandler(authenticatedPage(wallAt(path)), `https://example.com/${path}`);
+        }
+        extract();
+        await inFlight;
+        return successfulRunStats;
+      });
+
+      await expect(collect(crawler, 'https://example.com/docs')).resolves.toBeDefined();
+      expect(mockQueueManager.addResult).toHaveBeenCalledTimes(1);
       expect(crawler.skippedLoginPageUrls).toHaveLength(5);
     });
 
     // A session that died is a different matter: the pages before it are stale, so the crawl fails even
     // though it indexed some. Exactly half has to count, or a session dying at the midpoint of a short
-    // crawl passes. The run above has its authenticated pair earlier, where the window rule is covered.
+    // crawl passes. Interleaved, because the rule counts the whole crawl and where the walls fall in it
+    // makes no difference. The run above has its authenticated pair earlier, with the window rule.
     it('stops an authenticated crawl whose login walls are half of it', async () => {
-      await expect(crawlPages([docsPage(1), docsPage(2), wallAt('a'), wallAt('b')])).rejects.toThrow(
-        /2 of the 4 pages the crawl saw were login walls/i
+      await expect(crawlPages([docsPage(1), wallAt('a'), docsPage(2), wallAt('b')])).rejects.toThrow(
+        /Authentication session expired during the crawl - 2 of the 4 pages the crawl saw were login walls/i
       );
     });
 
