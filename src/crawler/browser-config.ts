@@ -1,8 +1,9 @@
 import { PlaywrightCrawlerOptions, log } from 'crawlee';
 import { getOutboundProxyUrl } from '../util/outbound-request.js';
 
-// Suppress Crawlee's stdout logging for MCP compatibility
-// MCP servers must only output JSON-RPC messages to stdout
+// MCP servers must write nothing but JSON-RPC to stdout, and Crawlee's logger sends its info and
+// debug lines there. Off rather than raised to warning, because this project logs through
+// util/logger, which writes to stderr - a Crawlee line would be a second, unprefixed channel.
 log.setLevel(log.LEVELS.OFF);
 
 export const getBrowserConfig = async (

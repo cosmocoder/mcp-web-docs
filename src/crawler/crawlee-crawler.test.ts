@@ -312,12 +312,16 @@ describe('CrawleeCrawler', () => {
         off: vi.fn(),
       };
       mockCrawlerRun.mockImplementationOnce(async () => {
-        await runRequestHandler(page, 'https://example.com/private', response(403, true));
+        await runRequestHandler(page, 'https://example.com/private?session=abc123', response(403, true));
       });
 
       await collect(crawler, 'https://example.com/private');
 
-      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
+      // The logger's own redaction leaves session, sid and passwd values alone, so the URL is
+      // redacted before it gets there
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.stringContaining('blocked outbound destination: https://example.com/private?session=[REDACTED]')
+      );
       expect(page.waitForLoadState).not.toHaveBeenCalled();
       expect(mockQueueManager.addResult).not.toHaveBeenCalled();
     });

@@ -587,14 +587,14 @@ export class CrawleeCrawler extends BaseCrawler {
           await Promise.all(pendingNavigationChecks);
           if (mainFrameNavigationError) {
             if (mainFrameNavigationError instanceof BlockedOutboundRequestError) {
-              logger.warn(`[CrawleeCrawler] Skipping blocked outbound destination: ${request.url}`);
+              logger.warn(`[CrawleeCrawler] Skipping blocked outbound destination: ${redactUrlSecrets(request.url)}`);
               return true;
             }
             throw mainFrameNavigationError;
           }
           const outboundError = await getOutboundResponseError(latestMainFrameResponse);
           if (outboundError instanceof BlockedOutboundRequestError) {
-            logger.warn(`[CrawleeCrawler] Skipping blocked outbound destination: ${request.url}`);
+            logger.warn(`[CrawleeCrawler] Skipping blocked outbound destination: ${redactUrlSecrets(request.url)}`);
             return true;
           }
           if (outboundError) {
@@ -639,11 +639,9 @@ export class CrawleeCrawler extends BaseCrawler {
             const actualHostname = new URL(actualUrl).hostname;
 
             if (isEntryPage) {
-              // First page redirected outside domain - likely auth redirect (session expired)
               logger.warn(`[CrawleeCrawler] First page redirected outside allowed domain: ${requestedHostname} → ${actualHostname}`);
 
               if (this.storageState) {
-                // We had auth but got redirected - session expired
                 this.loginPageError = new LoginPageServedError(
                   `Authentication session has expired - page redirected to external domain (${actualHostname})`,
                   this.expectedUrl,

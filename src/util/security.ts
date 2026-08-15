@@ -879,8 +879,8 @@ export function addInjectionWarnings(content: string, detectionResult: PromptInj
 // ============ Login Page Detection ============
 
 /**
- * Common URL patterns that indicate a login/authentication page.
- * These are used to detect when a session has expired and we've been redirected to login.
+ * Common URL patterns that indicate a login/authentication page. Whether reaching one means a session
+ * died or that the site needed authenticating all along is not something the URL can say.
  */
 const LOGIN_URL_PATTERNS = [
   /\/login\b/i,
