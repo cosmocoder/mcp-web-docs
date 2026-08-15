@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { AuthManager } from '../crawler/auth.js';
 import type { DocsCrawler } from '../crawler/docs-crawler.js';
 import type { WebDocumentProcessor } from '../processor/processor.js';
+import { isSqliteBusy } from '../storage/sqlite.js';
 import type { DocumentStore } from '../storage/storage.js';
 import type { DocumentChunk } from '../types.js';
 import {
@@ -362,13 +363,12 @@ export class IndexingWorkflow {
         return;
       }
       catch (error) {
-        // SQLITE_BUSY means another process held the write lock past our timeout. Without it here a
-        // finished crawl is thrown away over a write that had nothing to do with this document.
+        // A busy database means another process held the write lock past our timeout. Without it here
+        // a finished crawl is thrown away over a write that had nothing to do with this document.
         const isRetryable =
-          error instanceof Error &&
-          (error.message.includes('Commit conflict') ||
-            error.message.startsWith('Replacement lease lost for ') ||
-            error.message.includes('SQLITE_BUSY'));
+          isSqliteBusy(error) ||
+          (error instanceof Error &&
+            (error.message.includes('Commit conflict') || error.message.startsWith('Replacement lease lost for ')));
         if (isRetryable && attempt < maxRetries) {
           logger.warn(`[IndexingWorkflow] Storage conflict, retrying (${attempt}/${maxRetries})...`);
           await delay(1000 * attempt, undefined, { signal });

@@ -587,10 +587,16 @@ describe('IndexingWorkflow', () => {
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
 
-  it.each(['Commit conflict', 'SQLITE_BUSY: database is locked'])('retries a transient %s before succeeding', async (message) => {
+  // The busy cases carry what node:sqlite actually throws: the message names no code, so only
+  // errcode tells them apart - 5 for a held write lock, 517 for a WAL snapshot that lost its upgrade.
+  it.each([
+    { label: 'Commit conflict', failure: () => new Error('Commit conflict') },
+    { label: 'busy database', failure: () => Object.assign(new Error('database is locked'), { errcode: 5 }) },
+    { label: 'busy WAL snapshot', failure: () => Object.assign(new Error('database is locked'), { errcode: 517 }) },
+  ])('retries a transient $label before succeeding', async ({ failure }) => {
     vi.useFakeTimers();
     const harness = createHarness();
-    harness.addDocument.mockRejectedValueOnce(new Error(message)).mockResolvedValueOnce(undefined);
+    harness.addDocument.mockRejectedValueOnce(failure()).mockResolvedValueOnce(undefined);
 
     const run = runWorkflow(harness.workflow, request);
     await vi.runAllTimersAsync();
@@ -603,5 +609,17 @@ describe('IndexingWorkflow', () => {
     });
     expect(harness.statusTracker.completeIndexing).toHaveBeenCalledWith(request.operationId);
     vi.useRealTimers();
+  });
+
+  // The mirror of the cases above: a matcher that says yes to every errcode is as wrong as one that
+  // says no to all of them. 1555 is SQLITE_CONSTRAINT_PRIMARYKEY, whose low byte is 19, not 5.
+  it('gives up on a sqlite error that is not a busy database', async () => {
+    const harness = createHarness();
+    harness.addDocument.mockRejectedValue(Object.assign(new Error('UNIQUE constraint failed: documents.url'), { errcode: 1555 }));
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.addDocument).toHaveBeenCalledTimes(1);
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(request.operationId, expect.any(String));
   });
 });

@@ -1,5 +1,3 @@
-import sqlite3 from 'sqlite3';
-import { open, Database } from 'sqlite';
 import * as lancedb from '@lancedb/lancedb';
 import { PhraseQuery, MatchQuery, BooleanQuery, Occur } from '@lancedb/lancedb';
 import { Bool, Field, FixedSizeList, Float32, Schema, Utf8, Int32 } from 'apache-arrow';
@@ -21,6 +19,7 @@ import { EmbeddingsProvider } from '../embeddings/types.js';
 import { narrowsCrawlScope } from '../util/docs.js';
 import { logger } from '../util/logger.js';
 import { escapeFilterValue, escapeLikeLiteral } from '../util/security.js';
+import { SqliteDatabase } from './sqlite.js';
 
 type LanceDBConnection = Awaited<ReturnType<typeof lancedb.connect>>;
 type LanceDBTable = Awaited<ReturnType<LanceDBConnection['openTable']>>;
@@ -131,9 +130,9 @@ function buildSearchWhereClause(visibilityFilter: string, options: SearchOptions
 }
 
 export class DocumentStore {
-  private sqliteDb?: Database;
-  private sqliteReadDb?: Database;
-  private sqliteLeaseDb?: Database;
+  private sqliteDb?: SqliteDatabase;
+  private sqliteReadDb?: SqliteDatabase;
+  private sqliteLeaseDb?: SqliteDatabase;
   private lanceConn?: LanceDBConnection;
   private lanceTable?: LanceDBTable;
   private readonly searchCache: QuickLRU<string, SearchResult[]>;
@@ -208,10 +207,7 @@ export class DocumentStore {
       // Initialize SQLite with error handling
       try {
         logger.debug(`[DocumentStore] Opening SQLite database at ${this.dbPath}`);
-        this.sqliteDb = await open({
-          filename: this.dbPath,
-          driver: sqlite3.Database,
-        });
+        this.sqliteDb = new SqliteDatabase(this.dbPath);
 
         logger.debug(`[DocumentStore] Configuring SQLite database`);
         await this.sqliteDb.exec('PRAGMA busy_timeout = 5000;');
@@ -239,18 +235,12 @@ export class DocumentStore {
 
       // Reads use a separate connection so they never observe this instance's
       // uncommitted publication transaction.
-      this.sqliteReadDb = await open({
-        filename: this.dbPath,
-        driver: sqlite3.Database,
-      });
+      this.sqliteReadDb = new SqliteDatabase(this.dbPath);
       await this.sqliteReadDb.exec('PRAGMA busy_timeout = 5000;');
 
       // Lease renewal uses its own writer so slow Lance staging cannot block
       // heartbeats behind this instance's publication connection.
-      this.sqliteLeaseDb = await open({
-        filename: this.dbPath,
-        driver: sqlite3.Database,
-      });
+      this.sqliteLeaseDb = new SqliteDatabase(this.dbPath);
       await this.sqliteLeaseDb.exec('PRAGMA busy_timeout = 5000;');
 
       // Initialize LanceDB with error handling
