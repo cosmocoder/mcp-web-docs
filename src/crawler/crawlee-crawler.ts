@@ -82,7 +82,6 @@ export class CrawleeCrawler extends BaseCrawler {
   private allowedHostname: string = '';
   /** Track pages skipped due to domain mismatch */
   private skippedExternalPages: number = 0;
-  /** The URLs of login walls left out of the index without stopping the crawl */
   private skippedLoginUrls: string[] = [];
 
   /** Login walls this crawl left out of the index. Only meaningful once crawl() has finished. */
@@ -149,7 +148,6 @@ export class CrawleeCrawler extends BaseCrawler {
     }
   }
 
-  /** Which of the two it was. The remedy is the same; only what went wrong differs. */
   private loginPageMessage(what: string): string {
     return this.storageState ? `Authentication session expired during the crawl - ${what}` : `This site requires authentication - ${what}`;
   }
@@ -211,8 +209,7 @@ export class CrawleeCrawler extends BaseCrawler {
     this.wallByRequestedUrl.delete(requestedUrl);
     this.wallByRequestedUrl.set(requestedUrl, true);
 
-    // Never indexed - it is not documentation - but one wall is not a dead session: a public site's
-    // own /login is a wall, and a crawl without a pathPrefix reaches it from the nav.
+    // Never indexed - it is not documentation.
     //
     // This rule and the proportion rule below are both for a crawl that authenticated. Without a session
     // nothing can have expired, and a public site has login pages in it by design - a /login, a /signup,

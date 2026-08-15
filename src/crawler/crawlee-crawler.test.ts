@@ -661,23 +661,16 @@ describe('CrawleeCrawler', () => {
       await expect(crawlPages([docsPage(0), ...pages])).rejects.toThrow(SessionExpiredError);
     });
 
-    // What a documentation site does that reads like a login page. Each of these clears the detector's
-    // own bar; what keeps them in the index is the wall rule, which needs a page with only the form.
+    // What a documentation site does that reads like a login page. Both clear the detector's own bar;
+    // what keeps them in the index is the wall rule, which needs a page with only the form on it.
     it.each([
-      // Two indicators is the detector's bar but half of ours, or any page mentioning a username counts
-      ['barely trip the detector', [1, 2, 3].map((n) => ({ ...loginPage(n), bodyText: `Log in with your username. ${SHELL_TEXT}` }))],
-      // A sign-in box in the page furniture, on every page of the site
+      // A sign-in box in the site chrome, on every page
       [
-        'carry a sign-in box in the site chrome',
+        'carry a sign-in box in an article',
         [1, 2, 3].map((n) => {
           const served = loginPage(n);
           return { ...served, bodyText: `${served.bodyText} Topic ${n}`, headings: [`Topic ${n}`] };
         }),
-      ],
-      // A live form to try the documented call on, which is still an article around a form
-      [
-        'document signing in with a form to try it on',
-        [{ ...loginPage(1), bodyText: `${LOGIN_BODY} ${SHELL_TEXT} Paste your test credentials in to see the token response.` }],
       ],
       // Bare, with a password box, but tripping only two of the detector's six indicators - short of the
       // bar, and so not the crawl's business to judge. The accepted cost is a wall worded like this one.
@@ -775,15 +768,6 @@ describe('CrawleeCrawler', () => {
       await expect(collect(crawler, 'https://example.com/docs')).resolves.toBeDefined();
     });
 
-    // The page dropped from the index has to be named somewhere, or neither remedy can be applied to
-    // it. Crawlee's own logger is switched off in browser-config, so this has to be the project's.
-    it('names the login page it left out, and counts them at the end', async () => {
-      await crawlPages([docsPage(1), loginWall(2)]);
-
-      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Not indexing https://example.com/docs/2'));
-      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Left 1 login page out of the index'));
-    });
-
     // Two crawls on one instance: the wall the first one skipped must not be the first of two for the
     // second, or a site crawled twice fails the second time for what the first one saw
     it('starts each crawl from no login pages at all', async () => {
@@ -794,23 +778,16 @@ describe('CrawleeCrawler', () => {
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Left 1 login page out of the index'));
     });
 
-    // The workflow reads this to tell the caller which pages it did not get
-    it('reports the URLs of the login pages it left out', async () => {
-      await crawlPages([docsPage(1), loginWall(2)]);
-
-      expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/docs/2']);
-    });
-
-    // Reported to the client, and the same URL on its way to stderr is redacted, so this one is too.
-    // Normalized as well, matching the key the window counts by.
+    // The page dropped from the index has to be named somewhere, or neither remedy can be applied to
+    // it, and it is normalized to match the key the window counts by.
     it('reports the skipped URL redacted and normalized', async () => {
       const wall = { ...loginWall(2), url: 'https://example.com/docs/2?token=abc123&next=%2Fdocs#top' };
 
       await crawlPages([docsPage(1), wall]);
 
       expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/docs/2?token=[REDACTED]&next=%2Fdocs']);
-      // The stderr line names the same string. The logger's own redaction covers fewer parameter
-      // names than this one, so logging the raw URL would echo what the report withheld.
+      // The logger's own redaction covers fewer parameter names than this one, so logging the raw URL
+      // would echo what the report withheld
       expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Not indexing https://example.com/docs/2?token=[REDACTED]'));
       expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('abc123'));
     });

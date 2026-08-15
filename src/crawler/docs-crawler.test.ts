@@ -36,8 +36,8 @@ vi.mock('./crawlee-crawler.js', () => ({
       get skippedLoginPageUrls() {
         return mockSkippedLoginPageUrls();
       },
-      // Checked against the real class: a hop DocsCrawler forwards can otherwise be deleted from
-      // both sides with the suite green, which is how three of them went unnoticed
+      // Checked against the real class: a hop DocsCrawler forwards can otherwise be deleted from both
+      // sides with the suite green
     } satisfies Pick<CrawleeCrawler, 'crawl' | 'abort' | 'setStorageState' | 'setPathPrefix' | 'failedPageCount' | 'skippedLoginPageUrls'>;
   },
 }));
@@ -228,22 +228,9 @@ describe('DocsCrawler', () => {
         expect(crawler.failedPageCount).toBe(3);
       });
 
-      // The line that connects the crawler to the workflow in production
-      it('forwards the login pages the inner crawler left out', async () => {
-        mockSkippedLoginPageUrls.mockReturnValue(['https://example.com/login']);
-        mockCrawleeCrawl.mockImplementation(async function* () {
-          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
-        });
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
-        for await (const _ of crawler.crawl('https://example.com')) {
-          // Just consume results
-        }
-
-        expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/login']);
-      });
-
-      // A status object holds this array after the crawl; a later caller must not be able to change it
-      it('hands out a copy of the skipped login pages', async () => {
+      // The line that connects the crawler to the workflow, and a status object holds the array it
+      // hands over - a later caller must not be able to change it
+      it('forwards the login pages the inner crawler left out, as a copy', async () => {
         mockSkippedLoginPageUrls.mockReturnValue(['https://example.com/login']);
         mockCrawleeCrawl.mockImplementation(async function* () {
           yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };

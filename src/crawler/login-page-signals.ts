@@ -21,9 +21,8 @@ export const LOGIN_SHELL_MAX_TEXT = 200;
 export const LOGIN_PAGE_CONFIDENCE = 0.5;
 
 /**
- * A wall asks for a password and has nothing else on it, which is enough to act on a single page:
- * documentation about signing in carries the same wording and the same form, but has an article
- * around them. The heading does not separate the two - a wall has one of those as well.
+ * Documentation about signing in carries the same wording and the same form, but has an article around
+ * them. The heading does not separate the two - a wall has one of those as well.
  */
 export function isLoginWall(signals: { hasPasswordInput: boolean; text: string }): boolean {
   return signals.hasPasswordInput && signals.text.length < LOGIN_SHELL_MAX_TEXT;

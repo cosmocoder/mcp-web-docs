@@ -175,8 +175,7 @@ export class IndexingWorkflow {
       // A tolerated partial crawl otherwise looks identical to a complete one. The crawler
       // already warns about it on stderr, so this only needs to reach the client.
       const failedPages = crawler.failedPageCount;
-      // Counted before updateStats caps the list it stores: the description's "and N more" is derived
-      // from this total, so it has to come off the uncapped array
+      // Counted off the uncapped array: the description's "and N more" is derived from this total
       const skippedLoginUrls = crawler.skippedLoginPageUrls;
       statusTracker.updateStats(operationId, {
         pagesFound: pages.length,
