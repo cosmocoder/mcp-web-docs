@@ -7,7 +7,7 @@ import { logger } from '../util/logger.js';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProcessedDocument, DocumentChunk } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
-import { SqliteDatabase } from './sqlite.js';
+import { isSqliteBusy, SqliteDatabase } from './sqlite.js';
 import { connect } from '@lancedb/lancedb';
 import { escapeLikeLiteral } from '../util/security.js';
 import type { Table } from '@lancedb/lancedb';
@@ -262,7 +262,7 @@ describe('DocumentStore', () => {
               new Date().toISOString(),
             ])
             .then(() => 'landed')
-            .catch((error: unknown) => `rejected: ${(error as { errcode?: number }).errcode}`);
+            .catch((error: unknown) => (isSqliteBusy(error) ? 'rejected: busy' : `rejected: ${String(error)}`));
         }
         return row;
       });
@@ -274,8 +274,8 @@ describe('DocumentStore', () => {
         await peer.close();
       }
 
-      // 5 is SQLITE_BUSY: the peer's write found the lock this test asserts the publication holds
-      expect(peerOutcome).toBe('rejected: 5');
+      // The peer's write found the lock this test asserts the publication holds
+      expect(peerOutcome).toBe('rejected: busy');
       expect(await store.countDocumentPages(url)).toBe(2);
     });
 

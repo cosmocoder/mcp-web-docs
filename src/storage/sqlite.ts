@@ -3,8 +3,16 @@ import { DatabaseSync } from 'node:sqlite';
 /** node:sqlite refuses to bind a boolean or undefined, so callers pass 1/0 and null instead. */
 export type SqlParam = string | number | bigint | null | Uint8Array;
 
-export interface RunResult {
-  changes: number;
+const SQLITE_BUSY = 5;
+
+/**
+ * A busy database arrives as the primary code 5, or as an extended variant of it: a WAL reader that
+ * upgrades to a write after a peer commits gets 517, SQLITE_BUSY_SNAPSHOT. Both word the message
+ * "database is locked", which is why callers must not match on the text.
+ */
+export function isSqliteBusy(error: unknown): boolean {
+  const errcode = (error as { errcode?: unknown } | null)?.errcode;
+  return typeof errcode === 'number' && (errcode & 0xff) === SQLITE_BUSY;
 }
 
 /**
@@ -24,7 +32,7 @@ export class SqliteDatabase {
     this.database.exec(sql);
   }
 
-  async run(sql: string, params: readonly SqlParam[] = []): Promise<RunResult> {
+  async run(sql: string, params: readonly SqlParam[] = []): Promise<{ changes: number }> {
     const { changes } = this.database.prepare(sql).run(...params);
     return { changes: Number(changes) };
   }
