@@ -18,6 +18,10 @@ export interface IndexingStatus {
   pagesSkipped?: number;
   /** Pages the crawl could not fetch at all, so the index is missing them */
   pagesFailed?: number;
+  /** Login walls left out of the index: they asked for a password and had no content of their own */
+  loginPagesSkipped?: number;
+  /** The first few of those, the rest counted rather than listed. Both remedies need a URL to act on. */
+  skippedLoginUrls?: string[];
   chunksCreated?: number;
 }
 

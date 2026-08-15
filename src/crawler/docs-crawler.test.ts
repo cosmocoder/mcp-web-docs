@@ -1,3 +1,4 @@
+import type { CrawleeCrawler } from './crawlee-crawler.js';
 import type { CrawlResult } from '../types.js';
 import { DocsCrawler } from './docs-crawler.js';
 
@@ -20,6 +21,7 @@ const mockCrawleeConstructor = vi.fn();
 const mockSetStorageState = vi.fn();
 const mockSetPathPrefix = vi.fn();
 const mockFailedPageCount = vi.fn().mockReturnValue(0);
+const mockSkippedLoginPageUrls = vi.fn().mockReturnValue([]);
 vi.mock('./crawlee-crawler.js', () => ({
   CrawleeCrawler: function (...args: unknown[]) {
     mockCrawleeConstructor(...args);
@@ -31,7 +33,12 @@ vi.mock('./crawlee-crawler.js', () => ({
       get failedPageCount() {
         return mockFailedPageCount();
       },
-    };
+      get skippedLoginPageUrls() {
+        return mockSkippedLoginPageUrls();
+      },
+      // Checked against the real class: a hop DocsCrawler forwards can otherwise be deleted from both
+      // sides with the suite green
+    } satisfies Pick<CrawleeCrawler, 'crawl' | 'abort' | 'setStorageState' | 'setPathPrefix' | 'failedPageCount' | 'skippedLoginPageUrls'>;
   },
 }));
 
@@ -42,6 +49,7 @@ describe('DocsCrawler', () => {
     vi.clearAllMocks();
     // clearAllMocks does not reset return values, so a stubbed count would leak into later tests
     mockFailedPageCount.mockReturnValue(0);
+    mockSkippedLoginPageUrls.mockReturnValue([]);
     crawler = new DocsCrawler();
   });
 
@@ -218,6 +226,42 @@ describe('DocsCrawler', () => {
         }
 
         expect(crawler.failedPageCount).toBe(3);
+      });
+
+      // The line that connects the crawler to the workflow, and a status object holds the array it
+      // hands over - a later caller must not be able to change it
+      it('forwards the login pages the inner crawler left out, as a copy', async () => {
+        mockSkippedLoginPageUrls.mockReturnValue(['https://example.com/login']);
+        mockCrawleeCrawl.mockImplementation(async function* () {
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
+        });
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of crawler.crawl('https://example.com')) {
+          // Just consume results
+        }
+
+        crawler.skippedLoginPageUrls.push('https://example.com/injected');
+
+        expect(crawler.skippedLoginPageUrls).toEqual(['https://example.com/login']);
+      });
+
+      it('does not carry skipped login pages over to a GitHub crawl', async () => {
+        mockSkippedLoginPageUrls.mockReturnValue(['https://example.com/login']);
+        mockCrawleeCrawl.mockImplementation(async function* () {
+          yield { url: 'https://example.com/page1', path: '/page1', content: 'Page 1', contentFormat: 'text', title: 'Page 1' };
+        });
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of crawler.crawl('https://example.com')) {
+          // Just consume results
+        }
+        mockSkippedLoginPageUrls.mockReturnValue([]);
+
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        for await (const _ of crawler.crawl('https://github.com/owner/repo')) {
+          // Just consume results
+        }
+
+        expect(crawler.skippedLoginPageUrls).toEqual([]);
       });
 
       it('does not carry a failed page count over to a GitHub crawl', async () => {

@@ -641,6 +641,39 @@ const SENSITIVE_LOG_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = 
   { pattern: /eyJ[a-zA-Z0-9_-]{20,}\.[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]*/g, replacement: '[JWT_REDACTED]' },
 ];
 
+/** Query parameters whose value is worth hiding when a URL is shown to anyone */
+const SENSITIVE_QUERY_KEYS =
+  /^(token|access[_-]?token|refresh[_-]?token|id[_-]?token|api[_-]?key|apikey|password|passwd|secret|authorization|auth[_-]?token|session|session[_-]?id|sessionid|sid|cookie)$/i;
+
+/**
+ * A URL with its secrets taken out, for showing to someone who then has to act on it.
+ *
+ * Only parameter values are touched. redactForLogging rewrites anything shaped like `token:` wherever
+ * it appears, which is right for a line of diagnostic prose and wrong here: it turns the documentation
+ * path /docs/token:refresh into /docs/token=[REDACTED], a URL that does not exist and cannot be
+ * authenticated against or passed to pathPrefix.
+ */
+export function redactUrlSecrets(urlString: string): string {
+  let url: URL;
+  try {
+    url = new URL(urlString);
+  }
+  catch {
+    return urlString;
+  }
+
+  const sensitive = [...url.searchParams.keys()].filter((key) => SENSITIVE_QUERY_KEYS.test(key));
+  if (sensitive.length === 0) {
+    return urlString;
+  }
+  for (const key of sensitive) {
+    url.searchParams.set(key, '[REDACTED]');
+  }
+  // Left readable rather than percent-encoded: the point of this string is that a person can see
+  // which page it was, and which parameter was withheld
+  return url.toString().replaceAll('%5BREDACTED%5D', '[REDACTED]');
+}
+
 /**
  * Redact sensitive information from log messages.
  * Use this before logging any data that might contain credentials.

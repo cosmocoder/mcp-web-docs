@@ -1,3 +1,4 @@
+import type { WorkflowCrawler } from './indexing/workflow.js';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProgressToken } from '@modelcontextprotocol/sdk/types.js';
 import { SessionExpiredError } from './util/security.js';
@@ -12,6 +13,7 @@ const {
   mockCrawlerAbort,
   mockCrawlerCrawl,
   mockCrawlerSetPathPrefix,
+  mockSkippedLoginPageUrls,
   mockAuthCleanup,
   mockAuthHasSession,
   mockAuthInitialize,
@@ -42,6 +44,7 @@ const {
     yield { url: 'https://example.com', path: '/', content: 'Test', contentFormat: 'text', title: 'Test' };
   }),
   mockCrawlerSetPathPrefix: vi.fn(),
+  mockSkippedLoginPageUrls: vi.fn().mockReturnValue([]),
   mockAuthCleanup: vi.fn().mockResolvedValue(undefined),
   mockAuthHasSession: vi.fn().mockResolvedValue(false),
   mockAuthInitialize: vi.fn().mockResolvedValue(undefined),
@@ -158,9 +161,15 @@ vi.mock('./crawler/docs-crawler.js', () => ({
     return {
       crawl: mockCrawlerCrawl,
       abort: mockCrawlerAbort,
+      failedPageCount: 0,
+      get skippedLoginPageUrls() {
+        return mockSkippedLoginPageUrls();
+      },
       setPathPrefix: mockCrawlerSetPathPrefix,
       setStorageState: vi.fn(),
-    };
+      // Checked against the type the workflow actually consumes, so the two lists cannot drift and a
+      // hop it reads cannot vanish from both sides
+    } satisfies WorkflowCrawler;
   }),
 }));
 
@@ -230,6 +239,7 @@ describe('WebDocsServer', () => {
     mockAuthPerformInteractiveLogin.mockResolvedValue(undefined);
     mockAuthValidateSession.mockResolvedValue({ isValid: true });
     mockClearSession.mockResolvedValue(undefined);
+    mockSkippedLoginPageUrls.mockReturnValue([]);
     mockStoreClose.mockResolvedValue(undefined);
   });
 
@@ -300,9 +310,46 @@ describe('WebDocsServer', () => {
       await vi.waitFor(() =>
         expect(mockNotification).toHaveBeenCalledWith(
           expect.objectContaining({
-            params: expect.objectContaining({ message: 'Indexing complete (2/3 pages, 1 skipped)' }),
+            params: expect.objectContaining({
+              message: 'Indexing complete, but 1 page had no indexable content (2/3 pages, 1 skipped)',
+            }),
           })
         )
+      );
+    });
+
+    // Same reason: the count has to reach the message a client shows, not only the status object
+    it('reports login pages left out in the progress notification', async () => {
+      mockCrawlerCrawl.mockImplementationOnce(async function* () {
+        yield { url: 'https://walled.example.com/one', path: '/one', content: 'One', contentFormat: 'text', title: 'One' };
+      });
+      mockProcessorProcess.mockResolvedValueOnce(processedPageWithChunk);
+      mockSkippedLoginPageUrls.mockReturnValue(['https://walled.example.com/login']);
+
+      await toolHandler({
+        params: {
+          name: 'add_documentation',
+          arguments: { url: 'https://walled.example.com' },
+          _meta: { progressToken: 'walled-token' },
+        },
+      });
+
+      // The terminal notification, so the operation is finished before the test returns - an
+      // intermediate one leaves its successors landing inside the next test
+      await vi.waitFor(() =>
+        expect(mockNotification).toHaveBeenCalledWith(
+          expect.objectContaining({
+            params: expect.objectContaining({
+              progress: 100,
+              message: expect.stringContaining('1 asked for a password'),
+            }),
+          })
+        )
+      );
+      expect(mockNotification).toHaveBeenCalledWith(
+        expect.objectContaining({
+          params: expect.objectContaining({ message: expect.stringContaining('https://walled.example.com/login') }),
+        })
       );
     });
 

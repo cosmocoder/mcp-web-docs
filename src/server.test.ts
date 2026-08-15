@@ -91,6 +91,29 @@ describe('describeIndexingStatuses', () => {
     );
   });
 
+  // An operation can succeed and still be missing pages. Telling the agent there is nothing left to
+  // do sends it past the entry that says what is missing and how to fix it.
+  it.each([
+    ['pages it could not fetch', { pagesFailed: 2 }],
+    ['pages that asked for a password', { loginPagesSkipped: 1 }],
+    ['pages with no indexable content', { pagesSkipped: 3 }],
+  ])('does not report a clean success when an operation finished with %s', (_label, missing) => {
+    const instruction = describeIndexingStatuses([statusOf('complete'), { ...statusOf('complete'), ...missing }]);
+
+    expect(instruction).not.toContain('No need to poll again');
+    expect(instruction).toContain('1 did not index everything');
+    expect(instruction).toContain('status entries');
+  });
+
+  // An operation writes its page counts before it stores anything, so one that fails later carries
+  // them. "Did not succeed" has to win over "did not index everything" - it is the bigger claim.
+  it('still reports an operation that failed carrying page counts as unsuccessful', () => {
+    const instruction = describeIndexingStatuses([{ ...statusOf('failed'), pagesFailed: 2, loginPagesSkipped: 1 }]);
+
+    expect(instruction).toContain('1 did not succeed');
+    expect(instruction).not.toContain('did not index everything');
+  });
+
   // Any of these can be the last thing an agent reads while an earlier failure has already aged
   // out, so each has to point somewhere it can verify. The in-flight message is exempt below.
   it.each([

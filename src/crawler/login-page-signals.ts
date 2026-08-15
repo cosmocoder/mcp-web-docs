@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 /** Read in the page, so it must not reference anything outside itself. */
 export function readLoginPageSignals(): {
   text: string;
@@ -23,20 +21,9 @@ export const LOGIN_SHELL_MAX_TEXT = 200;
 export const LOGIN_PAGE_CONFIDENCE = 0.5;
 
 /**
- * What tells this page apart from the next one, or null when nothing does. A theme rendering its
- * headings as styled divs would otherwise make every page of the site one page.
- *
- * The page's own address comes out first, because a login page names where it is sending you back
- * to. Only its own: removing anything else would fold pages differing by exactly that. Accepted
- * cost: `POST /api/login` at /api/login and `POST /api/logout` at /api/logout fold into one.
+ * Documentation about signing in carries the same wording and the same form, but has an article around
+ * them. The heading does not separate the two - a wall has one of those as well.
  */
-export function pageIdentity(headings: string[], text: string, currentUrl: string): string | null {
-  const { pathname } = new URL(currentUrl);
-  const identifying = headings.map((heading) => heading.replaceAll(currentUrl, '').replaceAll(pathname, '').trim()).filter(Boolean);
-  if (identifying.length > 0) {
-    return createHash('sha1').update(JSON.stringify(identifying)).digest('hex');
-  }
-  // A page that is barely anything is still recognisable as that; one with an article and no
-  // headings could be any page.
-  return text.length < LOGIN_SHELL_MAX_TEXT ? 'shell' : null;
+export function isLoginWall(signals: { hasPasswordInput: boolean; text: string }): boolean {
+  return signals.hasPasswordInput && signals.text.length < LOGIN_SHELL_MAX_TEXT;
 }

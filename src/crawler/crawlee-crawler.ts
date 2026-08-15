@@ -9,8 +9,8 @@ import { QueueManager } from './queue-manager.js';
 import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
-import { LOGIN_PAGE_CONFIDENCE, pageIdentity, readLoginPageSignals } from './login-page-signals.js';
-import { detectLoginPage, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
+import { isLoginWall, LOGIN_PAGE_CONFIDENCE, readLoginPageSignals } from './login-page-signals.js';
+import { detectLoginPage, redactUrlSecrets, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
 import {
   BlockedOutboundRequestError,
   classifyOutboundFailure,
@@ -49,13 +49,16 @@ const MIN_TOLERATED_FAILED_PAGES = 5;
 const MAX_TOLERATED_FAILED_PAGE_RATIO = 0.02;
 
 /**
- * How many times one login page must come back before the session is called dead. One is not enough:
- * documentation about signing in scores the same. What it does not do is answer several URLs alike.
+ * A session that has died answers page after page with a wall, so what gives it away is a run of them
+ * among the pages the crawl is currently seeing - not one page, which a public site's own /login also
+ * is, and not a total spread over a whole crawl, which a handful of scattered sign-up pages would
+ * reach on a large site. Five of the last eight means a wall is most of what the crawl can still see.
  */
-const REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED = 3;
+const LOGIN_WALL_WINDOW = 8;
+const LOGIN_WALLS_IN_WINDOW_BEFORE_SESSION_EXPIRED = 5;
 
-/** At one, a two-page site whose second page documents signing in would be "mostly login pages" */
-const MIN_REPEATS_FOR_MOSTLY_LOGIN_PAGES = 2;
+/** A crawl too short to fill the window says the same thing by proportion. Two, or /login alone counts. */
+const MIN_WALLS_FOR_MOSTLY_WALLS = 2;
 
 interface NavigationAttempt {
   failedUrl?: string;
@@ -68,14 +71,23 @@ export class CrawleeCrawler extends BaseCrawler {
   private queueManager: QueueManager = new QueueManager();
   private storageState?: ValidatedStorageState;
   private sessionExpiredError: SessionExpiredError | null = null;
-  /** How many pages each distinct login page has answered, and how many pages were checked at all */
-  private loginPageCounts: Map<string, number> = new Map();
-  private pagesChecked: number = 0;
+  /**
+   * Whether each URL the check looked at turned out to be a login wall, in the order they were first
+   * seen. Keyed by the requested URL, so a page the crawl retried is one page and a wall reached by
+   * redirect from several URLs is several.
+   */
+  private wallByRequestedUrl: Map<string, boolean> = new Map();
   private expectedUrl: string = '';
   /** The allowed hostname for crawling - pages outside this domain are skipped */
   private allowedHostname: string = '';
   /** Track pages skipped due to domain mismatch */
   private skippedExternalPages: number = 0;
+  private skippedLoginUrls: string[] = [];
+
+  /** Login walls this crawl left out of the index. Only meaningful once crawl() has finished. */
+  get skippedLoginPageUrls(): string[] {
+    return [...this.skippedLoginUrls];
+  }
   /** Optional path prefix to restrict crawling */
   private pathPrefix?: string;
   private terminalRootFailure?: OutboundRequestFailedError;
@@ -136,16 +148,21 @@ export class CrawleeCrawler extends BaseCrawler {
     }
   }
 
+  private loginPageMessage(what: string): string {
+    return this.storageState ? `Authentication session expired during the crawl - ${what}` : `This site requires authentication - ${what}`;
+  }
+
   /**
-   * The error to fail the crawl with if this page shows the session has expired, else null. Only
-   * consulted when we authenticated, so a login page here means the session died.
+   * What to do with this page: nothing, keep it out of the index, or stop the crawl.
    *
    * Scored on content alone: a URL match is worth three of the detector's six indicators, enough on
    * its own, so every /oauth or /sso documentation page would score as a login page, as would every
    * page on a host like auth.example.com.
    */
-  private async checkForLoginPage(page: Page, isEntryPage: boolean): Promise<SessionExpiredError | null> {
-    this.pagesChecked++;
+  private async checkForLoginPage(page: Page, requestedUrl: string, isEntryPage: boolean): Promise<SessionExpiredError | 'skip' | null> {
+    // Recorded before anything can return: the rules below count walls among the pages the crawl
+    // looked at, not among the ones that got this far. Set() keeps a retried URL where it first was.
+    this.wallByRequestedUrl.set(requestedUrl, this.wallByRequestedUrl.get(requestedUrl) ?? false);
     let observed;
     let detection;
     try {
@@ -167,38 +184,46 @@ export class CrawleeCrawler extends BaseCrawler {
       return null;
     }
 
-    if (isEntryPage) {
+    // With a session, a login page where documentation was asked for means the session is dead in
+    // whatever shape it arrives - an SSO wall can be a branded button with no password field. Without
+    // one it has to be a wall: a code sample containing type="password" is worth two of the detector's
+    // six indicators, so an article about building login forms would fail the crawl.
+    if (isEntryPage && (this.storageState || isLoginWall(observed))) {
       logger.warn(`[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`);
       logger.debug(`[CrawleeCrawler] Detection reasons: ${detection.reasons.join(', ')}`);
       return new SessionExpiredError(
-        `Authentication session has expired - crawled page is a login page`,
+        this.loginPageMessage('the page the crawl was asked for is a login page'),
         this.expectedUrl,
         page.url(),
         detection
       );
     }
 
-    // Only a page actually asking for credentials counts as a login page coming back. Shape alone
-    // gives genuinely different documentation pages one identity; none of them ask for a password.
-    if (!observed.hasPasswordInput) {
+    // Anything the detector flagged that is not a wall is left alone: a sign-in box in the site's
+    // furniture reads as a login page on wording, and so does documentation about signing in.
+    if (!isLoginWall(observed)) {
       return null;
+    }
+    // Deleted first so the wall takes the position the crawl found it in: a page recorded by an
+    // earlier attempt that could not be read would otherwise sit outside every window that follows.
+    this.wallByRequestedUrl.delete(requestedUrl);
+    this.wallByRequestedUrl.set(requestedUrl, true);
+
+    // Never indexed - it is not documentation.
+    //
+    // This rule and the proportion rule below are both for a crawl that authenticated. Without a session
+    // nothing can have expired, and a public site has login pages in it by design - a /login, a /signup,
+    // one per gated area, all hanging off the same nav and so arriving together. Only the entry rule
+    // above fails such a crawl; every other wall is kept out of the index and reported.
+    const recent = [...this.wallByRequestedUrl.values()].slice(-LOGIN_WALL_WINDOW);
+    const walls = recent.filter(Boolean).length;
+    if (walls < LOGIN_WALLS_IN_WINDOW_BEFORE_SESSION_EXPIRED || !this.storageState) {
+      return 'skip';
     }
 
-    // Counted per distinct page rather than in a row: handlers run concurrently, so "in a row"
-    // would mean "in the order five lanes happened to finish"
-    const identity = pageIdentity(observed.headings, observed.text, page.url());
-    if (identity === null) {
-      return null;
-    }
-    const timesServed = (this.loginPageCounts.get(identity) ?? 0) + 1;
-    this.loginPageCounts.set(identity, timesServed);
-    if (timesServed < REPEATED_LOGIN_PAGES_BEFORE_SESSION_EXPIRED) {
-      return null;
-    }
-
-    logger.warn(`[CrawleeCrawler] One login page has answered ${timesServed} URLs - the session expired mid-crawl`);
+    logger.warn(`[CrawleeCrawler] ${walls} of the last ${recent.length} pages were login walls - the session expired mid-crawl`);
     return new SessionExpiredError(
-      `Authentication session expired during the crawl - one login page answered ${timesServed} different URLs`,
+      this.loginPageMessage(`${walls} of the last ${recent.length} pages the crawl saw were login walls`),
       this.expectedUrl,
       page.url(),
       detection
@@ -206,21 +231,23 @@ export class CrawleeCrawler extends BaseCrawler {
   }
 
   /**
-   * A crawl can end before any login page repeats often enough to be caught above - a short site, or
-   * a session that died near the end. One login page being most of what the crawl saw says the same.
+   * A crawl can end before the window fills - a short site, or a session that died near the end. Walls
+   * being most of what the crawl saw at all says the same thing after the fact.
    */
   private sessionExpiredAcrossCrawl(): SessionExpiredError | null {
-    const timesServed = Math.max(0, ...this.loginPageCounts.values());
-    if (timesServed < MIN_REPEATS_FOR_MOSTLY_LOGIN_PAGES || timesServed * 2 < this.pagesChecked) {
+    const checked = this.wallByRequestedUrl.size;
+    const walls = [...this.wallByRequestedUrl.values()].filter(Boolean).length;
+    // A crawl that authenticated, for the reason given at the window rule
+    if (!this.storageState || walls < MIN_WALLS_FOR_MOSTLY_WALLS || walls * 2 < checked) {
       return null;
     }
 
-    logger.warn(`[CrawleeCrawler] One login page answered ${timesServed} of ${this.pagesChecked} crawled URLs`);
+    logger.warn(`[CrawleeCrawler] ${walls} of ${checked} crawled pages were login walls`);
     return new SessionExpiredError(
-      `Authentication session expired during the crawl - one login page answered ${timesServed} of ${this.pagesChecked} URLs`,
+      this.loginPageMessage(`${walls} of the ${checked} pages the crawl saw were login walls`),
       this.expectedUrl,
       this.expectedUrl,
-      { isLoginPage: true, confidence: 1, reasons: [`${timesServed} of ${this.pagesChecked} crawled pages were one login page`] }
+      { isLoginPage: true, confidence: 1, reasons: [`${walls} of ${checked} crawled pages were login walls`] }
     );
   }
 
@@ -408,14 +435,14 @@ export class CrawleeCrawler extends BaseCrawler {
 
     // Reset state for this crawl
     this.sessionExpiredError = null;
-    this.loginPageCounts.clear();
-    this.pagesChecked = 0;
+    this.wallByRequestedUrl.clear();
     this.terminalRootFailure = undefined;
     this.rootPageFailed = false;
     this.failedPages = 0;
     this.navigationAttempts = new WeakMap();
     this.expectedUrl = normalizeQueuedUrl(url);
     this.skippedExternalPages = 0;
+    this.skippedLoginUrls = [];
 
     // Extract and store the allowed hostname from the initial URL
     try {
@@ -635,21 +662,20 @@ export class CrawleeCrawler extends BaseCrawler {
             else {
               // Subsequent page redirected outside domain - skip it
               this.skippedExternalPages++;
-              log.warning(
-                `Skipping page that redirected outside domain: ${request.url} → ${actualUrl} (skipped ${this.skippedExternalPages} external pages)`
+              logger.warn(
+                `[CrawleeCrawler] Skipping page that redirected outside domain: ${request.url} → ${actualUrl} (skipped ${this.skippedExternalPages} external pages)`
               );
               return;
             }
           }
 
-          if (this.storageState) {
-            const expired = await this.checkForLoginPage(page, isEntryPage);
-            if (expired) {
-              this.sessionExpiredError = expired;
-              log.error('Session appears expired - the crawl is being served login pages. Aborting crawl.');
-              this.abort();
-              return;
-            }
+          // Every crawl, not only an authenticated one: indexing the wall as documentation is the bug
+          const verdict = await this.checkForLoginPage(page, normalizeQueuedUrl(request.url), isEntryPage);
+          if (verdict instanceof SessionExpiredError) {
+            this.sessionExpiredError = verdict;
+            logger.error(`[CrawleeCrawler] ${verdict.message}. Aborting crawl.`);
+            this.abort();
+            return;
           }
 
           // Detect site type and get extractor
@@ -660,6 +686,18 @@ export class CrawleeCrawler extends BaseCrawler {
               }
 
               await this.queueManager.handleQueueAndLinks(enqueueLinks, log, rule);
+
+              // After the links, not before: a page skipped by mistake would otherwise take the whole
+              // section under it out of the crawl, and the sparse nav of a small section is exactly the
+              // page most likely to be mistaken for a wall.
+              if (verdict === 'skip') {
+                // Redacted once here, because the same string goes to the client and to stderr, and
+                // the logger's own redaction covers fewer parameter names than this one
+                const skipped = redactUrlSecrets(normalizeQueuedUrl(request.url));
+                this.skippedLoginUrls.push(skipped);
+                logger.warn(`[CrawleeCrawler] Not indexing ${skipped}: it asks for a password and has no content of its own`);
+                return;
+              }
 
               const pageTitle = await page.title();
               const { content, contentFormat, extractorUsed, title } = await this.extractContent(page, rule.type, rule.extractor);
@@ -713,6 +751,12 @@ export class CrawleeCrawler extends BaseCrawler {
       if (this.skippedExternalPages > 0) {
         logger.warn(
           `[CrawleeCrawler] Skipped ${this.skippedExternalPages} pages that redirected outside the allowed domain (${this.allowedHostname})`
+        );
+      }
+      if (this.skippedLoginUrls.length > 0) {
+        logger.warn(
+          `[CrawleeCrawler] Left ${this.skippedLoginUrls.length} login ${this.skippedLoginUrls.length === 1 ? 'page' : 'pages'} out of the index; ` +
+            'they had no content of their own'
         );
       }
 

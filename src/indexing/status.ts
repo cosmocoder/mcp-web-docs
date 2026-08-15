@@ -4,6 +4,43 @@ import { IndexingStatus } from '../types.js';
 /** How long to keep completed/failed statuses before auto-cleanup (2 minutes) */
 export const COMPLETED_STATUS_TTL_MS = 2 * 60 * 1000;
 
+/** Enough to point at the part of the site that needs a remedy, without pasting a crawl into a status */
+const MAX_NAMED_LOGIN_PAGES = 3;
+
+/**
+ * What a finished crawl is missing, if anything. The pages left out are named, because which remedy
+ * applies - authenticate, or pathPrefix - depends on which part of the site they were.
+ */
+function describeCompletion(status: IndexingStatus): string {
+  const missing: string[] = [];
+  if (status.pagesFailed) {
+    const pages = status.pagesFailed === 1 ? 'page' : 'pages';
+    const verb = status.pagesFailed === 1 ? 'is' : 'are';
+    missing.push(`${status.pagesFailed} ${pages} could not be fetched and ${verb} missing from the index`);
+  }
+  if (status.pagesSkipped) {
+    const pages = status.pagesSkipped === 1 ? 'page' : 'pages';
+    // No remedy to offer for a page that rendered nothing, but it still is not a clean success
+    missing.push(`${status.pagesSkipped} ${pages} had no indexable content`);
+  }
+  if (status.loginPagesSkipped) {
+    const pages = status.loginPagesSkipped === 1 ? 'page' : 'pages';
+    const named = status.skippedLoginUrls ?? [];
+    const rest = status.loginPagesSkipped - named.length;
+    const list = named.length > 0 ? ` (${named.join(', ')}${rest > 0 ? `, and ${rest} more` : ''})` : '';
+    missing.push(
+      `${status.loginPagesSkipped} ${pages} asked for a password and ${status.loginPagesSkipped === 1 ? 'was' : 'were'} left out${list}` +
+        `. Use the 'authenticate' tool if the site needs signing in, or set pathPrefix to keep the crawl out of that part of it`
+    );
+  }
+  if (missing.length === 0) {
+    return 'Indexing complete';
+  }
+  // "A; and B" for two, "A; B; and C" for three - the clauses carry commas of their own
+  const joined = missing.length > 1 ? `${missing.slice(0, -1).join('; ')}; and ${missing.at(-1)}` : missing[0];
+  return `Indexing complete, but ${joined}`;
+}
+
 export class IndexingStatusTracker {
   private multibar: MultiBar;
   private bars: Map<string, SingleBar>;
@@ -63,7 +100,12 @@ export class IndexingStatusTracker {
 
   updateStats(
     operationId: string,
-    stats: { pagesFound?: number; pagesProcessed?: number; pagesSkipped?: number; pagesFailed?: number; chunksCreated?: number }
+    stats: Partial<
+      Pick<
+        IndexingStatus,
+        'pagesFound' | 'pagesProcessed' | 'pagesSkipped' | 'pagesFailed' | 'loginPagesSkipped' | 'skippedLoginUrls' | 'chunksCreated'
+      >
+    >
   ): void {
     const currentStatus = this.statuses.get(operationId);
     if (!currentStatus) {
@@ -76,6 +118,10 @@ export class IndexingStatusTracker {
       pagesProcessed: stats.pagesProcessed ?? currentStatus.pagesProcessed,
       pagesSkipped: stats.pagesSkipped ?? currentStatus.pagesSkipped,
       pagesFailed: stats.pagesFailed ?? currentStatus.pagesFailed,
+      loginPagesSkipped: stats.loginPagesSkipped ?? currentStatus.loginPagesSkipped,
+      // Capped here rather than at the caller: the whole status is serialized to the client on
+      // every poll, and only the first few are ever named. loginPagesSkipped keeps the true total.
+      skippedLoginUrls: stats.skippedLoginUrls?.slice(0, MAX_NAMED_LOGIN_PAGES) ?? currentStatus.skippedLoginUrls,
       chunksCreated: stats.chunksCreated ?? currentStatus.chunksCreated,
     };
 
@@ -149,9 +195,7 @@ export class IndexingStatusTracker {
       status: 'complete',
       progress: 1,
       // Say so when the index is knowingly missing pages, rather than reporting a clean success
-      description: currentStatus.pagesFailed
-        ? `Indexing complete, but ${currentStatus.pagesFailed} ${currentStatus.pagesFailed === 1 ? 'page' : 'pages'} could not be fetched and ${currentStatus.pagesFailed === 1 ? 'is' : 'are'} missing from the index`
-        : 'Indexing complete',
+      description: describeCompletion(currentStatus),
     };
 
     this.statuses.set(operationId, status);

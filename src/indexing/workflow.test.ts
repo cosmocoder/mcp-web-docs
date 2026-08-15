@@ -37,6 +37,7 @@ function createHarness(
     savedSession?: string;
     previousPageCount?: number;
     failedPageCount?: number;
+    skippedLoginPageUrls?: string[];
   } = {}
 ) {
   const addDocument = vi.fn().mockResolvedValue(undefined);
@@ -61,6 +62,7 @@ function createHarness(
   const crawler = {
     abort: vi.fn(),
     failedPageCount: options.failedPageCount ?? 0,
+    skippedLoginPageUrls: options.skippedLoginPageUrls ?? [],
     crawl:
       options.crawl ??
       async function* () {
@@ -128,7 +130,10 @@ describe('IndexingWorkflow', () => {
 
     await runWorkflow(harness.workflow, request);
 
-    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesFound: 1, pagesFailed: 3 });
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(
+      request.operationId,
+      expect.objectContaining({ pagesFound: 1, pagesFailed: 3 })
+    );
     expect(harness.statusTracker.completeIndexing).toHaveBeenCalledWith(request.operationId);
   });
 
@@ -137,7 +142,55 @@ describe('IndexingWorkflow', () => {
 
     await runWorkflow(harness.workflow, request);
 
-    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(request.operationId, { pagesFound: 1, pagesFailed: 0 });
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(
+      request.operationId,
+      expect.objectContaining({ pagesFound: 1, pagesFailed: 0 })
+    );
+  });
+
+  // A login wall the crawl left out is a page the caller asked for and did not get, and the URL is
+  // what either remedy needs
+  it('reports the login pages a crawl left out of the index', async () => {
+    const harness = createHarness({ skippedLoginPageUrls: ['https://docs.example.com/login', 'https://docs.example.com/admin'] });
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.statusTracker.updateStats).toHaveBeenCalledWith(
+      request.operationId,
+      expect.objectContaining({
+        loginPagesSkipped: 2,
+        skippedLoginUrls: ['https://docs.example.com/login', 'https://docs.example.com/admin'],
+      })
+    );
+  });
+
+  // A crawl of a site that needs signing in ends here, its walls left out and nothing else to index.
+  // The stats are never reached on this path, so the count and the remedies travel in the failure.
+  it.each([
+    ['counts the login page that left it with nothing to index', ['https://docs.example.com/login'], /reached 1 page asking/],
+    [
+      'counts several login pages that left it with nothing to index',
+      ['https://docs.example.com/login', 'https://docs.example.com/admin'],
+      /reached 2 pages asking/,
+    ],
+    ['reports finding nothing when no page was a login page', [], /^No pages found to index$/],
+  ])('%s', async (_label, skippedLoginPageUrls, expected) => {
+    const harness = createHarness({ skippedLoginPageUrls, crawl: async function* () {} });
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(request.operationId, expect.stringMatching(expected));
+  });
+
+  it('offers both remedies for a crawl that reached nothing but login pages', async () => {
+    const harness = createHarness({ skippedLoginPageUrls: ['https://docs.example.com/login'], crawl: async function* () {} });
+
+    await runWorkflow(harness.workflow, request);
+
+    const [, message] = harness.statusTracker.failIndexing.mock.calls[0];
+    expect(message).toContain('https://docs.example.com/login');
+    expect(message).toContain("'authenticate' tool");
+    expect(message).toContain('pathPrefix');
   });
 
   it('skips pages with no indexable content and still stores the rest', async () => {
@@ -473,11 +526,17 @@ describe('IndexingWorkflow', () => {
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
 
-  it('clears an expired session and reports the friendly authentication failure', async () => {
+  // Both need authenticating, but only a crawl that had a session can be described as expired, and
+  // only the one that never had it wants telling about pathPrefix.
+  it.each([
+    ['a session that expired', JSON.stringify({ cookies: [] }), /session has expired/i, /before re-indexing/i],
+    ['a site that always needed one', undefined, /This site requires authentication/i, /pathPrefix/],
+  ])('clears the stored session and reports %s', async (_label, savedSession, expected, remedy) => {
     const harness = createHarness({
+      savedSession,
       crawl: async function* () {
         yield* [] as CrawlResult[];
-        throw new SessionExpiredError('redirected', request.url, 'https://docs.example.com/login', {
+        throw new SessionExpiredError('served', request.url, 'https://docs.example.com/login?token=abc123&next=%2Fdocs', {
           isLoginPage: true,
           confidence: 1,
           reasons: ['login URL'],
@@ -488,10 +547,14 @@ describe('IndexingWorkflow', () => {
     await runWorkflow(harness.workflow, request);
 
     expect(harness.authManager.clearSession).toHaveBeenCalledWith(request.url);
-    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(
-      request.operationId,
-      expect.stringContaining("Please use the 'authenticate' tool")
-    );
+    const [, message] = harness.statusTracker.failIndexing.mock.calls[0];
+    expect(message).toMatch(expected);
+    expect(message).toMatch(remedy);
+    // The page it happened on, or the user cannot tell which part of the site to keep out of - with
+    // its parameters redacted, since a login redirect is where a live token is likeliest to be
+    expect(message).toContain('https://docs.example.com/login?token=[REDACTED]&next=%2Fdocs');
+    expect(message).not.toContain('abc123');
+    expect(message).toContain("'authenticate' tool");
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
 

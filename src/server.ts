@@ -62,6 +62,15 @@ export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
     // Must not claim nothing was stored: a cancel can land after addDocument has committed.
     return `All operations finished, but ${unsuccessful} did not succeed. Check the status entries for why, and use list_documentation to confirm what is actually indexed.`;
   }
+  // An operation can succeed and still be missing pages. "No need to poll again" must not be the last
+  // thing an agent reads then: the remedy is in the status entry it would stop looking at.
+  const missingPages = statuses.filter((status) => status.pagesFailed || status.loginPagesSkipped || status.pagesSkipped).length;
+  if (missingPages > 0) {
+    return (
+      `All operations finished, but ${missingPages} did not index everything. Check the status entries: they say which pages are ` +
+      'missing and what to do about them. Use list_documentation to confirm what is indexed.'
+    );
+  }
   // Complete is only true of what is still tracked, so this points at list_documentation like
   // every other terminal branch - an earlier failure may already have aged out unseen.
   return 'All operations complete. No need to poll again. Use list_documentation to confirm what is indexed.';
@@ -157,7 +166,8 @@ export class WebDocsServer {
     if (status.pagesProcessed !== undefined && status.pagesFound !== undefined) {
       const skipped = status.pagesSkipped ? `, ${status.pagesSkipped} skipped` : '';
       const failed = status.pagesFailed ? `, ${status.pagesFailed} could not be fetched` : '';
-      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages${skipped}${failed})`;
+      const behindLogin = status.loginPagesSkipped ? `, ${status.loginPagesSkipped} asked for a password` : '';
+      message = `${status.description} (${status.pagesProcessed}/${status.pagesFound} pages${skipped}${failed}${behindLogin})`;
     }
 
     try {
@@ -270,7 +280,8 @@ Examples where version doesn't matter: "Company engineering handbook", "AWS cons
                 properties: {
                   requiresAuth: {
                     type: 'boolean',
-                    description: 'Set to true to open a browser for interactive login before crawling',
+                    description:
+                      'Set to true to open a browser for interactive login before crawling. If it is omitted and the site turns out to need signing in, the crawl stops and reports that authentication is required rather than indexing the login page.',
                   },
                   browser: {
                     type: 'string',
