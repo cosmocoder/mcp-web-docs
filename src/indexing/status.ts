@@ -8,9 +8,8 @@ export const COMPLETED_STATUS_TTL_MS = 2 * 60 * 1000;
 const MAX_NAMED_LOGIN_PAGES = 3;
 
 /**
- * What a finished crawl is missing, if anything. A crawl that asked for a password and got no content
- * is not a clean success: the pages it left out are named, because the user's remedy - authenticate,
- * or restrict the crawl with pathPrefix - depends on which part of the site they were.
+ * What a finished crawl is missing, if anything. The pages left out are named, because which remedy
+ * applies - authenticate, or pathPrefix - depends on which part of the site they were.
  */
 function describeCompletion(status: IndexingStatus): string {
   const missing: string[] = [];
@@ -21,8 +20,7 @@ function describeCompletion(status: IndexingStatus): string {
   }
   if (status.pagesSkipped) {
     const pages = status.pagesSkipped === 1 ? 'page' : 'pages';
-    // No remedy to offer for a page that rendered nothing, but the entry the caller was sent to
-    // has to account for it rather than reading as a clean success
+    // No remedy to offer for a page that rendered nothing, but it still is not a clean success
     missing.push(`${status.pagesSkipped} ${pages} had no indexable content`);
   }
   if (status.loginPagesSkipped) {

@@ -175,10 +175,8 @@ export class IndexingWorkflow {
       // A tolerated partial crawl otherwise looks identical to a complete one. The crawler
       // already warns about it on stderr, so this only needs to reach the client.
       const failedPages = crawler.failedPageCount;
-      // A login wall left out of the index is a page the caller asked for and did not get, so it
-      // belongs here beside the pages that could not be fetched at all
-      // Counted here, before updateStats caps the list it stores: the total is what the description's
-      // "and N more" is derived from, so it has to be taken from the uncapped array
+      // Counted before updateStats caps the list it stores: the description's "and N more" is derived
+      // from this total, so it has to come off the uncapped array
       const skippedLoginUrls = crawler.skippedLoginPageUrls;
       statusTracker.updateStats(operationId, {
         pagesFound: pages.length,
@@ -333,8 +331,7 @@ export class IndexingWorkflow {
         logger.warn(`[IndexingWorkflow] Expected URL: ${error.expectedUrl}, Detected URL: ${error.detectedUrl}`);
         // The abort path shows a URL too, and it is the one most likely to carry a live token
         const detectedUrl = redactUrlSecrets(error.detectedUrl);
-        // Cleared either way: a session that failed to parse above is still a session to be rid of,
-        // and clearing one that was never there costs nothing
+        // A session that failed to parse above is still a session to be rid of
         await authManager.clearSession(url);
         checkCancelled();
         logger.info(`[IndexingWorkflow] Cleared any stored session for ${url}`);

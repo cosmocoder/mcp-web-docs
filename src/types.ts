@@ -21,9 +21,8 @@ export interface IndexingStatus {
   /** Login walls left out of the index: they asked for a password and had no content of their own */
   loginPagesSkipped?: number;
   /**
-   * The first few of those, the rest counted rather than listed - the whole status is serialized to
-   * the client on every poll. A count on its own cannot tell a correct skip from a mistaken one, and
-   * both remedies - authenticate, or restrict the crawl with pathPrefix - need a URL to act on.
+   * The first few of those, the rest counted rather than listed - the whole status is serialized to the
+   * client on every poll. Both remedies, authenticate and pathPrefix, need a URL to act on.
    */
   skippedLoginUrls?: string[];
   chunksCreated?: number;

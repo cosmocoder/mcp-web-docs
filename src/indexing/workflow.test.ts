@@ -164,10 +164,8 @@ describe('IndexingWorkflow', () => {
     );
   });
 
-  // A crawl of a site that needs signing in ends here: every page it reached was a wall, so the walls
-  // were left out and nothing is left to index. The stats are never reached on this path, so the count
-  // and both remedies have to be in the failure itself, or the operator is told only that it found
-  // nothing.
+  // A crawl of a site that needs signing in ends here, its walls left out and nothing else to index.
+  // The stats are never reached on this path, so the count and the remedies travel in the failure.
   it.each([
     ['counts the login page that left it with nothing to index', ['https://docs.example.com/login'], /reached 1 page asking/],
     [
@@ -528,9 +526,8 @@ describe('IndexingWorkflow', () => {
     expect(harness.addDocument).not.toHaveBeenCalled();
   });
 
-  // A crawl that had a session was let in once and is not any more; a crawl that never had one was
-  // never let in. Both need authenticating, but only the first can be described as expired - and the
-  // second is the one that wants telling about pathPrefix.
+  // Both need authenticating, but only a crawl that had a session can be described as expired, and
+  // only the one that never had it wants telling about pathPrefix.
   it.each([
     ['a session that expired', JSON.stringify({ cookies: [] }), /session has expired/i, /before re-indexing/i],
     ['a site that always needed one', undefined, /This site requires authentication/i, /pathPrefix/],

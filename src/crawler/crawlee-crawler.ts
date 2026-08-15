@@ -155,19 +155,15 @@ export class CrawleeCrawler extends BaseCrawler {
   }
 
   /**
-   * What to do with this page: nothing, keep it out of the index, or stop the crawl. Runs whether or
-   * not the crawl authenticated: with a session a login page means the session died, without one it
-   * means the site needs authenticating before it can be indexed at all. Either way the answer is the
-   * same, so the caller reports which of the two it was rather than checking twice.
+   * What to do with this page: nothing, keep it out of the index, or stop the crawl.
    *
    * Scored on content alone: a URL match is worth three of the detector's six indicators, enough on
    * its own, so every /oauth or /sso documentation page would score as a login page, as would every
    * page on a host like auth.example.com.
    */
   private async checkForLoginPage(page: Page, requestedUrl: string, isEntryPage: boolean): Promise<SessionExpiredError | 'skip' | null> {
-    // Recorded before anything can return, because the window below counts walls among the pages the
-    // crawl looked at, not among the ones that got this far. Set() keeps a URL in the position it
-    // first took, so a retry does not move it - except where the wall rule below moves it deliberately.
+    // Recorded before anything can return: the rules below count walls among the pages the crawl
+    // looked at, not among the ones that got this far. Set() keeps a retried URL where it first was.
     this.wallByRequestedUrl.set(requestedUrl, this.wallByRequestedUrl.get(requestedUrl) ?? false);
     let observed;
     let detection;
@@ -190,11 +186,10 @@ export class CrawleeCrawler extends BaseCrawler {
       return null;
     }
 
-    // On a crawl with a session, a login page where the crawl asked for documentation means the
-    // session is dead, whatever shape the page takes - an SSO wall can be a branded button with no
-    // password field. Without a session there is nothing to have expired, and the same rule would
-    // fail a public article about building login forms: a code sample containing type="password" is
-    // worth two of the detector's six indicators. So that case needs the page to be a wall.
+    // With a session, a login page where documentation was asked for means the session is dead in
+    // whatever shape it arrives - an SSO wall can be a branded button with no password field. Without
+    // one it has to be a wall: a code sample containing type="password" is worth two of the detector's
+    // six indicators, so an article about building login forms would fail the crawl.
     if (isEntryPage && (this.storageState || isLoginWall(observed))) {
       logger.warn(`[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`);
       logger.debug(`[CrawleeCrawler] Detection reasons: ${detection.reasons.join(', ')}`);
@@ -206,27 +201,23 @@ export class CrawleeCrawler extends BaseCrawler {
       );
     }
 
-    // A wall is a page asking for a password with no article around the form, which documentation
-    // never is. Anything else the detector flagged is left alone: a page carrying a sign-in box in the
-    // site's furniture reads as a login page on wording, and so does documentation about signing in.
+    // Anything the detector flagged that is not a wall is left alone: a sign-in box in the site's
+    // furniture reads as a login page on wording, and so does documentation about signing in.
     if (!isLoginWall(observed)) {
       return null;
     }
-    // Deleted first so the wall takes the position the crawl found it in. A page whose first attempt
-    // could not be read was recorded then, and keeping that older position can leave a wall outside
-    // every later window - a run of them would slip both rules.
+    // Deleted first so the wall takes the position the crawl found it in: a page recorded by an
+    // earlier attempt that could not be read would otherwise sit outside every window that follows.
     this.wallByRequestedUrl.delete(requestedUrl);
     this.wallByRequestedUrl.set(requestedUrl, true);
 
-    // Never indexed - it is not documentation - but one wall is not a dead session. A public site's
+    // Never indexed - it is not documentation - but one wall is not a dead session: a public site's
     // own /login is a wall, and a crawl without a pathPrefix reaches it from the nav.
     //
-    // This rule and the proportion rule below both end the crawl over walls being a lot of it, and both
-    // are for a crawl that authenticated. Without a session nothing can have expired, and a public site
-    // has login pages in it by design - a /login, a /signup, one per gated area, all hanging off the
-    // same nav and so arriving together. Such a crawl is failed only where the page it was asked for is
-    // itself a wall, which the rule above catches; every other wall is kept out of the index and
-    // reported, and a site that gave up nothing else ends with no pages, which the caller is told.
+    // This rule and the proportion rule below are both for a crawl that authenticated. Without a session
+    // nothing can have expired, and a public site has login pages in it by design - a /login, a /signup,
+    // one per gated area, all hanging off the same nav and so arriving together. Only the entry rule
+    // above fails such a crawl; every other wall is kept out of the index and reported.
     const recent = [...this.wallByRequestedUrl.values()].slice(-LOGIN_WALL_WINDOW);
     const walls = recent.filter(Boolean).length;
     if (walls < LOGIN_WALLS_IN_WINDOW_BEFORE_SESSION_EXPIRED || !this.storageState) {
@@ -681,8 +672,7 @@ export class CrawleeCrawler extends BaseCrawler {
             }
           }
 
-          // Checked on every crawl, not only an authenticated one: a site that answers with a login
-          // wall cannot be indexed either way, and indexing the wall as documentation is the bug
+          // Every crawl, not only an authenticated one: indexing the wall as documentation is the bug
           const verdict = await this.checkForLoginPage(page, normalizeQueuedUrl(request.url), isEntryPage);
           if (verdict instanceof SessionExpiredError) {
             this.sessionExpiredError = verdict;
@@ -700,15 +690,12 @@ export class CrawleeCrawler extends BaseCrawler {
 
               await this.queueManager.handleQueueAndLinks(enqueueLinks, log, rule);
 
-              // After the links, not before: the pages a skipped one leads to are still wanted. A
-              // wall leads to its own form and back to itself, reaching the threshold above sooner
-              // rather than later; a page skipped by mistake would otherwise take the whole section
-              // under it out of the crawl, and the nav of a small section is exactly the sparse page
-              // most likely to be mistaken for a wall.
+              // After the links, not before: a page skipped by mistake would otherwise take the whole
+              // section under it out of the crawl, and the sparse nav of a small section is exactly the
+              // page most likely to be mistaken for a wall.
               if (verdict === 'skip') {
-                // Normalized, and its parameters redacted: this URL is reported to the client, and
-                // the same string on its way to stderr goes through the logger's redaction. A query
-                // carrying a token should not be scrubbed in one place and echoed in the other.
+                // Redacted once here, because the same string goes to the client and to stderr, and
+                // the logger's own redaction covers fewer parameter names than this one
                 const skipped = redactUrlSecrets(normalizeQueuedUrl(request.url));
                 this.skippedLoginUrls.push(skipped);
                 logger.warn(`[CrawleeCrawler] Not indexing ${skipped}: it asks for a password and has no content of its own`);

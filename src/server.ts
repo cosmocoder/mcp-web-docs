@@ -62,9 +62,8 @@ export function describeIndexingStatuses(statuses: IndexingStatus[]): string {
     // Must not claim nothing was stored: a cancel can land after addDocument has committed.
     return `All operations finished, but ${unsuccessful} did not succeed. Check the status entries for why, and use list_documentation to confirm what is actually indexed.`;
   }
-  // An operation can succeed and still be missing pages - ones that could not be fetched, or ones
-  // that asked for a password. "No need to poll again" must not be the last thing an agent reads
-  // then, because the remedy is in the status entry it would stop looking at.
+  // An operation can succeed and still be missing pages. "No need to poll again" must not be the last
+  // thing an agent reads then: the remedy is in the status entry it would stop looking at.
   const missingPages = statuses.filter((status) => status.pagesFailed || status.loginPagesSkipped || status.pagesSkipped).length;
   if (missingPages > 0) {
     return (
