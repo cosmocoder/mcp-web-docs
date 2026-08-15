@@ -609,12 +609,13 @@ search_collection({
 ```
 
 **Collections vs Tags:**
-| Feature | Collections | Tags |
-|---------|-------------|------|
-| Purpose | Group docs as a project/workspace | Categorize individual docs |
-| Structure | Named container with multiple docs | Labels on individual docs |
-| Use case | "My React Project" with React + Next.js + TS | "This doc is about React" |
-| Searching | `search_collection` for focused results | `tags` filter in `search_documentation` |
+
+| Feature   | Collections                                  | Tags                                    |
+| --------- | -------------------------------------------- | --------------------------------------- |
+| Purpose   | Group docs as a project/workspace            | Categorize individual docs              |
+| Structure | Named container with multiple docs           | Labels on individual docs               |
+| Use case  | "My React Project" with React + Next.js + TS | "This doc is about React"               |
+| Searching | `search_collection` for focused results      | `tags` filter in `search_documentation` |
 
 You can use both together — a document can have tags AND belong to multiple collections.
 
