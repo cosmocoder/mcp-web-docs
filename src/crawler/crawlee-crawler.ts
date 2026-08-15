@@ -263,7 +263,7 @@ export class CrawleeCrawler extends BaseCrawler {
 
     // Detect client-side redirect pages (Docusaurus generates these for /docs/ → /docs/intro/)
     // These are tiny HTML pages with a meta-refresh and/or JS redirect but no real content.
-    let isRedirectPage = false;
+    let isRedirectPage: boolean;
     try {
       isRedirectPage = await page.evaluate(() => {
         const metaRefresh = document.querySelector('meta[http-equiv="refresh"]');

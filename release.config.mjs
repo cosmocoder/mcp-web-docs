@@ -1,5 +1,3 @@
-/* eslint-env node */
-
 /**
  * Custom commit template that includes the commit body in release notes.
  * Based on the default Angular preset template but enhanced to show body content.

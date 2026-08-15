@@ -311,7 +311,7 @@ export function safeJsonParse<T>(jsonString: string, schema: z.ZodSchema<T>): T 
     parsed = JSON.parse(jsonString);
   }
   catch (e) {
-    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : 'parse error'}`);
+    throw new Error(`Invalid JSON: ${e instanceof Error ? e.message : 'parse error'}`, { cause: e });
   }
 
   const result = schema.safeParse(parsed);
