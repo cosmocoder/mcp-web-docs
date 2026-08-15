@@ -654,24 +654,26 @@ const SENSITIVE_QUERY_KEYS =
  * authenticated against or passed to pathPrefix.
  */
 export function redactUrlSecrets(urlString: string): string {
-  let url: URL;
-  try {
-    url = new URL(urlString);
-  }
-  catch {
+  // The query is found by hand rather than by parsing the URL, so that a path-only URL is covered
+  // too: Crawlee identifies a queued page by pathname + search, and new URL() rejects that.
+  const queryStart = urlString.indexOf('?');
+  if (queryStart === -1) {
     return urlString;
   }
+  const hashStart = urlString.indexOf('#');
+  const query = new URLSearchParams(urlString.slice(queryStart + 1, hashStart === -1 ? undefined : hashStart));
 
-  const sensitive = [...url.searchParams.keys()].filter((key) => SENSITIVE_QUERY_KEYS.test(key));
+  const sensitive = [...query.keys()].filter((key) => SENSITIVE_QUERY_KEYS.test(key));
   if (sensitive.length === 0) {
     return urlString;
   }
   for (const key of sensitive) {
-    url.searchParams.set(key, '[REDACTED]');
+    query.set(key, '[REDACTED]');
   }
   // Left readable rather than percent-encoded: the point of this string is that a person can see
   // which page it was, and which parameter was withheld
-  return url.toString().replaceAll('%5BREDACTED%5D', '[REDACTED]');
+  const redacted = query.toString().replaceAll('%5BREDACTED%5D', '[REDACTED]');
+  return urlString.slice(0, queryStart + 1) + redacted + (hashStart === -1 ? '' : urlString.slice(hashStart));
 }
 
 /**

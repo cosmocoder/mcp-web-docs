@@ -722,6 +722,11 @@ Normal text here.`;
     });
   });
   describe('redactUrlSecrets', () => {
+    // Crawlee identifies a queued page by its path and query, with no origin on the front
+    it('hides a credential in a URL that is only a path', () => {
+      expect(redactUrlSecrets('/docs/page?sid=abc123&page=2')).toBe('/docs/page?sid=[REDACTED]&page=2');
+    });
+
     it('hides the value of a parameter that carries a credential', () => {
       expect(redactUrlSecrets('https://docs.example.com/login?token=abc123&next=%2Fdocs#form')).toBe(
         'https://docs.example.com/login?token=[REDACTED]&next=%2Fdocs#form'

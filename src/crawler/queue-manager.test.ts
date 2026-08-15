@@ -127,17 +127,18 @@ describe('QueueManager', () => {
     });
 
     // Every enqueued URL is named here, so a link carrying a credential in its query would be the one
-    // place a whole crawl's worth of them reaches a log
+    // place a whole crawl's worth of them reaches a log. Crawlee identifies a page by its path and
+    // query, so these are the shape the redaction has to cover.
     it('should log enqueued links count, with their secrets redacted', async () => {
       const mockEnqueueLinks = vi.fn().mockResolvedValue({
-        processedRequests: [{ uniqueKey: '/page1' }, { uniqueKey: 'https://example.com/page2?session=abc123' }],
+        processedRequests: [{ uniqueKey: '/page1' }, { uniqueKey: '/page2?session=abc123' }],
       });
 
       await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       expect(logger.debug).toHaveBeenCalledWith('[QueueManager] Enqueued links:', {
         processedCount: 2,
-        urls: ['/page1', 'https://example.com/page2?session=[REDACTED]'],
+        urls: ['/page1', '/page2?session=[REDACTED]'],
       });
     });
 
