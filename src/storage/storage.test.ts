@@ -1,5 +1,3 @@
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -9,15 +7,15 @@ import { logger } from '../util/logger.js';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProcessedDocument, DocumentChunk } from '../types.js';
 import type { EmbeddingsProvider } from '../embeddings/types.js';
-import type { Database } from 'sqlite';
+import { SqliteDatabase } from './sqlite.js';
 import { connect } from '@lancedb/lancedb';
 import { escapeLikeLiteral } from '../util/security.js';
 import type { Table } from '@lancedb/lancedb';
 
 type ReplacementInternals = {
-  sqliteDb?: Database;
-  sqliteReadDb?: Database;
-  sqliteLeaseDb?: Database;
+  sqliteDb?: SqliteDatabase;
+  sqliteReadDb?: SqliteDatabase;
+  sqliteLeaseDb?: SqliteDatabase;
   lanceTable?: Table;
   lanceConn?: { close(): void };
   ftsIndexCreated: boolean;
@@ -249,7 +247,7 @@ describe('DocumentStore', () => {
 
       // busy_timeout 0 so a blocked peer fails at once rather than waiting: awaiting a peer that
       // waits would deadlock against the very lock this asserts we hold
-      const peer = await open({ filename: join(tempDir, 'docs.db'), driver: sqlite3.Database });
+      const peer = new SqliteDatabase(join(tempDir, 'docs.db'));
       await peer.exec('PRAGMA busy_timeout = 0;');
       const sqliteDb = replacementInternals().sqliteDb!;
       const get = sqliteDb.get.bind(sqliteDb);
@@ -264,7 +262,7 @@ describe('DocumentStore', () => {
               new Date().toISOString(),
             ])
             .then(() => 'landed')
-            .catch((error: unknown) => `rejected: ${error instanceof Error ? error.message : String(error)}`);
+            .catch((error: unknown) => `rejected: ${(error as { errcode?: number }).errcode}`);
         }
         return row;
       });
@@ -276,7 +274,8 @@ describe('DocumentStore', () => {
         await peer.close();
       }
 
-      expect(peerOutcome).toMatch(/^rejected: SQLITE_BUSY/);
+      // 5 is SQLITE_BUSY: the peer's write found the lock this test asserts the publication holds
+      expect(peerOutcome).toBe('rejected: 5');
       expect(await store.countDocumentPages(url)).toBe(2);
     });
 
@@ -1673,7 +1672,7 @@ describe('DocumentStore', () => {
   describe('database migrations', () => {
     it('should leave legacy documents unrestricted', async () => {
       const legacyDbPath = join(tempDir, 'legacy.db');
-      const legacyDb = await open({ filename: legacyDbPath, driver: sqlite3.Database });
+      const legacyDb = new SqliteDatabase(legacyDbPath);
       await legacyDb.exec(`
         CREATE TABLE documents (
           url TEXT PRIMARY KEY,

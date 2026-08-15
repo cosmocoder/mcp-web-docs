@@ -23,7 +23,7 @@ This document provides comprehensive guidance for AI coding agents working on th
   - `@modelcontextprotocol/sdk` - MCP server implementation
   - `crawlee` + `playwright` - Web crawling
   - `@lancedb/lancedb` - Vector database
-  - `sqlite` + `sqlite3` - Metadata storage
+  - `node:sqlite` - Metadata storage, via the `SqliteDatabase` wrapper in `src/storage/sqlite.ts`
   - `fastembed` - Local embedding generation
   - `zod` - Schema validation
 

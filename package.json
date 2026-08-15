@@ -70,8 +70,6 @@
     "proxy-chain": "3.0.0",
     "quick-lru": "7.3.0",
     "safe-regex2": "5.1.1",
-    "sqlite": "5.1.1",
-    "sqlite3": "6.0.1",
     "undici": "8.10.0",
     "zod": "4.4.3"
   },
