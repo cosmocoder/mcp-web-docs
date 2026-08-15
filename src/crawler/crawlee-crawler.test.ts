@@ -1,5 +1,5 @@
 import type { CrawlResult } from '../types.js';
-import { SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
+import { LoginPageServedError, type ValidatedStorageState } from '../util/security.js';
 
 const mockQueueManager = {
   initialize: vi.fn().mockResolvedValue(undefined),
@@ -134,13 +134,12 @@ function navigationPage(
   return { page, listeners, mainFrame };
 }
 
-async function runRequestHandler(page: object, url: string, initialResponse = response(), warning = vi.fn()): Promise<void> {
+async function runRequestHandler(page: object, url: string, initialResponse = response()): Promise<void> {
   await getRequestHandler()({
     request: { url },
     response: initialResponse,
     page,
     enqueueLinks: vi.fn(),
-    log: { debug: vi.fn(), error: vi.fn(), warning },
   });
 }
 
@@ -312,28 +311,26 @@ describe('CrawleeCrawler', () => {
         on: vi.fn(),
         off: vi.fn(),
       };
-      const warning = vi.fn();
       mockCrawlerRun.mockImplementationOnce(async () => {
-        await runRequestHandler(page, 'https://example.com/private', response(403, true), warning);
+        await runRequestHandler(page, 'https://example.com/private', response(403, true));
       });
 
       await collect(crawler, 'https://example.com/private');
 
-      expect(warning).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
       expect(page.waitForLoadState).not.toHaveBeenCalled();
       expect(mockQueueManager.addResult).not.toHaveBeenCalled();
     });
 
     it('does not index a client-side navigation blocked after the initial response', async () => {
       const { page, listeners } = navigationPage('https://example.com/docs', (emit) => emit.response(403, true));
-      const warning = vi.fn();
       mockCrawlerRun.mockImplementationOnce(async () => {
-        await runRequestHandler(page, 'https://example.com/docs', response(), warning);
+        await runRequestHandler(page, 'https://example.com/docs', response());
       });
 
       await collect(crawler, 'https://example.com/docs');
 
-      expect(warning).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
       expect(mockQueueManager.addResult).not.toHaveBeenCalled();
       expect(page.off).toHaveBeenCalledWith('response', listeners.response);
     });
@@ -342,14 +339,13 @@ describe('CrawleeCrawler', () => {
       const { page, listeners } = navigationPage('https://8.8.8.8/docs', (emit) =>
         emit.failure('net::ERR_CONNECTION_REFUSED', 'https://8.8.8.8/docs')
       );
-      const warning = vi.fn();
       mockCrawlerRun.mockImplementationOnce(async () => {
-        await runRequestHandler(page, 'https://8.8.8.8/docs', response(), warning);
+        await runRequestHandler(page, 'https://8.8.8.8/docs', response());
       });
 
       await expect(collect(crawler, 'https://8.8.8.8/docs')).rejects.toThrow('Outbound destination unavailable');
 
-      expect(warning).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
       expect(mockQueueManager.addResult).not.toHaveBeenCalled();
       expect(page.off).toHaveBeenCalledWith('requestfailed', listeners.requestfailed);
     });
@@ -358,14 +354,13 @@ describe('CrawleeCrawler', () => {
       const { page } = navigationPage('https://example.com/docs', (emit) =>
         emit.failure('net::ERR_TUNNEL_CONNECTION_FAILED', 'http://127.0.0.1/docs')
       );
-      const warning = vi.fn();
       mockCrawlerRun.mockImplementationOnce(async () => {
-        await runRequestHandler(page, 'https://example.com/docs', response(), warning);
+        await runRequestHandler(page, 'https://example.com/docs', response());
       });
 
       await collect(crawler, 'https://example.com/docs');
 
-      expect(warning).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
+      expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('blocked outbound destination'));
       expect(mockQueueManager.addResult).not.toHaveBeenCalled();
     });
 
@@ -511,6 +506,27 @@ describe('CrawleeCrawler', () => {
       await collect(crawler, 'https://example.com/docs');
 
       expect(mockQueueManager.addResult).toHaveBeenCalledTimes(allowed ? 1 : 0);
+    });
+
+    // The entry page leaving the site is where a crawl ends with nothing, so the reason has to reach
+    // stderr. Which reason it is depends on whether there was a session to lose.
+    it.each([
+      ['a crawl with a session blames the session', true, /Session expired - redirected to external domain/],
+      ['a crawl without one does not', false, /First page redirected to external domain/],
+    ])('%s when the entry page redirects off the site', async (_label, authenticated, expected) => {
+      if (authenticated) {
+        crawler.setStorageState({ cookies: [] });
+      }
+      const { page } = navigationPage('https://example.net/login', () => {});
+      mockCrawlerRun.mockImplementationOnce(async () => {
+        await runRequestHandler(page, 'https://example.com/docs');
+        return successfulRunStats;
+      });
+
+      // Only the authenticated branch has an error to throw; both abort, and both have to say why
+      await collect(crawler, 'https://example.com/docs').catch(() => undefined);
+
+      expect(logger.error).toHaveBeenCalledWith(expect.stringMatching(expected));
     });
   });
 
@@ -658,7 +674,7 @@ describe('CrawleeCrawler', () => {
     ])('detects %s', async (_label, bodyText, html) => {
       const pages = [1, 2, 3].map((n) => ({ url: `https://example.com/docs/${n}`, bodyText, html }));
 
-      await expect(crawlPages([docsPage(0), ...pages])).rejects.toThrow(SessionExpiredError);
+      await expect(crawlPages([docsPage(0), ...pages])).rejects.toThrow(LoginPageServedError);
     });
 
     // What a documentation site does that reads like a login page. Both clear the detector's own bar;

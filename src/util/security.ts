@@ -1033,17 +1033,18 @@ export function detectLoginPage(content: string, url: string): LoginPageDetectio
 }
 
 /**
- * Error thrown when authentication session has expired.
- * This allows callers to handle session expiration gracefully.
+ * Thrown when the crawler was served a login page where it asked for documentation. Which of the two
+ * that means - a session that died mid-crawl, or a site that needed authenticating all along - the
+ * thrower decides, because only it knows whether a session was used.
  */
-export class SessionExpiredError extends Error {
+export class LoginPageServedError extends Error {
   readonly detectedUrl: string;
   readonly expectedUrl: string;
   readonly detectionResult: LoginPageDetectionResult;
 
   constructor(message: string, expectedUrl: string, detectedUrl: string, detectionResult: LoginPageDetectionResult) {
     super(message);
-    this.name = 'SessionExpiredError';
+    this.name = 'LoginPageServedError';
     this.expectedUrl = expectedUrl;
     this.detectedUrl = detectedUrl;
     this.detectionResult = detectionResult;

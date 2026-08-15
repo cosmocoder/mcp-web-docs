@@ -1,6 +1,5 @@
 import { JSDOM } from 'jsdom';
 import type { Page } from 'playwright';
-import type { Log } from 'crawlee';
 import { siteRules } from './site-rules.js';
 
 describe('Site Rules', () => {
@@ -12,13 +11,6 @@ describe('Site Rules', () => {
       waitForTimeout: vi.fn().mockResolvedValue(undefined),
     } as unknown as Page;
   };
-
-  const mockLog: Log = {
-    info: vi.fn(),
-    debug: vi.fn(),
-    warning: vi.fn(),
-    error: vi.fn(),
-  } as unknown as Log;
 
   describe('storybook rule', () => {
     const storybookRule = siteRules.find((r) => r.type === 'storybook')!;
@@ -58,7 +50,7 @@ describe('Site Rules', () => {
         waitForTimeout: vi.fn().mockResolvedValue(undefined),
       } as unknown as Page;
 
-      await storybookRule.prepare?.(page, mockLog);
+      await storybookRule.prepare?.(page);
 
       expect(page.waitForSelector).toHaveBeenCalledWith('[class*="sidebar"]', { timeout: 5000 });
       expect(page.evaluate).toHaveBeenCalled();
@@ -73,7 +65,7 @@ describe('Site Rules', () => {
       } as unknown as Page;
 
       // Should not throw, and should still run the sidebar expansion afterwards
-      await expect(storybookRule.prepare?.(page, mockLog)).resolves.toBeUndefined();
+      await expect(storybookRule.prepare?.(page)).resolves.toBeUndefined();
       expect(page.evaluate).toHaveBeenCalled();
     });
 
@@ -121,7 +113,7 @@ describe('Site Rules', () => {
       } as unknown as Page;
 
       try {
-        await storybookRule.prepare?.(page, mockLog);
+        await storybookRule.prepare?.(page);
       }
       finally {
         globalThis.document = originalDocument;

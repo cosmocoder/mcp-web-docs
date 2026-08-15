@@ -1,7 +1,7 @@
 import type { WorkflowCrawler } from './indexing/workflow.js';
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { ProgressToken } from '@modelcontextprotocol/sdk/types.js';
-import { SessionExpiredError } from './util/security.js';
+import { LoginPageServedError } from './util/security.js';
 import { IndexingStatusTracker } from './indexing/status.js';
 import type { DocumentChunk, DocumentMetadata } from './types.js';
 
@@ -596,7 +596,7 @@ describe('WebDocsServer', () => {
       let completion!: Promise<void>;
       mockCrawlerCrawl.mockImplementationOnce(async function* () {
         yield* [];
-        throw new SessionExpiredError('session expired', 'https://example.com', 'https://example.com/login', {
+        throw new LoginPageServedError('session expired', 'https://example.com', 'https://example.com/login', {
           isLoginPage: true,
           confidence: 1,
           reasons: ['login page'],

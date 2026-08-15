@@ -15,7 +15,7 @@ import {
   addInjectionWarnings,
   isLoginPageUrl,
   detectLoginPage,
-  SessionExpiredError,
+  LoginPageServedError,
   validateToolArgs,
   AddDocumentationArgsSchema,
   ReindexDocumentationArgsSchema,
@@ -558,12 +558,12 @@ Normal text here.`;
     });
   });
 
-  describe('SessionExpiredError', () => {
+  describe('LoginPageServedError', () => {
     it('should create error with correct properties', () => {
       const detection = { isLoginPage: true, confidence: 0.8, reasons: ['URL pattern match'] };
-      const error = new SessionExpiredError('Session expired', 'https://example.com/docs', 'https://example.com/login', detection);
+      const error = new LoginPageServedError('Session expired', 'https://example.com/docs', 'https://example.com/login', detection);
 
-      expect(error.name).toBe('SessionExpiredError');
+      expect(error.name).toBe('LoginPageServedError');
       expect(error.message).toBe('Session expired');
       expect(error.expectedUrl).toBe('https://example.com/docs');
       expect(error.detectedUrl).toBe('https://example.com/login');
