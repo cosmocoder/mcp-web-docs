@@ -263,9 +263,9 @@ export class CrawleeCrawler extends BaseCrawler {
 
     // Detect client-side redirect pages (Docusaurus generates these for /docs/ → /docs/intro/)
     // These are tiny HTML pages with a meta-refresh and/or JS redirect but no real content.
-    let isRedirectPage: boolean;
-    try {
-      isRedirectPage = await page.evaluate(() => {
+    // A failed evaluate means the page is already mid-navigation, which is the case this detects.
+    const isRedirectPage = await page
+      .evaluate(() => {
         const metaRefresh = document.querySelector('meta[http-equiv="refresh"]');
         if (metaRefresh) {
           return true;
@@ -274,12 +274,8 @@ export class CrawleeCrawler extends BaseCrawler {
         const hasMinimalContent = !body || (body.textContent?.trim().length || 0) < 100;
         const hasNoMainContent = !document.querySelector('main, article, [role="main"], .content, #content');
         return hasMinimalContent && hasNoMainContent;
-      });
-    }
-    catch {
-      // evaluate failed — page is likely mid-navigation already, which is fine
-      isRedirectPage = true;
-    }
+      })
+      .catch(() => true);
 
     if (isRedirectPage) {
       logger.debug(`[CrawleeCrawler] Redirect/minimal page detected at ${initialUrl}, waiting for navigation...`);
