@@ -107,7 +107,12 @@ describe('outbound request integration', () => {
       const port = await listenOnLoopback(target);
       proxy = await createOutboundProxy(resolver);
       dispatcher = new ProxyAgent(proxy.url);
-      await expect(undiciFetch(`http://public.example:${port}`, { dispatcher, signal: AbortSignal.timeout(5000) })).rejects.toThrow();
+      // fetchPublicUrl rejects off this header, not off a transport error: undici surfaces the
+      // proxy's refusal as an ordinary response rather than throwing.
+      const response = await undiciFetch(`http://public.example:${port}`, { dispatcher, signal: AbortSignal.timeout(5000) });
+      expect(response.status).toBe(403);
+      expect(response.headers.get('x-mcp-web-docs-blocked')).toBe('1');
+      await response.body?.cancel();
       expect(resolver).toHaveBeenCalledWith('public.example', { all: true, order: 'verbatim' });
       expect(requests).toBe(0);
     }
