@@ -1,4 +1,5 @@
-import type { EnqueueLinksOptions, Log } from 'crawlee';
+import type { EnqueueLinksOptions } from 'crawlee';
+import { logger } from '../util/logger.js';
 import { QueueManager } from './queue-manager.js';
 import type { CrawlResult } from '../types.js';
 import type { SiteDetectionRule } from './site-rules.js';
@@ -68,13 +69,6 @@ describe('QueueManager', () => {
   });
 
   describe('handleQueueAndLinks', () => {
-    const mockLog: Log = {
-      info: vi.fn(),
-      debug: vi.fn(),
-      warning: vi.fn(),
-      error: vi.fn(),
-    } as unknown as Log;
-
     const mockRule: SiteDetectionRule = {
       type: 'default',
       extractor: { extractContent: vi.fn() },
@@ -90,9 +84,9 @@ describe('QueueManager', () => {
         processedRequests: [],
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
-      expect(mockLog.info).toHaveBeenCalledWith('Queue status:', {
+      expect(logger.debug).toHaveBeenCalledWith('[QueueManager] Queue status:', {
         pendingCount: 5,
         handledCount: 10,
         totalCount: 15,
@@ -104,7 +98,7 @@ describe('QueueManager', () => {
         processedRequests: [{ uniqueKey: '/page1' }, { uniqueKey: '/page2' }],
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       expect(mockEnqueueLinks).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -123,7 +117,7 @@ describe('QueueManager', () => {
         processedRequests: [],
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, ruleWithSelectors);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, ruleWithSelectors);
 
       expect(mockEnqueueLinks).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -132,16 +126,19 @@ describe('QueueManager', () => {
       );
     });
 
-    it('should log enqueued links count', async () => {
+    // Every enqueued URL is named here, so a link carrying a credential in its query would be the one
+    // place a whole crawl's worth of them reaches a log. Crawlee identifies a page by its path and
+    // query, so these are the shape the redaction has to cover.
+    it('should log enqueued links count, with their secrets redacted', async () => {
       const mockEnqueueLinks = vi.fn().mockResolvedValue({
-        processedRequests: [{ uniqueKey: '/page1' }, { uniqueKey: '/page2' }],
+        processedRequests: [{ uniqueKey: '/page1' }, { uniqueKey: '/page2?session=abc123' }],
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
-      expect(mockLog.info).toHaveBeenCalledWith('Enqueued links:', {
+      expect(logger.debug).toHaveBeenCalledWith('[QueueManager] Enqueued links:', {
         processedCount: 2,
-        urls: ['/page1', '/page2'],
+        urls: ['/page1', '/page2?session=[REDACTED]'],
       });
     });
 
@@ -153,7 +150,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       expect(capturedOptions).not.toBeNull();
       const transformFn = capturedOptions!.transformRequestFunction;
@@ -182,7 +179,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       expect(capturedOptions).not.toBeNull();
       const transformFn = capturedOptions!.transformRequestFunction;
@@ -207,7 +204,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -228,13 +225,6 @@ describe('QueueManager', () => {
   });
 
   describe('path prefix filtering', () => {
-    const mockLog: Log = {
-      info: vi.fn(),
-      debug: vi.fn(),
-      warning: vi.fn(),
-      error: vi.fn(),
-    } as unknown as Log;
-
     const mockRule: SiteDetectionRule = {
       type: 'default',
       extractor: { extractContent: vi.fn() },
@@ -257,7 +247,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -286,7 +276,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -308,7 +298,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -330,7 +320,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -360,7 +350,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -396,13 +386,6 @@ describe('QueueManager', () => {
   });
 
   describe('hostname filtering', () => {
-    const mockLog: Log = {
-      info: vi.fn(),
-      debug: vi.fn(),
-      warning: vi.fn(),
-      error: vi.fn(),
-    } as unknown as Log;
-
     const mockRule: SiteDetectionRule = {
       type: 'default',
       extractor: { extractContent: vi.fn() },
@@ -418,7 +401,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -439,7 +422,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -461,7 +444,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -483,7 +466,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -505,7 +488,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {
@@ -526,7 +509,7 @@ describe('QueueManager', () => {
         return Promise.resolve({ processedRequests: [] });
       });
 
-      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockLog, mockRule);
+      await queueManager.handleQueueAndLinks(mockEnqueueLinks, mockRule);
 
       const transformFn = capturedOptions!.transformRequestFunction;
       if (transformFn) {

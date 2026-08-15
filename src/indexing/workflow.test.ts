@@ -1,4 +1,4 @@
-import { SessionExpiredError } from '../util/security.js';
+import { LoginPageServedError } from '../util/security.js';
 import type { CrawlResult, DocumentChunk, DocumentMetadata, ProcessedDocument } from '../types.js';
 import { DocsCrawler } from '../crawler/docs-crawler.js';
 import { IndexingWorkflow, type IndexingRequest } from './workflow.js';
@@ -536,7 +536,7 @@ describe('IndexingWorkflow', () => {
       savedSession,
       crawl: async function* () {
         yield* [] as CrawlResult[];
-        throw new SessionExpiredError('served', request.url, 'https://docs.example.com/login?token=abc123&next=%2Fdocs', {
+        throw new LoginPageServedError('served', request.url, 'https://docs.example.com/login?token=abc123&next=%2Fdocs', {
           isLoginPage: true,
           confidence: 1,
           reasons: ['login URL'],

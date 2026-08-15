@@ -654,24 +654,26 @@ const SENSITIVE_QUERY_KEYS =
  * authenticated against or passed to pathPrefix.
  */
 export function redactUrlSecrets(urlString: string): string {
-  let url: URL;
-  try {
-    url = new URL(urlString);
-  }
-  catch {
+  // The query is found by hand rather than by parsing the URL, so that a path-only URL is covered
+  // too: Crawlee identifies a queued page by pathname + search, and new URL() rejects that.
+  const queryStart = urlString.indexOf('?');
+  if (queryStart === -1) {
     return urlString;
   }
+  const hashStart = urlString.indexOf('#');
+  const query = new URLSearchParams(urlString.slice(queryStart + 1, hashStart === -1 ? undefined : hashStart));
 
-  const sensitive = [...url.searchParams.keys()].filter((key) => SENSITIVE_QUERY_KEYS.test(key));
+  const sensitive = [...query.keys()].filter((key) => SENSITIVE_QUERY_KEYS.test(key));
   if (sensitive.length === 0) {
     return urlString;
   }
   for (const key of sensitive) {
-    url.searchParams.set(key, '[REDACTED]');
+    query.set(key, '[REDACTED]');
   }
   // Left readable rather than percent-encoded: the point of this string is that a person can see
   // which page it was, and which parameter was withheld
-  return url.toString().replaceAll('%5BREDACTED%5D', '[REDACTED]');
+  const redacted = query.toString().replaceAll('%5BREDACTED%5D', '[REDACTED]');
+  return urlString.slice(0, queryStart + 1) + redacted + (hashStart === -1 ? '' : urlString.slice(hashStart));
 }
 
 /**
@@ -879,8 +881,8 @@ export function addInjectionWarnings(content: string, detectionResult: PromptInj
 // ============ Login Page Detection ============
 
 /**
- * Common URL patterns that indicate a login/authentication page.
- * These are used to detect when a session has expired and we've been redirected to login.
+ * Common URL patterns that indicate a login/authentication page. Whether reaching one means a session
+ * died or that the site needed authenticating all along is not something the URL can say.
  */
 const LOGIN_URL_PATTERNS = [
   /\/login\b/i,
@@ -1033,17 +1035,18 @@ export function detectLoginPage(content: string, url: string): LoginPageDetectio
 }
 
 /**
- * Error thrown when authentication session has expired.
- * This allows callers to handle session expiration gracefully.
+ * Thrown when the crawler was served a login page where it asked for documentation. Which of the two
+ * that means - a session that died mid-crawl, or a site that needed authenticating all along - the
+ * thrower decides, because only it knows whether a session was used.
  */
-export class SessionExpiredError extends Error {
+export class LoginPageServedError extends Error {
   readonly detectedUrl: string;
   readonly expectedUrl: string;
   readonly detectionResult: LoginPageDetectionResult;
 
   constructor(message: string, expectedUrl: string, detectedUrl: string, detectionResult: LoginPageDetectionResult) {
     super(message);
-    this.name = 'SessionExpiredError';
+    this.name = 'LoginPageServedError';
     this.expectedUrl = expectedUrl;
     this.detectedUrl = detectedUrl;
     this.detectionResult = detectionResult;

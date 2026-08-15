@@ -1,5 +1,5 @@
-import { Log } from 'crawlee';
 import { Page } from 'playwright';
+import { logger } from '../util/logger.js';
 import { ContentExtractor } from './content-extractor-types.js';
 import { StorybookExtractor } from './storybook-extractor.js';
 import { GitHubPagesExtractor } from './github-pages-extractor.js';
@@ -9,7 +9,7 @@ export interface SiteDetectionRule {
   type: string;
   extractor: ContentExtractor;
   detect: (page: Page) => Promise<boolean>;
-  prepare?: (page: Page, log: Log) => Promise<void>;
+  prepare?: (page: Page) => Promise<void>;
   linkSelectors?: string[];
 }
 
@@ -28,12 +28,12 @@ export const siteRules: SiteDetectionRule[] = [
         );
       });
     },
-    prepare: async (page, log) => {
+    prepare: async (page) => {
       // Only the sidebar is prepared here, and only to feed link discovery. The docs
       // content belongs to the extractor, which runs inside the preview iframe and
       // polls for its own. Waiting for the sidebar is the real precondition, so there
       // is no networkidle wait: Storybook keeps chattering long after the tree is up.
-      await page.waitForSelector('[class*="sidebar"]', { timeout: 5000 }).catch(() => log.debug('No sidebar found'));
+      await page.waitForSelector('[class*="sidebar"]', { timeout: 5000 }).catch(() => logger.debug('[SiteRules] No sidebar found'));
 
       // A show/hide toggle, so it gets clicked exactly once - clicking it again re-hides
       // the sections and the link count oscillates.

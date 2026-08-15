@@ -10,7 +10,7 @@ import { getBrowserConfig } from './browser-config.js';
 import { cleanContent } from './content-utils.js';
 import { logger } from '../util/logger.js';
 import { isLoginWall, LOGIN_PAGE_CONFIDENCE, readLoginPageSignals } from './login-page-signals.js';
-import { detectLoginPage, redactUrlSecrets, SessionExpiredError, type ValidatedStorageState } from '../util/security.js';
+import { detectLoginPage, redactUrlSecrets, LoginPageServedError, type ValidatedStorageState } from '../util/security.js';
 import {
   BlockedOutboundRequestError,
   classifyOutboundFailure,
@@ -70,7 +70,7 @@ export class CrawleeCrawler extends BaseCrawler {
   private crawler: PlaywrightCrawler | null = null;
   private queueManager: QueueManager = new QueueManager();
   private storageState?: ValidatedStorageState;
-  private sessionExpiredError: SessionExpiredError | null = null;
+  private loginPageError: LoginPageServedError | null = null;
   /**
    * Whether each URL the check looked at turned out to be a login wall, in the order they were first
    * seen. Keyed by the requested URL, so a page the crawl retried is one page and a wall reached by
@@ -159,7 +159,7 @@ export class CrawleeCrawler extends BaseCrawler {
    * its own, so every /oauth or /sso documentation page would score as a login page, as would every
    * page on a host like auth.example.com.
    */
-  private async checkForLoginPage(page: Page, requestedUrl: string, isEntryPage: boolean): Promise<SessionExpiredError | 'skip' | null> {
+  private async checkForLoginPage(page: Page, requestedUrl: string, isEntryPage: boolean): Promise<LoginPageServedError | 'skip' | null> {
     // Recorded before anything can return: the rules below count walls among the pages the crawl
     // looked at, not among the ones that got this far. Set() keeps a retried URL where it first was.
     this.wallByRequestedUrl.set(requestedUrl, this.wallByRequestedUrl.get(requestedUrl) ?? false);
@@ -191,7 +191,7 @@ export class CrawleeCrawler extends BaseCrawler {
     if (isEntryPage && (this.storageState || isLoginWall(observed))) {
       logger.warn(`[CrawleeCrawler] First page appears to be a login page (confidence: ${detection.confidence.toFixed(2)})`);
       logger.debug(`[CrawleeCrawler] Detection reasons: ${detection.reasons.join(', ')}`);
-      return new SessionExpiredError(
+      return new LoginPageServedError(
         this.loginPageMessage('the page the crawl was asked for is a login page'),
         this.expectedUrl,
         page.url(),
@@ -222,7 +222,7 @@ export class CrawleeCrawler extends BaseCrawler {
     }
 
     logger.warn(`[CrawleeCrawler] ${walls} of the last ${recent.length} pages were login walls - the session expired mid-crawl`);
-    return new SessionExpiredError(
+    return new LoginPageServedError(
       this.loginPageMessage(`${walls} of the last ${recent.length} pages the crawl saw were login walls`),
       this.expectedUrl,
       page.url(),
@@ -234,7 +234,7 @@ export class CrawleeCrawler extends BaseCrawler {
    * A crawl can end before the window fills - a short site, or a session that died near the end. Walls
    * being most of what the crawl saw at all says the same thing after the fact.
    */
-  private sessionExpiredAcrossCrawl(): SessionExpiredError | null {
+  private loginPageErrorAcrossCrawl(): LoginPageServedError | null {
     const checked = this.wallByRequestedUrl.size;
     const walls = [...this.wallByRequestedUrl.values()].filter(Boolean).length;
     // A crawl that authenticated, for the reason given at the window rule
@@ -243,7 +243,7 @@ export class CrawleeCrawler extends BaseCrawler {
     }
 
     logger.warn(`[CrawleeCrawler] ${walls} of ${checked} crawled pages were login walls`);
-    return new SessionExpiredError(
+    return new LoginPageServedError(
       this.loginPageMessage(`${walls} of the ${checked} pages the crawl saw were login walls`),
       this.expectedUrl,
       this.expectedUrl,
@@ -434,7 +434,7 @@ export class CrawleeCrawler extends BaseCrawler {
     logger.debug(`[${this.constructor.name}] Starting crawl of: ${url}`);
 
     // Reset state for this crawl
-    this.sessionExpiredError = null;
+    this.loginPageError = null;
     this.wallByRequestedUrl.clear();
     this.terminalRootFailure = undefined;
     this.rootPageFailed = false;
@@ -548,7 +548,7 @@ export class CrawleeCrawler extends BaseCrawler {
         this.navigationAttempts.delete(requestKey);
         await crawlerOptions.failedRequestHandler?.(context, error);
       },
-      requestHandler: async ({ request, response, page, enqueueLinks, log }) => {
+      requestHandler: async ({ request, response, page, enqueueLinks }) => {
         const requestKey = request as object;
         this.cleanupNavigationListener(requestKey);
         this.navigationAttempts.delete(requestKey);
@@ -587,14 +587,14 @@ export class CrawleeCrawler extends BaseCrawler {
           await Promise.all(pendingNavigationChecks);
           if (mainFrameNavigationError) {
             if (mainFrameNavigationError instanceof BlockedOutboundRequestError) {
-              log.warning(`Skipping blocked outbound destination: ${request.url}`);
+              logger.warn(`[CrawleeCrawler] Skipping blocked outbound destination: ${redactUrlSecrets(request.url)}`);
               return true;
             }
             throw mainFrameNavigationError;
           }
           const outboundError = await getOutboundResponseError(latestMainFrameResponse);
           if (outboundError instanceof BlockedOutboundRequestError) {
-            log.warning(`Skipping blocked outbound destination: ${request.url}`);
+            logger.warn(`[CrawleeCrawler] Skipping blocked outbound destination: ${redactUrlSecrets(request.url)}`);
             return true;
           }
           if (outboundError) {
@@ -605,7 +605,7 @@ export class CrawleeCrawler extends BaseCrawler {
 
         try {
           if (this.isAborting) {
-            log.debug('Crawl aborted');
+            logger.debug('[CrawleeCrawler] Crawl aborted');
             return;
           }
 
@@ -616,7 +616,9 @@ export class CrawleeCrawler extends BaseCrawler {
           // Wait for initial page load
           await Promise.all([
             page.waitForLoadState('domcontentloaded'),
-            page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => log.debug('Network idle timeout - continuing anyway')),
+            page
+              .waitForLoadState('networkidle', { timeout: 5000 })
+              .catch(() => logger.debug('[CrawleeCrawler] Network idle timeout - continuing anyway')),
           ]);
 
           // Handle client-side redirects (Docusaurus) and Cloudflare challenges
@@ -637,24 +639,22 @@ export class CrawleeCrawler extends BaseCrawler {
             const actualHostname = new URL(actualUrl).hostname;
 
             if (isEntryPage) {
-              // First page redirected outside domain - likely auth redirect (session expired)
               logger.warn(`[CrawleeCrawler] First page redirected outside allowed domain: ${requestedHostname} → ${actualHostname}`);
 
               if (this.storageState) {
-                // We had auth but got redirected - session expired
-                this.sessionExpiredError = new SessionExpiredError(
+                this.loginPageError = new LoginPageServedError(
                   `Authentication session has expired - page redirected to external domain (${actualHostname})`,
                   this.expectedUrl,
                   actualUrl,
                   { isLoginPage: true, confidence: 1.0, reasons: [`Redirected from ${requestedHostname} to ${actualHostname}`] }
                 );
-                log.error(`Session expired - redirected to external domain: ${actualHostname}. Aborting crawl.`);
+                logger.error(`[CrawleeCrawler] Session expired - redirected to external domain: ${actualHostname}. Aborting crawl.`);
                 this.abort();
                 return;
               }
               else {
                 // No auth but redirected - might be site misconfiguration
-                log.error(`First page redirected to external domain: ${actualHostname}. Aborting crawl.`);
+                logger.error(`[CrawleeCrawler] First page redirected to external domain: ${actualHostname}. Aborting crawl.`);
                 this.abort();
                 return;
               }
@@ -671,8 +671,8 @@ export class CrawleeCrawler extends BaseCrawler {
 
           // Every crawl, not only an authenticated one: indexing the wall as documentation is the bug
           const verdict = await this.checkForLoginPage(page, normalizeQueuedUrl(request.url), isEntryPage);
-          if (verdict instanceof SessionExpiredError) {
-            this.sessionExpiredError = verdict;
+          if (verdict instanceof LoginPageServedError) {
+            this.loginPageError = verdict;
             logger.error(`[CrawleeCrawler] ${verdict.message}. Aborting crawl.`);
             this.abort();
             return;
@@ -682,10 +682,10 @@ export class CrawleeCrawler extends BaseCrawler {
           for (const rule of siteRules) {
             if (await rule.detect(page)) {
               if (rule.prepare) {
-                await rule.prepare(page, log);
+                await rule.prepare(page);
               }
 
-              await this.queueManager.handleQueueAndLinks(enqueueLinks, log, rule);
+              await this.queueManager.handleQueueAndLinks(enqueueLinks, rule);
 
               // After the links, not before: a page skipped by mistake would otherwise take the whole
               // section under it out of the crawl, and the sparse nav of a small section is exactly the
@@ -760,10 +760,9 @@ export class CrawleeCrawler extends BaseCrawler {
         );
       }
 
-      // Check if we detected an expired session during crawling
-      const sessionExpired = this.sessionExpiredError ?? this.sessionExpiredAcrossCrawl();
-      if (sessionExpired) {
-        throw sessionExpired;
+      const loginPage = this.loginPageError ?? this.loginPageErrorAcrossCrawl();
+      if (loginPage) {
+        throw loginPage;
       }
 
       if (finalStatistics.requestsFailed > 0) {
@@ -791,8 +790,7 @@ export class CrawleeCrawler extends BaseCrawler {
       }
     }
     catch (error) {
-      // Re-throw session expired errors as-is
-      if (error instanceof SessionExpiredError) {
+      if (error instanceof LoginPageServedError) {
         throw error;
       }
       logger.debug('Crawler error:', error);

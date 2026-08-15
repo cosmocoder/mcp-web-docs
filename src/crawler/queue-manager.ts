@@ -1,8 +1,9 @@
-import { RequestQueue, Log, EnqueueLinksOptions, EnqueueStrategy } from 'crawlee';
+import { RequestQueue, EnqueueLinksOptions, EnqueueStrategy } from 'crawlee';
 import { generateCrawlStorageId, isPathAllowed } from '../util/docs.js';
 import { CrawlResult } from '../types.js';
 import { SiteDetectionRule } from './site-rules.js';
 import { logger } from '../util/logger.js';
+import { redactUrlSecrets } from '../util/security.js';
 import { discoverUrlsFromLlmsTxt } from './llms-txt.js';
 
 export class QueueManager {
@@ -134,12 +135,11 @@ export class QueueManager {
 
   async handleQueueAndLinks(
     enqueueLinks: (options: EnqueueLinksOptions) => Promise<{ processedRequests: { uniqueKey: string }[] }>,
-    log: Log,
     rule: SiteDetectionRule
   ): Promise<void> {
     const queueInfo = await this.requestQueue!.getInfo();
     if (queueInfo) {
-      log.info('Queue status:', {
+      logger.debug('[QueueManager] Queue status:', {
         pendingCount: queueInfo.pendingRequestCount || 0,
         handledCount: queueInfo.handledRequestCount || 0,
         totalCount: queueInfo.totalRequestCount || 0,
@@ -201,9 +201,9 @@ export class QueueManager {
 
     const enqueueResult = await enqueueLinks(enqueueOptions);
 
-    log.info('Enqueued links:', {
+    logger.debug('[QueueManager] Enqueued links:', {
       processedCount: enqueueResult.processedRequests.length,
-      urls: enqueueResult.processedRequests.map((r: { uniqueKey: string }) => r.uniqueKey),
+      urls: enqueueResult.processedRequests.map((r: { uniqueKey: string }) => redactUrlSecrets(r.uniqueKey)),
       ...(this.filteredByHostnameCount > 0 ? { filteredByHostname: this.filteredByHostnameCount } : {}),
       ...(this.pathPrefix ? { pathPrefix: this.pathPrefix, filteredByPath: this.filteredByPathCount } : {}),
     });

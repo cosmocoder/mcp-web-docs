@@ -9,7 +9,7 @@ import {
   safeJsonParse,
   sanitizeErrorMessage,
   redactUrlSecrets,
-  SessionExpiredError,
+  LoginPageServedError,
   StorageStateSchema,
   type ValidatedStorageState,
 } from '../util/security.js';
@@ -325,7 +325,7 @@ export class IndexingWorkflow {
         return;
       }
 
-      if (error instanceof SessionExpiredError) {
+      if (error instanceof LoginPageServedError) {
         logger.warn(`[IndexingWorkflow] Login page served during crawl of ${url}: ${error.message}`);
         logger.warn(`[IndexingWorkflow] Expected URL: ${error.expectedUrl}, Detected URL: ${error.detectedUrl}`);
         // The abort path shows a URL too, and it is the one most likely to carry a live token
