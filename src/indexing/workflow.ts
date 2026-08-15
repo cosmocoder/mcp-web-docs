@@ -214,7 +214,7 @@ export class IndexingWorkflow {
             checkCancelled();
           }
           logger.error(`[IndexingWorkflow] Error processing page ${page.path}:`, error);
-          throw new Error(sanitizeErrorMessage(`Failed to process ${page.path}: ${sanitizeErrorMessage(error)}`));
+          throw new Error(sanitizeErrorMessage(`Failed to process ${page.path}: ${sanitizeErrorMessage(error)}`), { cause: error });
         }
 
         checkCancelled();

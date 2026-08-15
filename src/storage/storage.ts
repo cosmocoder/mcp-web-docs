@@ -200,7 +200,9 @@ export class DocumentStore {
       }
       catch (error) {
         logger.error('[DocumentStore] Error creating directories:', error);
-        throw new Error(`Failed to create storage directories: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Failed to create storage directories: ${error instanceof Error ? error.message : String(error)}`, {
+          cause: error,
+        });
       }
 
       // Initialize SQLite with error handling
@@ -218,7 +220,7 @@ export class DocumentStore {
       }
       catch (error) {
         logger.error('[DocumentStore] Error initializing SQLite:', error);
-        throw new Error(`Failed to initialize SQLite: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Failed to initialize SQLite: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
       }
 
       // Create base tables if they don't exist
@@ -310,7 +312,7 @@ export class DocumentStore {
       }
       catch (error) {
         logger.error('[DocumentStore] Error initializing LanceDB:', error);
-        throw new Error(`Failed to initialize LanceDB: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Failed to initialize LanceDB: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
       }
 
       logger.debug(`[DocumentStore] All storage components initialized successfully`);
@@ -543,7 +545,9 @@ export class DocumentStore {
       }
       catch (error) {
         logger.error(`[DocumentStore] Migration ${migration.version} failed:`, error);
-        throw new Error(`Database migration ${migration.version} failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Database migration ${migration.version} failed: ${error instanceof Error ? error.message : String(error)}`, {
+          cause: error,
+        });
       }
     }
   }
@@ -1815,7 +1819,7 @@ export class DocumentStore {
     catch (error) {
       const err = error as Error;
       if (err.message?.includes('UNIQUE constraint failed') || err.message?.includes('PRIMARY KEY constraint failed')) {
-        throw new Error(`Collection "${normalizedName}" already exists`);
+        throw new Error(`Collection "${normalizedName}" already exists`, { cause: error });
       }
       throw error;
     }
