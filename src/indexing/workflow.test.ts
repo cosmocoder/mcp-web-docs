@@ -610,4 +610,16 @@ describe('IndexingWorkflow', () => {
     expect(harness.statusTracker.completeIndexing).toHaveBeenCalledWith(request.operationId);
     vi.useRealTimers();
   });
+
+  // The mirror of the cases above: a matcher that says yes to every errcode is as wrong as one that
+  // says no to all of them. 1555 is SQLITE_CONSTRAINT_PRIMARYKEY, whose low byte is 19, not 5.
+  it('gives up on a sqlite error that is not a busy database', async () => {
+    const harness = createHarness();
+    harness.addDocument.mockRejectedValue(Object.assign(new Error('UNIQUE constraint failed: documents.url'), { errcode: 1555 }));
+
+    await runWorkflow(harness.workflow, request);
+
+    expect(harness.addDocument).toHaveBeenCalledTimes(1);
+    expect(harness.statusTracker.failIndexing).toHaveBeenCalledWith(request.operationId, expect.any(String));
+  });
 });
