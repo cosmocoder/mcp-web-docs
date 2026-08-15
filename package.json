@@ -72,7 +72,6 @@
     "safe-regex2": "5.1.1",
     "sqlite": "5.1.1",
     "sqlite3": "6.0.1",
-    "typescript": "5.9.3",
     "undici": "8.10.0",
     "zod": "4.4.3"
   },
@@ -96,6 +95,7 @@
     "lint-staged": "17.3.0",
     "prettier": "3.9.6",
     "prettier-plugin-brace-style": "0.10.3",
+    "typescript": "5.9.3",
     "typescript-eslint": "8.66.0",
     "vitest": "4.1.10",
     "vitest-fetch-mock": "0.4.5"
