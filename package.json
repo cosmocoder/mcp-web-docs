@@ -59,7 +59,7 @@
   },
   "dependencies": {
     "@andersmyrmel/vard": "1.2.1",
-    "@lancedb/lancedb": "0.33.0",
+    "@lancedb/lancedb": "0.37.1",
     "@modelcontextprotocol/sdk": "1.30.0",
     "cheerio": "1.2.0",
     "cli-progress": "3.12.0",
