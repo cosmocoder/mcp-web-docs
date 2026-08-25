@@ -64,7 +64,7 @@
     "cheerio": "1.2.0",
     "cli-progress": "3.12.0",
     "crawlee": "3.18.1",
-    "default-browser": "5.5.0",
+    "default-browser": "5.5.1",
     "fastembed": "2.1.0",
     "playwright": "1.62.1",
     "proxy-chain": "3.0.0",
