@@ -67,7 +67,7 @@
     "default-browser": "5.5.1",
     "fastembed": "2.1.0",
     "playwright": "1.63.0",
-    "proxy-chain": "3.0.0",
+    "proxy-chain": "3.0.1",
     "quick-lru": "7.3.0",
     "safe-regex2": "5.1.1",
     "undici": "8.10.2",
