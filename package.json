@@ -63,7 +63,7 @@
     "@modelcontextprotocol/sdk": "1.32.0",
     "cheerio": "1.2.0",
     "cli-progress": "3.12.0",
-    "crawlee": "3.18.1",
+    "crawlee": "3.18.2",
     "default-browser": "5.5.1",
     "fastembed": "2.1.0",
     "playwright": "1.63.0",
